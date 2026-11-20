@@ -1,4 +1,6 @@
-// CRC32 table for valid PNG tEXt ('chara') chunk embedding
+import { saveCardBackup } from './nmf_media_vault.js';
+
+// CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {
     const t = new Uint32Array(256);
     for (let n = 0; n < 256; n++) {
@@ -29,40 +31,370 @@ function utf8ToBase64(str) {
     return btoa(bin);
 }
 
-export function buildV2CardObject(card) {
-    const tagsArr = Array.isArray(card.tags)
-        ? card.tags.map((s) => String(s).trim()).filter(Boolean)
-        : String(card.tags || '').split(',').map((s) => s.trim()).filter(Boolean);
+function base64ToUtf8(b64) {
+    const bin = atob(String(b64 || '').trim());
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i) & 0xff;
+    }
+    return new TextDecoder('utf-8').decode(bytes);
+}
 
-    const altArr = Array.isArray(card.alternate_greetings)
-        ? card.alternate_greetings.map((s) => String(s || '').trim()).filter(Boolean)
+// Public SillyTavern context accessor without importing internal /script.js modules (fixes NMF-015)
+let injectedTestContext = null;
+export function setTestTavernContext(mockCtx = null) {
+    injectedTestContext = mockCtx;
+}
+
+export function getTavernContext() {
+    if (injectedTestContext) return injectedTestContext;
+    return globalThis.window?.SillyTavern?.getContext?.() || null;
+}
+
+export function getTavernHeaders({ omitContentType = false } = {}) {
+    const ctx = getTavernContext();
+    if (typeof ctx?.getRequestHeaders === 'function') {
+        return ctx.getRequestHeaders({ omitContentType });
+    }
+    return omitContentType ? {} : { 'Content-Type': 'application/json' };
+}
+
+// Editable fields tracked for lossless surgical V2 updates (fixes NMF-003)
+export const ALL_EDITABLE_CARD_FIELDS = Object.freeze([
+    'name',
+    'description',
+    'personality',
+    'scenario',
+    'first_mes',
+    'alternate_greetings',
+    'mes_example',
+    'creator_notes',
+    'system_prompt',
+    'post_history_instructions',
+    'tags',
+    'creator',
+    'character_version',
+    'world',
+    'imagePrompt',
+]);
+
+const FIELD_LABELS_RU = Object.freeze({
+    name: 'Имя / Название',
+    description: 'Описание (Description)',
+    personality: 'Характер (Personality)',
+    scenario: 'Сценарий (Scenario)',
+    first_mes: 'Первое сообщение (First Message)',
+    alternate_greetings: 'Дополнительные приветствия',
+    mes_example: 'Примеры диалогов',
+    creator_notes: 'Заметки автора (Creator Notes)',
+    system_prompt: 'System Prompt карточки',
+    post_history_instructions: 'Post-History Instructions',
+    tags: 'Теги',
+    creator: 'Автор (Creator)',
+    character_version: 'Версия карточки',
+    world: 'Привязанный Лорбук (World Info)',
+    imagePrompt: 'Промпт портрета (NMF)',
+});
+
+export function markCardFieldDirty(card, fieldName) {
+    if (!card || typeof card !== 'object' || !fieldName) return;
+    if (!Array.isArray(card.dirtyFields)) card.dirtyFields = [];
+    if (!card.dirtyFields.includes(fieldName)) {
+        card.dirtyFields.push(fieldName);
+    }
+}
+
+function parseTagsArray(tagsVal) {
+    return Array.isArray(tagsVal)
+        ? tagsVal.map((s) => String(s).trim()).filter(Boolean)
+        : String(tagsVal || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function parseAltGreetingsArray(altVal) {
+    return Array.isArray(altVal)
+        ? altVal.map((s) => String(s ?? ''))
         : [];
+}
+
+function stableStringify(val) {
+    if (val === null || typeof val !== 'object') return JSON.stringify(val);
+    if (Array.isArray(val)) return '[' + val.map(stableStringify).join(',') + ']';
+    const keys = Object.keys(val).filter((k) => k !== 'json_data').sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(val[k])).join(',') + '}';
+}
+
+export function computeCardSnapshotHash(cardObj) {
+    if (!cardObj || typeof cardObj !== 'object') return '';
+    const canon = stableStringify(cardObj);
+    let h = 2166136261;
+    for (let i = 0; i < canon.length; i++) {
+        h ^= canon.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return 'fnv1a_' + (h >>> 0).toString(16);
+}
+
+function extractRawCardJsonFromTavernChar(srcChar) {
+    if (!srcChar || typeof srcChar !== 'object') return null;
+    if (typeof srcChar.json_data === 'string' && srcChar.json_data.trim()) {
+        try {
+            const parsed = JSON.parse(srcChar.json_data);
+            if (parsed && typeof parsed === 'object') {
+                delete parsed.json_data;
+                if (srcChar.chat !== undefined && parsed.chat === undefined) parsed.chat = srcChar.chat;
+                if (srcChar.create_date !== undefined && parsed.create_date === undefined) parsed.create_date = srcChar.create_date;
+                if (srcChar.fav !== undefined && parsed.fav === undefined) parsed.fav = srcChar.fav;
+                return parsed;
+            }
+        } catch {
+            // Fall back to cloning srcChar
+        }
+    }
+    const clone = structuredClone(srcChar);
+    delete clone.json_data;
+    return clone;
+}
+
+// Build clean editor card state from a FULL SillyTavern character object (fixes NMF-002 & NMF-003)
+export function createCardStateFromTavernChar(fullChar, { avatarId = '' } = {}) {
+    const rawJson = extractRawCardJsonFromTavernChar(fullChar) || {};
+    const d = (rawJson.data && typeof rawJson.data === 'object') ? rawJson.data : (fullChar?.data || fullChar || {});
+    const tagsList = Array.isArray(d.tags) ? d.tags : (Array.isArray(rawJson.tags) ? rawJson.tags : []);
+    const nmfImgPrompt = String(d?.extensions?.nexus_match_forge?.image_prompt || '');
+
+    return {
+        name: String(d.name ?? rawJson.name ?? fullChar?.name ?? ''),
+        description: String(d.description ?? rawJson.description ?? fullChar?.description ?? ''),
+        personality: String(d.personality ?? rawJson.personality ?? fullChar?.personality ?? ''),
+        scenario: String(d.scenario ?? rawJson.scenario ?? fullChar?.scenario ?? ''),
+        first_mes: String(d.first_mes ?? rawJson.first_mes ?? fullChar?.first_mes ?? ''),
+        alternate_greetings: Array.isArray(d.alternate_greetings) ? [...d.alternate_greetings] : [],
+        mes_example: String(d.mes_example ?? rawJson.mes_example ?? fullChar?.mes_example ?? ''),
+        creator_notes: String(d.creator_notes ?? rawJson.creatorcomment ?? fullChar?.creatorcomment ?? ''),
+        system_prompt: String(d.system_prompt ?? ''),
+        post_history_instructions: String(d.post_history_instructions ?? ''),
+        tags: Array.isArray(tagsList) ? tagsList.join(', ') : String(tagsList || ''),
+        creator: String(d.creator ?? ''),
+        character_version: String(d.character_version ?? '1.0') || '1.0',
+        world: String(d?.extensions?.world ?? ''),
+        imagePrompt: nmfImgPrompt,
+        avatarId: String(avatarId || ''),
+        avatarDataUrl: '',
+        avatarDirty: false,
+        sourceAvatarId: String(fullChar?.avatar || ''),
+        sourceLoadedFromTavern: Boolean(fullChar?.avatar),
+        sourceSnapshotHash: computeCardSnapshotHash(rawJson),
+        originalCardData: structuredClone(rawJson),
+        dirtyFields: [],
+    };
+}
+
+// Build independent editor card state from imported JSON — strictly resets sourceAvatarId & previous character links! (fixes NMF-004 & NMF-003)
+export function createCardStateFromImportedJson(rawObj) {
+    if (!rawObj || typeof rawObj !== 'object' || Array.isArray(rawObj)) {
+        throw new Error('Импортированный JSON не является объектом карточки персонажа.');
+    }
+    const cleanOrig = structuredClone(rawObj);
+    delete cleanOrig.json_data;
+
+    const d = (cleanOrig.data && typeof cleanOrig.data === 'object') ? cleanOrig.data : cleanOrig;
+    const tagsVal = d.tags !== undefined ? d.tags : cleanOrig.tags;
+    const nmfPrompt = String(d?.extensions?.nexus_match_forge?.image_prompt || '');
+
+    return {
+        name: String(d.name ?? cleanOrig.name ?? ''),
+        description: String(d.description ?? cleanOrig.description ?? ''),
+        personality: String(d.personality ?? cleanOrig.personality ?? ''),
+        scenario: String(d.scenario ?? cleanOrig.scenario ?? ''),
+        first_mes: String(d.first_mes ?? cleanOrig.first_mes ?? ''),
+        alternate_greetings: Array.isArray(d.alternate_greetings) ? d.alternate_greetings.map(String) : [],
+        mes_example: String(d.mes_example ?? cleanOrig.mes_example ?? ''),
+        creator_notes: String(d.creator_notes ?? cleanOrig.creatorcomment ?? ''),
+        system_prompt: String(d.system_prompt ?? ''),
+        post_history_instructions: String(d.post_history_instructions ?? ''),
+        tags: Array.isArray(tagsVal) ? tagsVal.join(', ') : String(tagsVal ?? ''),
+        creator: String(d.creator ?? ''),
+        character_version: String(d.character_version ?? '1.0') || '1.0',
+        world: String(d?.extensions?.world ?? ''),
+        imagePrompt: nmfPrompt,
+        avatarId: '',
+        avatarDataUrl: '',
+        avatarDirty: false,
+        sourceAvatarId: '',
+        sourceLoadedFromTavern: false,
+        sourceSnapshotHash: '',
+        originalCardData: cleanOrig,
+        dirtyFields: [],
+    };
+}
+
+function applySingleFieldToCardObject(target, field, card) {
+    if (!target.data || typeof target.data !== 'object') {
+        target.data = {};
+    }
+    if (!target.data.extensions || typeof target.data.extensions !== 'object') {
+        target.data.extensions = {};
+    }
+
+    switch (field) {
+        case 'name': {
+            const v = String(card.name || 'Unnamed').trim();
+            target.name = v;
+            target.data.name = v;
+            break;
+        }
+        case 'description': {
+            const v = String(card.description ?? '');
+            target.description = v;
+            target.data.description = v;
+            break;
+        }
+        case 'personality': {
+            const v = String(card.personality ?? '');
+            target.personality = v;
+            target.data.personality = v;
+            break;
+        }
+        case 'scenario': {
+            const v = String(card.scenario ?? '');
+            target.scenario = v;
+            target.data.scenario = v;
+            break;
+        }
+        case 'first_mes': {
+            const v = String(card.first_mes ?? '');
+            target.first_mes = v;
+            target.data.first_mes = v;
+            break;
+        }
+        case 'mes_example': {
+            const v = String(card.mes_example ?? '');
+            target.mes_example = v;
+            target.data.mes_example = v;
+            break;
+        }
+        case 'creator_notes': {
+            const v = String(card.creator_notes ?? '');
+            target.creatorcomment = v;
+            target.data.creator_notes = v;
+            break;
+        }
+        case 'system_prompt': {
+            target.data.system_prompt = String(card.system_prompt ?? '');
+            break;
+        }
+        case 'post_history_instructions': {
+            target.data.post_history_instructions = String(card.post_history_instructions ?? '');
+            break;
+        }
+        case 'alternate_greetings': {
+            target.data.alternate_greetings = parseAltGreetingsArray(card.alternate_greetings).filter((s) => s.trim().length > 0);
+            break;
+        }
+        case 'tags': {
+            const arr = parseTagsArray(card.tags);
+            target.tags = arr;
+            target.data.tags = arr;
+            break;
+        }
+        case 'creator': {
+            target.data.creator = String(card.creator ?? '');
+            break;
+        }
+        case 'character_version': {
+            target.data.character_version = String(card.character_version ?? '1.0');
+            break;
+        }
+        case 'world': {
+            target.data.extensions.world = String(card.world ?? '').trim();
+            break;
+        }
+        case 'imagePrompt': {
+            const cleanImgPrompt = String(card.imagePrompt ?? '').trim();
+            if (cleanImgPrompt || target.data.extensions.nexus_match_forge) {
+                target.data.extensions.nexus_match_forge = {
+                    ...(target.data.extensions.nexus_match_forge || {}),
+                    version: '1.4.0-beta',
+                    image_prompt: cleanImgPrompt,
+                };
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// Lossless Character Card V2 builder (fixes NMF-003):
+// When originalCardData exists, clones it and applies ONLY dirtyFields, preserving character_book, unknown fields, fav, chat, create_date, talkativeness, depth_prompt, and third-party extensions!
+export function buildV2CardObject(card) {
+    if (card?.originalCardData && typeof card.originalCardData === 'object') {
+        const cloned = structuredClone(card.originalCardData);
+        delete cloned.json_data;
+
+        if (!cloned.spec) cloned.spec = 'chara_card_v2';
+        if (!cloned.spec_version) cloned.spec_version = '2.0';
+        if (!cloned.data || typeof cloned.data !== 'object') {
+            cloned.data = {
+                name: cloned.name || '',
+                description: cloned.description || '',
+                personality: cloned.personality || '',
+                scenario: cloned.scenario || '',
+                first_mes: cloned.first_mes || '',
+                mes_example: cloned.mes_example || '',
+                creator_notes: cloned.creatorcomment || '',
+                system_prompt: '',
+                post_history_instructions: '',
+                alternate_greetings: [],
+                tags: Array.isArray(cloned.tags) ? [...cloned.tags] : [],
+                creator: '',
+                character_version: '1.0',
+                extensions: {},
+            };
+        }
+        if (!cloned.data.extensions || typeof cloned.data.extensions !== 'object') {
+            cloned.data.extensions = {};
+        }
+
+        const fieldsToApply = Array.isArray(card.dirtyFields) ? card.dirtyFields : ALL_EDITABLE_CARD_FIELDS;
+        for (const f of fieldsToApply) {
+            applySingleFieldToCardObject(cloned, f, card);
+        }
+        return cloned;
+    }
+
+    // Fresh V2 card created from scratch
+    const tagsArr = parseTagsArray(card?.tags);
+    const altArr = parseAltGreetingsArray(card?.alternate_greetings).map((s) => s.trim()).filter(Boolean);
+    const cleanImgPrompt = String(card?.imagePrompt || '').trim();
 
     const extensions = {
-        talkativeness: '0.5',
+        talkativeness: 0.5,
         fav: false,
-        world: String(card.world || '').trim(),
+        world: String(card?.world || '').trim(),
         depth_prompt: { prompt: '', depth: 4, role: 'system' },
-        nexus_match_forge: {
-            version: '1.3.0-beta',
-            image_prompt: String(card.imagePrompt || '').trim(),
-        },
     };
+    if (cleanImgPrompt) {
+        extensions.nexus_match_forge = {
+            version: '1.4.0-beta',
+            image_prompt: cleanImgPrompt,
+        };
+    }
 
     const data = {
-        name: String(card.name || 'Unnamed').trim(),
-        description: String(card.description || '').trim(),
-        personality: String(card.personality || '').trim(),
-        scenario: String(card.scenario || '').trim(),
-        first_mes: String(card.first_mes || '').trim(),
-        mes_example: String(card.mes_example || '').trim(),
-        creator_notes: String(card.creator_notes || '').trim(),
-        system_prompt: String(card.system_prompt || '').trim(),
-        post_history_instructions: String(card.post_history_instructions || '').trim(),
+        name: String(card?.name || 'Unnamed').trim(),
+        description: String(card?.description || '').trim(),
+        personality: String(card?.personality || '').trim(),
+        scenario: String(card?.scenario || '').trim(),
+        first_mes: String(card?.first_mes || '').trim(),
+        mes_example: String(card?.mes_example || '').trim(),
+        creator_notes: String(card?.creator_notes || '').trim(),
+        system_prompt: String(card?.system_prompt || '').trim(),
+        post_history_instructions: String(card?.post_history_instructions || '').trim(),
         alternate_greetings: altArr,
         tags: tagsArr,
-        creator: String(card.creator || 'NexusMatch Forge').trim(),
-        character_version: String(card.character_version || '1.0').trim(),
+        creator: String(card?.creator || 'NexusMatch Forge').trim(),
+        character_version: String(card?.character_version || '1.0').trim(),
         extensions,
     };
 
@@ -75,7 +407,7 @@ export function buildV2CardObject(card) {
         mes_example: data.mes_example,
         creatorcomment: data.creator_notes,
         avatar: 'none',
-        talkativeness: '0.5',
+        talkativeness: 0.5,
         fav: false,
         tags: data.tags,
         spec: 'chara_card_v2',
@@ -84,20 +416,166 @@ export function buildV2CardObject(card) {
     };
 }
 
+// Build minimal surgical payload for POST /api/characters/merge-attributes (fixes NMF-001 & NMF-003)
+export function buildSurgicalMergePayload(avatarFileName, card) {
+    const dirty = Array.isArray(card?.dirtyFields) ? card.dirtyFields : [];
+    const payload = { avatar: String(avatarFileName || '').trim() };
+    if (!dirty.length) return payload;
+
+    const dataPatch = {};
+    const extPatch = {};
+
+    for (const field of dirty) {
+        switch (field) {
+            case 'name': {
+                const v = String(card.name || '').trim();
+                if (v) {
+                    payload.name = v;
+                    dataPatch.name = v;
+                }
+                break;
+            }
+            case 'description':
+                payload.description = String(card.description ?? '');
+                dataPatch.description = String(card.description ?? '');
+                break;
+            case 'personality':
+                payload.personality = String(card.personality ?? '');
+                dataPatch.personality = String(card.personality ?? '');
+                break;
+            case 'scenario':
+                payload.scenario = String(card.scenario ?? '');
+                dataPatch.scenario = String(card.scenario ?? '');
+                break;
+            case 'first_mes':
+                payload.first_mes = String(card.first_mes ?? '');
+                dataPatch.first_mes = String(card.first_mes ?? '');
+                break;
+            case 'mes_example':
+                payload.mes_example = String(card.mes_example ?? '');
+                dataPatch.mes_example = String(card.mes_example ?? '');
+                break;
+            case 'creator_notes':
+                payload.creatorcomment = String(card.creator_notes ?? '');
+                dataPatch.creator_notes = String(card.creator_notes ?? '');
+                break;
+            case 'system_prompt':
+                dataPatch.system_prompt = String(card.system_prompt ?? '');
+                break;
+            case 'post_history_instructions':
+                dataPatch.post_history_instructions = String(card.post_history_instructions ?? '');
+                break;
+            case 'alternate_greetings':
+                dataPatch.alternate_greetings = parseAltGreetingsArray(card.alternate_greetings).filter((s) => s.trim().length > 0);
+                break;
+            case 'tags': {
+                const arr = parseTagsArray(card.tags);
+                payload.tags = arr;
+                dataPatch.tags = arr;
+                break;
+            }
+            case 'creator':
+                dataPatch.creator = String(card.creator ?? '');
+                break;
+            case 'character_version':
+                dataPatch.character_version = String(card.character_version ?? '1.0');
+                break;
+            case 'world':
+                extPatch.world = String(card.world ?? '').trim();
+                break;
+            case 'imagePrompt':
+                extPatch.nexus_match_forge = {
+                    version: '1.4.0-beta',
+                    image_prompt: String(card.imagePrompt ?? '').trim(),
+                };
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (Object.keys(extPatch).length > 0) {
+        dataPatch.extensions = extPatch;
+    }
+    if (Object.keys(dataPatch).length > 0) {
+        payload.data = dataPatch;
+    }
+    return payload;
+}
+
+export function computeCardDiff(card, liveOrigData = null) {
+    const base = liveOrigData || card?.originalCardData || {};
+    const changed = [];
+    const dirty = Array.isArray(card?.dirtyFields) ? card.dirtyFields : [];
+
+    for (const f of dirty) {
+        if (FIELD_LABELS_RU[f]) changed.push(FIELD_LABELS_RU[f]);
+    }
+    if (card?.avatarDirty) {
+        changed.push('Портрет PNG (изображение)');
+    }
+
+    const preserved = [
+        'Привязка к активному чату (chat)',
+        'Дата создания (create_date)',
+        base?.fav || base?.data?.extensions?.fav ? 'Статус «Избранное» (fav = true)' : 'Статус «Избранное» (fav)',
+    ];
+    if (base?.data?.character_book) {
+        preserved.push('Встроенный Лорбук (character_book)');
+    }
+    if (base?.data?.extensions?.depth_prompt?.prompt) {
+        preserved.push('Depth Prompt персонажа');
+    }
+    const foreignExtKeys = Object.keys(base?.data?.extensions || {}).filter(
+        (k) => !['talkativeness', 'fav', 'world', 'depth_prompt', 'nexus_match_forge'].includes(k)
+    );
+    if (foreignExtKeys.length > 0) {
+        preserved.push(`Сторонние данные расширений (${foreignExtKeys.join(', ')})`);
+    }
+
+    return {
+        hasChanges: changed.length > 0,
+        changedFields: changed,
+        preservedProtected: preserved,
+    };
+}
+
 function getTargetCanvasDimensions(aspectRatio = '1:1') {
     if (aspectRatio === '2:3') return { width: 640, height: 960 };
     if (aspectRatio === '3:4') return { width: 672, height: 896 };
     if (aspectRatio === '16:9') return { width: 960, height: 540 };
-    return { width: 768, height: 768 }; // Default 1:1 square
+    return { width: 768, height: 768 };
 }
 
-// Crop & render PNG bytes respecting user's chosen aspect ratio (default 1:1, or 'native' to keep model's exact proportions!) and crop focus
+// Valid minimal 1x1 RGB PNG fallback for headless Node unit tests without HTMLCanvasElement
+const MINIMAL_1X1_PNG_BYTES = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10,
+    0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222,
+    0, 0, 0, 12, 73, 68, 65, 84, 8, 215, 99, 248, 207, 192, 0, 0, 3, 1, 1, 0, 24, 221, 141, 176,
+    0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+]);
+
 export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex = '#1de9b6', { aspectRatio = '1:1', cropFocus = 'top' } = {}) {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+        if (typeof avatarDataUrl === 'string' && avatarDataUrl.startsWith('data:image/png;base64,')) {
+            const b64 = avatarDataUrl.slice('data:image/png;base64,'.length);
+            const bin = atob(b64);
+            const arr = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i) & 0xff;
+            return arr;
+        }
+        return new Uint8Array(MINIMAL_1X1_PNG_BYTES);
+    }
+
     const dims = getTargetCanvasDimensions(aspectRatio === 'native' ? '1:1' : aspectRatio);
     const canvas = document.createElement('canvas');
     canvas.width = dims.width;
     canvas.height = dims.height;
     const g = canvas.getContext('2d');
+
+    if (!g) {
+        return new Uint8Array(MINIMAL_1X1_PNG_BYTES);
+    }
 
     if (avatarDataUrl) {
         try {
@@ -111,91 +589,84 @@ export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex 
 
             if (aspectRatio === 'native' && img.width > 0 && img.height > 0) {
                 const maxSide = 1280;
-                const s = Math.min(1, maxSide / Math.max(img.width, img.height));
-                canvas.width = Math.max(64, Math.round(img.width * s));
-                canvas.height = Math.max(64, Math.round(img.height * s));
+                const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+                canvas.width = Math.max(1, Math.round(img.width * scale));
+                canvas.height = Math.max(1, Math.round(img.height * scale));
                 g.drawImage(img, 0, 0, canvas.width, canvas.height);
             } else if (cropFocus === 'contain') {
-                g.fillStyle = '#0a0d14';
-                g.fillRect(0, 0, canvas.width, canvas.height);
-                const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
-                const w = img.width * scale;
-                const h = img.height * scale;
-                g.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+                g.fillStyle = '#0b0e13';
+                g.fillRect(0, 0, dims.width, dims.height);
+                const scale = Math.min(dims.width / img.width, dims.height / img.height);
+                const dw = img.width * scale;
+                const dh = img.height * scale;
+                const dx = (dims.width - dw) / 2;
+                const dy = (dims.height - dh) / 2;
+                g.drawImage(img, dx, dy, dw, dh);
             } else {
-                const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
-                const w = img.width * scale;
-                const h = img.height * scale;
-                const offsetX = (canvas.width - w) / 2;
-                // 'top' keeps upper 18% anchor so heads/faces are never sliced off when cropping vertical art to 1:1!
-                const offsetY = cropFocus === 'top' ? (canvas.height - h) * 0.18 : (canvas.height - h) / 2;
-                g.fillStyle = '#0a0d14';
-                g.fillRect(0, 0, canvas.width, canvas.height);
-                g.drawImage(img, offsetX, offsetY, w, h);
+                const scale = Math.max(dims.width / img.width, dims.height / img.height);
+                const sw = dims.width / scale;
+                const sh = dims.height / scale;
+                const sx = Math.max(0, (img.width - sw) / 2);
+                const sy = cropFocus === 'top'
+                    ? Math.max(0, (img.height - sh) * 0.14)
+                    : Math.max(0, (img.height - sh) / 2);
+                g.drawImage(img, sx, sy, sw, sh, 0, 0, dims.width, dims.height);
             }
-        } catch {
-            drawGeometricCover(g, canvas.width, canvas.height, charName, accentHex);
+
+            const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+            return new Uint8Array(await blob.arrayBuffer());
+        } catch (err) {
+            console.warn('[NexusMatch Forge] Avatar decode fallback:', err);
         }
-    } else {
-        drawGeometricCover(g, canvas.width, canvas.height, charName, accentHex);
     }
 
-    const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
-    return new Uint8Array(await blob.arrayBuffer());
-}
+    // Technical geometric monogram placeholder
+    g.fillStyle = '#0d1117';
+    g.fillRect(0, 0, dims.width, dims.height);
 
-function drawGeometricCover(g, w, h, charName, accent) {
-    const grad = g.createLinearGradient(0, 0, w, h);
-    grad.addColorStop(0, '#0d131d');
-    grad.addColorStop(1, '#070a10');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, w, h);
+    g.strokeStyle = accentHex;
+    g.globalAlpha = 0.25;
+    g.lineWidth = 2;
+    g.strokeRect(22, 22, dims.width - 44, dims.height - 44);
+    g.strokeRect(34, 34, dims.width - 68, dims.height - 68);
 
-    g.strokeStyle = accent || '#1de9b6';
-    g.lineWidth = 3;
-    g.strokeRect(20, 20, w - 40, h - 40);
-    g.lineWidth = 1;
-    g.globalAlpha = 0.45;
-    g.strokeRect(32, 32, w - 64, h - 64);
+    g.globalAlpha = 0.12;
+    for (let y = 60; y < dims.height; y += 44) {
+        g.beginPath();
+        g.moveTo(0, y);
+        g.lineTo(dims.width, y);
+        g.stroke();
+    }
+
     g.globalAlpha = 1;
-
-    const cy = Math.round(h * 0.42);
-    const r = Math.round(Math.min(w, h) * 0.14);
-    g.beginPath();
-    g.moveTo(w / 2, cy - r);
-    g.lineTo(w / 2 + r, cy);
-    g.lineTo(w / 2, cy + r);
-    g.lineTo(w / 2 - r, cy);
-    g.closePath();
-    g.stroke();
-
     const initials = String(charName || 'NM')
         .trim()
         .split(/\s+/)
         .slice(0, 2)
-        .map((s) => s[0] || '')
+        .map((w) => w[0] || '')
         .join('')
         .toUpperCase() || 'NM';
 
-    g.fillStyle = '#f1f5f9';
-    g.font = '700 58px Georgia, serif';
+    g.fillStyle = accentHex;
+    g.font = `700 ${Math.round(dims.width * 0.27)}px Georgia, serif`;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.fillText(initials, w / 2, cy);
+    g.fillText(initials, dims.width / 2, dims.height * 0.45);
 
-    g.fillStyle = accent || '#1de9b6';
-    g.font = '700 17px monospace';
-    g.fillText('NEXUSMATCH // CARD V2', w / 2, h - 110);
+    g.fillStyle = '#a3b1c2';
+    g.font = `600 ${Math.max(16, Math.round(dims.width * 0.032))}px monospace`;
+    g.fillText('NEXUSMATCH FORGE // V2', dims.width / 2, dims.height * 0.62);
 
-    g.fillStyle = '#e2e8f0';
-    g.font = '700 26px system-ui, sans-serif';
-    g.fillText(String(charName || 'Unnamed').slice(0, 26), w / 2, h - 72);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
 }
 
 export function embedCharaChunkIntoPng(pngBytes, cardObj) {
-    const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    const PNG_SIG = [137, 80, 78, 71, 13, 10, 26, 10];
     for (let i = 0; i < 8; i++) {
-        if (pngBytes[i] !== sig[i]) throw new Error('Invalid PNG header');
+        if (pngBytes[i] !== PNG_SIG[i]) {
+            throw new Error('Некорректный заголовок PNG.');
+        }
     }
 
     const keyword = new TextEncoder().encode('chara');
@@ -211,7 +682,7 @@ export function embedCharaChunkIntoPng(pngBytes, cardObj) {
     crcInput.set(chunkData, 4);
     const crcVal = crc32(crcInput);
 
-    const fullChunk = new Uint8Array(12 + chunkData.length);
+    const fullChunk = new Uint8Array(4 + 4 + chunkData.length + 4);
     const dv = new DataView(fullChunk.buffer);
     dv.setUint32(0, chunkData.length, false);
     fullChunk.set(typeBytes, 4);
@@ -234,11 +705,11 @@ export function embedCharaChunkIntoPng(pngBytes, cardObj) {
         const total = 12 + len;
         if (offset + total > pngBytes.length) break;
 
-        if (type === 'tEXt') {
-            const keyEnd = pngBytes.indexOf(0, offset + 8);
-            if (keyEnd > offset + 8 && keyEnd < offset + 8 + 10) {
-                const keyName = new TextDecoder().decode(pngBytes.subarray(offset + 8, keyEnd));
-                if (keyName === 'chara' || keyName === 'ccv3') {
+        if (type === 'tEXt' || type === 'iTXt') {
+            const kEnd = pngBytes.indexOf(0, offset + 8);
+            if (kEnd > offset + 8 && kEnd < offset + 8 + 16) {
+                const kw = new TextDecoder().decode(pngBytes.subarray(offset + 8, kEnd)).toLowerCase();
+                if (kw === 'chara' || kw === 'ccv3') {
                     offset += total;
                     continue;
                 }
@@ -263,14 +734,54 @@ export function embedCharaChunkIntoPng(pngBytes, cardObj) {
     return out;
 }
 
-export async function buildCardPngBlob(card, accentHex = '#1de9b6', cropOpts = {}) {
+// Round-trip PNG 'chara' metadata reader for verification & tests (Test #26)
+export function extractCharaJsonFromPng(pngBytes) {
+    const PNG_SIG = [137, 80, 78, 71, 13, 10, 26, 10];
+    for (let i = 0; i < 8; i++) {
+        if (pngBytes[i] !== PNG_SIG[i]) {
+            throw new Error('Некорректная сигнатура PNG.');
+        }
+    }
+    let offset = 8;
+    while (offset + 8 <= pngBytes.length) {
+        const view = new DataView(pngBytes.buffer, pngBytes.byteOffset + offset, 8);
+        const len = view.getUint32(0, false);
+        const type = String.fromCharCode(
+            pngBytes[offset + 4],
+            pngBytes[offset + 5],
+            pngBytes[offset + 6],
+            pngBytes[offset + 7],
+        );
+        const total = 12 + len;
+        if (offset + total > pngBytes.length) break;
+
+        if (type === 'tEXt') {
+            const dataStart = offset + 8;
+            const dataEnd = dataStart + len;
+            const nul = pngBytes.indexOf(0, dataStart);
+            if (nul > dataStart && nul < dataEnd) {
+                const kw = new TextDecoder().decode(pngBytes.subarray(dataStart, nul)).toLowerCase();
+                if (kw === 'chara') {
+                    const b64 = new TextDecoder().decode(pngBytes.subarray(nul + 1, dataEnd));
+                    return JSON.parse(base64ToUtf8(b64));
+                }
+            }
+        }
+        offset += total;
+    }
+    throw new Error('В PNG отсутствует блок метаданных chara.');
+}
+
+export async function buildCardPngBlob(card, accentHex = '#1de9b6', cropOpts = {}, explicitAvatarDataUrl = '') {
     const v2 = buildV2CardObject(card);
-    const rawPng = await ensurePngBytes(card.avatarDataUrl, v2.data.name, accentHex, cropOpts);
+    const effectiveAvatar = explicitAvatarDataUrl || card.avatarDataUrl || '';
+    const rawPng = await ensurePngBytes(effectiveAvatar, v2.data?.name || v2.name, accentHex, cropOpts);
     const withMeta = embedCharaChunkIntoPng(rawPng, v2);
     return new Blob([withMeta], { type: 'image/png' });
 }
 
 export function triggerDownload(blob, filename) {
+    if (typeof document === 'undefined') return;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -283,84 +794,432 @@ export function triggerDownload(blob, filename) {
     }, 800);
 }
 
-export async function importCardIntoTavern(card, { preserveAvatarFile = '', accentHex = '#1de9b6', aspectRatio = '1:1', cropFocus = 'top' } = {}) {
-    if (!String(card.name || '').trim()) {
+// Strict NEW-card import only — never overwrites existing character files (fixes NMF-001)
+export async function importCardIntoTavern(card, { avatarDataUrl = '', accentHex = '#1de9b6', aspectRatio = '1:1', cropFocus = 'top' } = {}) {
+    if (!String(card?.name || '').trim()) {
         throw new Error('Укажите название или имя перед сохранением в Таверну.');
     }
-    const mod = await import('/script.js');
-    const pngBlob = await buildCardPngBlob(card, accentHex, { aspectRatio, cropFocus });
+    const ctx = getTavernContext();
+    const pngBlob = await buildCardPngBlob(card, accentHex, { aspectRatio, cropFocus }, avatarDataUrl);
     const safeSlug = String(card.name).trim().replace(/[\\/:*?"<>|]+/g, '_') || 'Character';
     const file = new File([pngBlob], `${safeSlug}.png`, { type: 'image/png' });
 
     const formData = new FormData();
     formData.append('avatar', file);
     formData.append('file_type', 'png');
-    const ctx = window.SillyTavern?.getContext?.();
     formData.append('user_name', ctx?.name1 || 'User');
-    if (preserveAvatarFile) {
-        const cleanPreserved = String(preserveAvatarFile).replace(/\.png$/i, '');
-        formData.append('preserved_name', cleanPreserved);
-    }
 
     const res = await fetch('/api/characters/import', {
         method: 'POST',
-        headers: mod.getRequestHeaders({ omitContentType: true }),
+        headers: getTavernHeaders({ omitContentType: true }),
         body: formData,
         cache: 'no-cache',
     });
     if (!res.ok) {
-        throw new Error(`Ошибка сохранения в Таверну (HTTP ${res.status})`);
+        throw new Error(`Ошибка сохранения новой карточки в Таверну (HTTP ${res.status})`);
     }
     const data = await res.json();
     if (data?.error) throw new Error(String(data.error));
 
-    if (typeof mod.getCharacters === 'function') await mod.getCharacters();
-    else if (typeof ctx?.getCharacters === 'function') await ctx.getCharacters();
+    if (typeof ctx?.getCharacters === 'function') {
+        await ctx.getCharacters();
+    }
     return data?.file_name ? `${data.file_name}.png` : `${safeSlug}.png`;
 }
 
-export async function fetchTavernRosterAndWorlds() {
-    const mod = await import('/script.js');
-    const wiMod = await import('/scripts/world-info.js').catch(() => ({}));
+// Fetch FULL character record even when performance.lazyLoadCharacters is enabled (fixes NMF-002)
+export async function fetchFullTavernCharacter(avatarUrl, { signal = null } = {}) {
+    const cleanAvatar = String(avatarUrl || '').trim();
+    if (!cleanAvatar) {
+        throw new Error('Не указан идентификатор файла персонажа (avatar_url).');
+    }
+
+    const ctx = getTavernContext();
+    if (typeof ctx?.unshallowCharacter === 'function' && Array.isArray(ctx?.characters)) {
+        const idx = ctx.characters.findIndex((c) => c?.avatar === cleanAvatar);
+        if (idx >= 0) {
+            try {
+                await ctx.unshallowCharacter(idx);
+            } catch {
+                // Continue to authoritative /api/characters/get
+            }
+        }
+    }
+
+    const res = await fetch('/api/characters/get', {
+        method: 'POST',
+        headers: getTavernHeaders(),
+        body: JSON.stringify({ avatar_url: cleanAvatar }),
+        cache: 'no-cache',
+        signal,
+    });
+
+    if (res.status === 404) {
+        const err = new Error(`Исходная карточка «${cleanAvatar}» не найдена на диске (возможно, она была удалена или переименована).`);
+        err.code = 'CARD_NOT_FOUND';
+        throw err;
+    }
+    if (!res.ok) {
+        throw new Error(`Не удалось загрузить полную карточку «${cleanAvatar}» (HTTP ${res.status}).`);
+    }
+
+    const fullChar = await res.json();
+    if (!fullChar || typeof fullChar !== 'object') {
+        throw new Error(`Сервер вернул пустые данные для карточки «${cleanAvatar}».`);
+    }
+
+    const rawCardObject = extractRawCardJsonFromTavernChar(fullChar);
+    return {
+        fullChar,
+        rawCardObject,
+        snapshotHash: computeCardSnapshotHash(rawCardObject),
+    };
+}
+
+// Safe existing character update via /api/characters/edit-avatar + /api/characters/merge-attributes with Backup & Verification (fixes NMF-001 & NMF-003)
+export async function updateExistingCardInTavern(card, {
+    avatarFileName = '',
+    avatarDataUrl = '',
+    accentHex = '#1de9b6',
+    aspectRatio = '1:1',
+    cropFocus = 'top',
+    allowExternalChangeOverride = false,
+} = {}) {
+    const targetAvatar = String(avatarFileName || card?.sourceAvatarId || '').trim();
+    if (!targetAvatar) {
+        throw new Error('Не указан исходный персонаж для обновления.');
+    }
+    if (!String(card?.name || '').trim()) {
+        throw new Error('Имя персонажа не может быть пустым.');
+    }
+
+    // 1. Pre-flight: read full live character from disk & verify it still exists
+    const liveBefore = await fetchFullTavernCharacter(targetAvatar);
+    if (card.sourceSnapshotHash && liveBefore.snapshotHash && card.sourceSnapshotHash !== liveBefore.snapshotHash && !allowExternalChangeOverride) {
+        const err = new Error('Исходная карточка была изменена в SillyTavern после её загрузки в редактор.');
+        err.code = 'EXTERNAL_CARD_MODIFIED';
+        throw err;
+    }
+
+    const diff = computeCardDiff(card, liveBefore.rawCardObject);
+    if (!diff.hasChanges) {
+        return {
+            fileName: targetAvatar,
+            backup: null,
+            updatedChar: liveBefore.fullChar,
+            diff,
+            noop: true,
+        };
+    }
+
+    // 2. Fetch raw original PNG bytes for complete pre-overwrite backup
+    let origPngBytes = null;
+    try {
+        const imgRes = await fetch(`/characters/${encodeURIComponent(targetAvatar)}`, { cache: 'no-cache' });
+        if (imgRes.ok) {
+            origPngBytes = new Uint8Array(await imgRes.arrayBuffer());
+        }
+    } catch {
+        origPngBytes = null;
+    }
+
+    const backup = await saveCardBackup({
+        avatarFileName: targetAvatar,
+        characterName: liveBefore.fullChar?.name || card.name,
+        pngBytes: origPngBytes,
+        cardJson: liveBefore.rawCardObject,
+    });
+
+    // 3. If image was explicitly modified, replace ONLY PNG image pixels via /api/characters/edit-avatar (preserves 100% of embedded JSON!)
+    if (card.avatarDirty && avatarDataUrl) {
+        const rawPngBytes = await ensurePngBytes(avatarDataUrl, card.name, accentHex, { aspectRatio, cropFocus });
+        const imgFile = new File([new Blob([rawPngBytes], { type: 'image/png' })], targetAvatar, { type: 'image/png' });
+        const fd = new FormData();
+        fd.append('avatar', imgFile);
+        fd.append('avatar_url', targetAvatar);
+
+        const avRes = await fetch('/api/characters/edit-avatar', {
+            method: 'POST',
+            headers: getTavernHeaders({ omitContentType: true }),
+            body: fd,
+            cache: 'no-cache',
+        });
+        if (!avRes.ok) {
+            throw new Error(`Ошибка обновления изображения персонажа (HTTP ${avRes.status}). Исходный бэкап сохранён.`);
+        }
+    }
+
+    // 4. Surgical field merge via /api/characters/merge-attributes (or full /api/characters/edit fallback if /merge-attributes is missing)
+    const dirtyFields = Array.isArray(card.dirtyFields) ? card.dirtyFields : [];
+    if (dirtyFields.length > 0) {
+        const mergePayload = buildSurgicalMergePayload(targetAvatar, card);
+        const mergeRes = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: getTavernHeaders(),
+            body: JSON.stringify(mergePayload),
+            cache: 'no-cache',
+        });
+
+        if (mergeRes.status === 404) {
+            // Compatibility fallback for older ST builds lacking /merge-attributes: preserve chat, create_date, fav, talkativeness, depth_prompt, character_book & extensions via json_data!
+            const mergedFull = buildV2CardObject({
+                ...card,
+                originalCardData: liveBefore.rawCardObject,
+                dirtyFields,
+            });
+            const origD = liveBefore.rawCardObject?.data || {};
+            const origExt = origD.extensions || {};
+            const editFd = new FormData();
+            editFd.append('avatar_url', targetAvatar);
+            editFd.append('ch_name', mergedFull.data?.name || mergedFull.name || card.name);
+            editFd.append('description', mergedFull.data?.description ?? mergedFull.description ?? '');
+            editFd.append('personality', mergedFull.data?.personality ?? mergedFull.personality ?? '');
+            editFd.append('scenario', mergedFull.data?.scenario ?? mergedFull.scenario ?? '');
+            editFd.append('first_mes', mergedFull.data?.first_mes ?? mergedFull.first_mes ?? '');
+            editFd.append('mes_example', mergedFull.data?.mes_example ?? mergedFull.mes_example ?? '');
+            editFd.append('creator_notes', mergedFull.data?.creator_notes ?? mergedFull.creatorcomment ?? '');
+            editFd.append('system_prompt', mergedFull.data?.system_prompt ?? '');
+            editFd.append('post_history_instructions', mergedFull.data?.post_history_instructions ?? '');
+            editFd.append('creator', mergedFull.data?.creator ?? '');
+            editFd.append('character_version', mergedFull.data?.character_version ?? '1.0');
+            for (const alt of (mergedFull.data?.alternate_greetings || [])) {
+                editFd.append('alternate_greetings', alt);
+            }
+            editFd.append('tags', (mergedFull.data?.tags || []).join(', '));
+            editFd.append('fav', String(Boolean(liveBefore.rawCardObject?.fav ?? origExt.fav)));
+            editFd.append('talkativeness', String(liveBefore.rawCardObject?.talkativeness ?? origExt.talkativeness ?? 0.5));
+            editFd.append('world', String(mergedFull.data?.extensions?.world ?? origExt.world ?? ''));
+            editFd.append('depth_prompt_prompt', String(origExt.depth_prompt?.prompt ?? ''));
+            editFd.append('depth_prompt_depth', String(origExt.depth_prompt?.depth ?? 4));
+            editFd.append('depth_prompt_role', String(origExt.depth_prompt?.role ?? 'system'));
+            if (liveBefore.rawCardObject?.chat !== undefined) {
+                editFd.append('chat', String(liveBefore.rawCardObject.chat));
+            }
+            if (liveBefore.rawCardObject?.create_date !== undefined) {
+                editFd.append('create_date', String(liveBefore.rawCardObject.create_date));
+            }
+            editFd.append('extensions', JSON.stringify(mergedFull.data?.extensions || {}));
+            editFd.append('json_data', JSON.stringify(mergedFull));
+
+            const fallbackRes = await fetch('/api/characters/edit', {
+                method: 'POST',
+                headers: getTavernHeaders({ omitContentType: true }),
+                body: editFd,
+                cache: 'no-cache',
+            });
+            if (!fallbackRes.ok) {
+                throw new Error(`Ошибка сохранения полей карточки (HTTP ${fallbackRes.status}).`);
+            }
+        } else if (!mergeRes.ok) {
+            const errTxt = await mergeRes.text().catch(() => '');
+            throw new Error(`Ошибка слияния полей карточки (HTTP ${mergeRes.status}): ${errTxt.slice(0, 180)}`);
+        }
+    }
+
+    // 5. Post-save readback & verification
+    const liveAfter = await fetchFullTavernCharacter(targetAvatar);
+    if (liveBefore.rawCardObject?.chat && liveAfter.rawCardObject?.chat !== liveBefore.rawCardObject.chat) {
+        console.warn('[NexusMatch Forge] Unexpected chat binding mismatch detected during post-save verification.');
+    }
+
+    card.originalCardData = structuredClone(liveAfter.rawCardObject);
+    card.sourceSnapshotHash = liveAfter.snapshotHash;
+    card.dirtyFields = [];
+    card.avatarDirty = false;
+
+    const ctx = getTavernContext();
+    if (typeof ctx?.getOneCharacter === 'function') {
+        await ctx.getOneCharacter(targetAvatar);
+    } else if (typeof ctx?.getCharacters === 'function') {
+        await ctx.getCharacters();
+    }
+
+    return {
+        fileName: targetAvatar,
+        backup,
+        updatedChar: liveAfter.fullChar,
+        diff,
+        noop: false,
+    };
+}
+
+// Fetch roster & Lorebook names using public endpoints/context without importing internal /scripts/world-info.js (fixes NMF-015)
+export async function fetchTavernRosterAndWorlds({ signal = null } = {}) {
+    const ctx = getTavernContext();
+    const headers = getTavernHeaders();
     let characters = [];
+    let worlds = [];
+
     try {
         const r = await fetch('/api/characters/all', {
             method: 'POST',
-            headers: mod.getRequestHeaders(),
+            headers,
             body: JSON.stringify({}),
+            signal,
         });
-        if (r.ok) characters = await r.json();
+        if (r.ok) {
+            characters = await r.json();
+        } else if (Array.isArray(ctx?.characters)) {
+            characters = ctx.characters;
+        }
     } catch {
-        characters = window.SillyTavern?.getContext?.()?.characters || [];
+        characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
     }
-    const worlds = Array.isArray(wiMod.world_names) ? [...wiMod.world_names] : [];
-    return { characters: Array.isArray(characters) ? characters : [], worlds };
+
+    if (typeof ctx?.getWorldInfoNames === 'function') {
+        try {
+            const names = await ctx.getWorldInfoNames();
+            if (Array.isArray(names)) worlds = [...names];
+        } catch {}
+    }
+
+    if (!worlds.length) {
+        try {
+            const sRes = await fetch('/api/settings/get', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({}),
+                signal,
+            });
+            if (sRes.ok) {
+                const sData = await sRes.json();
+                if (Array.isArray(sData?.world_names)) {
+                    worlds = [...sData.world_names];
+                }
+            }
+        } catch {}
+    }
+
+    if (!worlds.length && typeof document !== 'undefined') {
+        const opts = document.querySelectorAll('#world_info option');
+        worlds = [...opts]
+            .map((o) => String(o.textContent || o.value || '').trim())
+            .filter((n) => n && !/^[-—\s]*none|нет/i.test(n));
+    }
+
+    return {
+        characters: Array.isArray(characters) ? characters : [],
+        worlds,
+    };
 }
 
-export async function urlToDataUrl(url, signal = null) {
-    const res = await fetch(url, { cache: 'no-cache', signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    return await new Promise((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result || ''));
-        fr.onerror = reject;
-        fr.readAsDataURL(blob);
-    });
+// Network helper with unified per-request timeout & combined AbortSignal (fixes NMF-016)
+export const DEFAULT_IMAGE_REQUEST_TIMEOUT_MS = 120_000;
+export const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024; // 20 MB guard
+
+export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, externalSignal = null) {
+    if (externalSignal?.aborted) {
+        const err = new Error('Запрос отменён пользователем.');
+        err.code = 'ABORTED';
+        throw err;
+    }
+
+    const ctl = new AbortController();
+    let timedOut = false;
+
+    const onExternalAbort = () => ctl.abort();
+    if (externalSignal) {
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+
+    const effectiveTimeout = Math.max(250, Number(timeoutMs) || DEFAULT_IMAGE_REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+        timedOut = true;
+        ctl.abort();
+    }, effectiveTimeout);
+
+    try {
+        return await fetch(url, { ...init, signal: ctl.signal });
+    } catch (err) {
+        if (timedOut) {
+            const te = new Error(`Превышено время ожидания ответа от сервера изображений (${Math.round(effectiveTimeout / 1000)} сек).`);
+            te.code = 'TIMEOUT';
+            throw te;
+        }
+        if (externalSignal?.aborted) {
+            const ae = new Error('Генерация остановлена пользователем.');
+            ae.code = 'ABORTED';
+            throw ae;
+        }
+        throw err;
+    } finally {
+        clearTimeout(timer);
+        if (externalSignal) {
+            externalSignal.removeEventListener('abort', onExternalAbort);
+        }
+    }
 }
 
+function detectImageMimeFromBytes(bytes, headerType = '') {
+    const cleanHeader = String(headerType || '').split(';')[0].trim().toLowerCase();
+    if (cleanHeader.startsWith('image/')) return cleanHeader;
+    if (bytes.length >= 4) {
+        if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+        if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+        if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif';
+        if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
+    }
+    return '';
+}
+
+export async function urlToDataUrl(url, signal = null, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS) {
+    const res = await fetchWithTimeout(url, { cache: 'no-cache' }, timeoutMs, signal);
+    if (!res.ok) {
+        throw new Error(`Ошибка загрузки изображения (HTTP ${res.status}).`);
+    }
+
+    const contentLength = Number(res.headers?.get?.('content-length') || 0);
+    if (contentLength > MAX_IMAGE_DOWNLOAD_BYTES) {
+        throw new Error(`Размер изображения превышает допустимый лимит (20 МБ).`);
+    }
+
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > MAX_IMAGE_DOWNLOAD_BYTES) {
+        throw new Error(`Размер полученного файла превышает допустимый лимит (20 МБ).`);
+    }
+    if (buf.byteLength === 0) {
+        throw new Error('Сервер вернул пустой файл вместо изображения.');
+    }
+
+    const mime = detectImageMimeFromBytes(buf, res.headers?.get?.('content-type') || '');
+    if (!mime) {
+        throw new Error('Сервер вернул ответ неверного типа (ожидалось изображение PNG/JPEG/WebP).');
+    }
+
+    let bin = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < buf.length; i += chunkSize) {
+        bin += String.fromCharCode(...buf.subarray(i, i + chunkSize));
+    }
+    return `data:${mime};base64,${btoa(bin)}`;
+}
+
+// Pocket Codex optional integration with public CustomEvent + safe DOM fallback (Section 8)
 export function detectPocketCodex() {
+    if (typeof document === 'undefined') return false;
     const hasDom = Boolean(document.getElementById('pcx-sendbar-btn') || document.getElementById('pcx-dialog'));
-    const ctx = window.SillyTavern?.getContext?.();
-    const disabled = ctx?.extensionSettings?.disabledExtensions || [];
-    const isOff = disabled.some((d) => String(d).includes('st-pocket-codex'));
+    const ctx = getTavernContext();
+    const disabled = Array.isArray(ctx?.extensionSettings?.disabledExtensions)
+        ? ctx.extensionSettings.disabledExtensions
+        : [];
+    const isOff = disabled.some((d) => String(d).toLowerCase().includes('st-pocket-codex'));
     return hasDom && !isOff;
 }
 
 export function openPocketCodexForge() {
-    const btn = document.getElementById('pcx-sendbar-btn');
+    if (!detectPocketCodex()) return false;
+    try {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('pcx:open-forge', {
+                detail: { source: 'st-nexus-match-forge' },
+            }));
+        }
+    } catch {}
+
+    const btn = typeof document !== 'undefined' ? document.getElementById('pcx-sendbar-btn') : null;
     if (btn) {
-        btn.click();
+        const dlg = document.getElementById('pcx-dialog');
+        if (!dlg?.open) btn.click();
         setTimeout(() => {
             const forgeWing = document.querySelector('#pcx-window [data-wing="forge"], #pcx-window [data-mod="forge"], #pcx-mod-forge');
             if (forgeWing) forgeWing.click();
@@ -370,53 +1229,301 @@ export function openPocketCodexForge() {
     return false;
 }
 
-// ── UNIVERSAL INLINE IMAGE GENERATION ENGINE ──
-const IMG_MARKERS = [
-    'aspectRatio',
-    'sendCharAvatar',
-    'sendUserAvatar',
-    'npcList',
-    'npcReferences',
-    'imageContextEnabled',
-    'imageSize',
-    'styles',
-];
+// ── SILLYIMAGES & PROVIDER ADAPTER (fixes NMF-007, NMF-008, NMF-009, NMF-016) ──
+
+export const KNOWN_IMAGE_EXTENSION_KEYS = Object.freeze([
+    'inline_image_gen', // Official 0xl0cal/sillyimages MODULE_NAME
+    'sillyimages',
+    'slay_image_gen',
+    'inline_image_generation',
+]);
+
+export const SILLYIMAGES_DEFAULT_ENDPOINTS = Object.freeze({
+    xai: 'https://api.x.ai',
+    naistera: 'https://naistera.org',
+    novelai: 'https://image.novelai.net',
+    openrouter: 'https://openrouter.ai/api/v1',
+    electronhub: 'https://api.electronhub.ai',
+    a1111: 'http://127.0.0.1:7860',
+});
+
+export const SUPPORTED_SILLYIMAGES_PROVIDERS = Object.freeze([
+    'openai',
+    'xai',
+    'gemini',
+    'openrouter',
+    'electronhub',
+    'naistera',
+    'novelai',
+    'a1111',
+    'pollinations',
+]);
+
+export const NOVELAI_MODELS = Object.freeze({
+    'nai-diffusion-5-full': 'NovelAI V5 Full',
+    'nai-diffusion-5-full-medium': 'NovelAI V5 Full Medium',
+    'nai-diffusion-5-curated': 'NovelAI V5 Curated',
+    'nai-diffusion-4-5-full': 'NovelAI V4.5 Full',
+    'nai-diffusion-4-5-curated': 'NovelAI V4.5 Curated',
+});
+
+const NOVELAI_MEDIUM_MODEL = 'nai-diffusion-5-full-medium';
+const NOVELAI_MEDIUM_NEGATIVE = 'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page';
+const NOVELAI_RESOLUTION_PRESETS = Object.freeze({
+    small: { '1:1': [640, 640], '2:3': [512, 768], '3:2': [768, 512], '9:16': [448, 832], '16:9': [832, 448] },
+    normal: { '1:1': [1024, 1024], '2:3': [832, 1216], '3:2': [1216, 832], '9:16': [768, 1344], '16:9': [1344, 768] },
+    big: { '1:1': [1472, 1472], '2:3': [1024, 1536], '3:2': [1536, 1024], '9:16': [1088, 1920], '16:9': [1920, 1088] },
+});
+
+// Exact connection profile schema from 0xl0cal/sillyimages src/settings.js (fixes NMF-007)
+export const SILLYIMAGES_DEFAULT_CONNECTION_FIELDS = Object.freeze({
+    apiType: 'openai',
+    endpoint: '',
+    rawEndpoint: false,
+    apiKey: '',
+    model: '',
+    size: '1024x1024',
+    quality: 'standard',
+    aspectRatio: '1:1',
+    imageSize: '1K',
+    xaiAspectRatio: '1:1',
+    xaiResolution: '1k',
+    xaiQuality: 'medium',
+    naisteraAspectRatio: '1:1',
+    naisteraModel: '',
+    naisteraNegativePrompt: '',
+    naisteraSteps: 23,
+    naisteraCfgScale: 7,
+    naisteraCfgRescale: 0,
+    naisteraSampler: 'k_euler_ancestral',
+    naisteraPolling: false,
+    naisteraPollIntervalMs: 3000,
+    naisteraPollTimeoutMs: 120000,
+    novelaiNeverSpendAnlas: true,
+    novelaiResolution: 'normal',
+    novelaiAspectRatio: '2:3',
+    novelaiSteps: 23,
+    novelaiCfgScale: 7,
+    novelaiCfgRescale: 0,
+    novelaiSampler: 'k_euler_ancestral',
+    novelaiNoiseSchedule: 'karras',
+    novelaiSeed: -1,
+    novelaiSkipCfgAboveSigma: 0,
+    novelaiNegativePrompt: '',
+    a1111Width: 512,
+    a1111Height: 512,
+    a1111Steps: 20,
+    a1111CfgScale: 7,
+    a1111Sampler: 'Euler a',
+    a1111PromptPrefix: '',
+    a1111NegativePrompt: '',
+    a1111Seed: -1,
+});
+
+export function normalizeProviderEndpoint(apiType, rawEndpointStr) {
+    const trimmed = String(rawEndpointStr || '').trim().replace(/\/+$/, '');
+    if (!trimmed) {
+        return SILLYIMAGES_DEFAULT_ENDPOINTS[apiType] || '';
+    }
+    if (apiType === 'naistera') {
+        return trimmed.replace(/\/api\/(?:generate|models)$/i, '');
+    }
+    if (apiType === 'xai') {
+        return trimmed.replace(/\/v1$/i, '');
+    }
+    return trimmed;
+}
+
+function isImageExtensionDisabledInTavern(bucketKey, cfgObj, disabledList = []) {
+    if (!cfgObj || typeof cfgObj !== 'object') return true;
+    if (cfgObj.enabled === false) return true;
+
+    const normDisabled = (Array.isArray(disabledList) ? disabledList : []).map((d) => String(d || '').toLowerCase());
+    if (!normDisabled.length) return false;
+
+    const keyLow = String(bucketKey || '').toLowerCase();
+    return normDisabled.some((entry) => {
+        if (entry === keyLow || entry.endsWith('/' + keyLow)) return true;
+        if (keyLow === 'inline_image_gen' && (
+            entry.includes('sillyimages')
+            || entry.includes('inline-image-gen')
+            || entry.includes('inline_image_gen')
+        )) {
+            return true;
+        }
+        if (keyLow === 'slay_image_gen' && entry.includes('slay')) return true;
+        return false;
+    });
+}
 
 function resolveBucketModel(v) {
-    if (!v) return '';
-    if (v.apiType === 'novelai') {
-        return String(v.novelaiModel === '__custom__' ? (v.novelaiCustomModel || '') : (v.novelaiModel || v.model || '')).trim();
-    }
+    if (!v || typeof v !== 'object') return '';
     if (v.apiType === 'naistera') {
-        return String(v.naisteraModel || v.model || '').trim();
+        return String(v.naisteraModel ?? v.model ?? '').trim();
     }
-    return String(v.model || v.naisteraModel || '').trim();
+    if (v.apiType === 'novelai') {
+        if (v.novelaiModel === '__custom__') return String(v.novelaiCustomModel || '').trim();
+        return String(v.model ?? v.novelaiModel ?? '').trim();
+    }
+    return String(v.model ?? '').trim();
 }
 
-function isBucketReady(v) {
-    if (!v || typeof v !== 'object') return false;
-    if (v.apiType === 'a1111') return Boolean(v.endpoint);
-    return Boolean(v.apiKey && resolveBucketModel(v) && (v.endpoint || v.apiType === 'naistera' || v.apiType === 'openrouter' || v.apiType === 'xai'));
+// Isolated connection profile resolver: NEVER inherits apiKey, endpoint, or credentials from another profile! (fixes NMF-007)
+export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
+    if (!cfgBase || typeof cfgBase !== 'object') {
+        throw new Error('Настройки источника изображений недоступны.');
+    }
+
+    const profiles = Array.isArray(cfgBase.connectionProfiles)
+        ? cfgBase.connectionProfiles.filter((p) => p && typeof p === 'object' && p.id)
+        : [];
+    const targetId = String(requestedProfileId || cfgBase.activeConnectionProfileId || '').trim();
+    const selectedProfile = targetId ? profiles.find((p) => p.id === targetId) : null;
+
+    // Only global non-credential fields come from cfgBase
+    const globalShared = {
+        enabled: cfgBase.enabled !== false,
+        styles: Array.isArray(cfgBase.styles) ? cfgBase.styles : [],
+        activeStyleId: String(cfgBase.activeStyleId || ''),
+        negativePrompts: Array.isArray(cfgBase.negativePrompts) ? cfgBase.negativePrompts : [],
+        activeNegativePromptId: String(cfgBase.activeNegativePromptId || ''),
+        slayStyle: String(cfgBase.slayStyle || ''),
+    };
+
+    const sourceSnapshot = selectedProfile || cfgBase;
+    const isolatedConn = {};
+    for (const [key, defVal] of Object.entries(SILLYIMAGES_DEFAULT_CONNECTION_FIELDS)) {
+        const val = Object.prototype.hasOwnProperty.call(sourceSnapshot, key) ? sourceSnapshot[key] : undefined;
+        isolatedConn[key] = val !== undefined && val !== null ? val : defVal;
+    }
+
+    // Strictly enforce string type without inheriting from cfgBase when selectedProfile has empty string ''
+    isolatedConn.apiKey = selectedProfile
+        ? String(selectedProfile.apiKey ?? '')
+        : String(cfgBase.apiKey ?? '');
+    const rawEp = selectedProfile
+        ? String(selectedProfile.endpoint ?? '')
+        : String(cfgBase.endpoint ?? '');
+    isolatedConn.rawConfiguredEndpoint = rawEp;
+    isolatedConn.endpoint = normalizeProviderEndpoint(isolatedConn.apiType, rawEp);
+
+    return {
+        ...globalShared,
+        ...isolatedConn,
+        profileId: selectedProfile?.id || '',
+        profileName: selectedProfile?.name || 'Default',
+    };
 }
 
+export function validateResolvedImageConfig(imgCfg) {
+    if (!imgCfg || typeof imgCfg !== 'object') {
+        return { ready: false, reason: 'Конфигурация пуста.' };
+    }
+    if (imgCfg.enabled === false) {
+        return { ready: false, reason: 'Расширение генерации изображений выключено в настройках.' };
+    }
+
+    const apiType = String(imgCfg.apiType || '').trim();
+    const isPollinations = apiType === 'pollinations' || /pollinations\.ai/i.test(String(imgCfg.endpoint || ''));
+    if (isPollinations) {
+        return { ready: true, reason: '' };
+    }
+
+    if (!SUPPORTED_SILLYIMAGES_PROVIDERS.includes(apiType)) {
+        return { ready: false, reason: `Провайдер «${apiType || 'unknown'}» не поддерживается адаптером NexusMatch Forge.` };
+    }
+
+    const endpoint = normalizeProviderEndpoint(apiType, imgCfg.rawConfiguredEndpoint ?? imgCfg.endpoint);
+    const apiKey = String(imgCfg.apiKey || '').trim();
+    const model = resolveBucketModel(imgCfg);
+
+    if (apiType === 'a1111') {
+        if (!endpoint) return { ready: false, reason: 'Не указан URL сервера A1111 / Forge.' };
+        return { ready: true, reason: '' };
+    }
+
+    if (!apiKey) {
+        return { ready: false, reason: 'В выбранном профиле не заполнен API-ключ.' };
+    }
+
+    if ((apiType === 'openai' || apiType === 'gemini') && !endpoint) {
+        return { ready: false, reason: `Для провайдера ${apiType} необходимо указать Endpoint URL в профиле.` };
+    }
+
+    if (apiType === 'novelai') {
+        if (!Object.prototype.hasOwnProperty.call(NOVELAI_MODELS, model)) {
+            return { ready: false, reason: `Для NovelAI выберите поддерживаемую модель (${Object.keys(NOVELAI_MODELS).join(', ')}).` };
+        }
+        return { ready: true, reason: '' };
+    }
+
+    if (apiType !== 'naistera' && !model) {
+        return { ready: false, reason: 'В выбранном профиле не выбрана модель генерации изображений.' };
+    }
+
+    return { ready: true, reason: '' };
+}
+
+function getEffectiveNegativePromptForConfig(imgCfg) {
+    const isNovelAi = imgCfg.apiType === 'novelai'
+        || (imgCfg.apiType === 'naistera' && /^novelai(?:-|$)/i.test(resolveBucketModel(imgCfg)));
+    if (isNovelAi && Array.isArray(imgCfg.negativePrompts) && imgCfg.activeNegativePromptId) {
+        const activeNeg = imgCfg.negativePrompts.find((n) => n && n.id === imgCfg.activeNegativePromptId);
+        if (activeNeg && typeof activeNeg.value === 'string' && activeNeg.value.trim()) {
+            return activeNeg.value.trim();
+        }
+    }
+    if (imgCfg.apiType === 'novelai') return String(imgCfg.novelaiNegativePrompt || '').trim();
+    if (imgCfg.apiType === 'naistera') return String(imgCfg.naisteraNegativePrompt || '').trim();
+    if (imgCfg.apiType === 'a1111') return String(imgCfg.a1111NegativePrompt || '').trim();
+    return '';
+}
+
+// Strict known-ID discovery for SillyImages & compatible forks (fixes NMF-009)
 export function listImageExtensionBuckets() {
     const out = [];
-    const ctx = window.SillyTavern?.getContext?.();
+    const ctx = getTavernContext();
     const all = ctx?.extensionSettings || {};
-    for (const key of Object.keys(all)) {
+    const disabledList = Array.isArray(all.disabledExtensions) ? all.disabledExtensions : [];
+
+    for (const key of KNOWN_IMAGE_EXTENSION_KEYS) {
         const v = all[key];
-        if (!v || typeof v !== 'object') continue;
-        if (typeof v.endpoint !== 'string' && typeof v.apiType !== 'string') continue;
-        if (!IMG_MARKERS.some((m) => m in v)) continue;
+        if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+        if (typeof v.apiType !== 'string' && !Array.isArray(v.connectionProfiles)) continue;
+
+        const isDisabled = isImageExtensionDisabledInTavern(key, v, disabledList);
+        const resolvedActive = resolveIsolatedImageConfig(v, v.activeConnectionProfileId || '');
+        const activeValidation = isDisabled
+            ? { ready: false, reason: 'Расширение отключено в SillyTavern.' }
+            : validateResolvedImageConfig(resolvedActive);
+
+        const profiles = (Array.isArray(v.connectionProfiles) ? v.connectionProfiles : [])
+            .filter((p) => p && p.id)
+            .map((p) => {
+                const snap = resolveIsolatedImageConfig(v, p.id);
+                const check = isDisabled
+                    ? { ready: false, reason: 'Расширение отключено.' }
+                    : validateResolvedImageConfig(snap);
+                return {
+                    id: p.id,
+                    name: p.name || p.id,
+                    model: resolveBucketModel(snap),
+                    apiType: snap.apiType || '',
+                    ready: check.ready,
+                    reason: check.reason,
+                };
+            });
+
         out.push({
             key,
-            ready: isBucketReady(v),
-            model: resolveBucketModel(v),
-            apiType: v.apiType || '',
-            extAspectRatio: v.aspectRatio || v.naisteraAspectRatio || '1:1',
-            profiles: (Array.isArray(v.connectionProfiles) ? v.connectionProfiles : [])
-                .filter((p) => p && p.id)
-                .map((p) => ({ id: p.id, name: p.name || p.id, model: resolveBucketModel(p), apiType: p.apiType || v.apiType || '' })),
+            enabled: !isDisabled,
+            ready: activeValidation.ready,
+            reason: activeValidation.reason,
+            model: resolveBucketModel(resolvedActive),
+            apiType: resolvedActive.apiType || '',
+            activeProfileName: resolvedActive.profileName || 'Default',
+            extAspectRatio: resolvedActive.aspectRatio || resolvedActive.naisteraAspectRatio || '1:1',
+            profiles,
             styles: (Array.isArray(v.styles) ? v.styles : [])
                 .filter((s) => s && s.id)
                 .map((s) => ({ id: s.id, name: s.name || s.id })),
@@ -425,16 +1532,54 @@ export function listImageExtensionBuckets() {
     return out;
 }
 
+export function resolveAutoImageSourceSummary(sourcePref = 'auto', profileId = '') {
+    const buckets = listImageExtensionBuckets();
+    if (sourcePref === 'off') {
+        return { mode: 'off', label: 'Выключено' };
+    }
+    if (sourcePref === 'st_sd') {
+        return { mode: 'st_sd', label: 'Штатный генератор SillyTavern (/sd)' };
+    }
+    const enabledBuckets = buckets.filter((b) => b.enabled);
+    const chosen = (sourcePref !== 'auto' && sourcePref !== 'iig')
+        ? buckets.find((b) => b.key === sourcePref)
+        : (enabledBuckets.find((b) => b.ready) || enabledBuckets[0] || null);
+
+    if (!chosen) {
+        return { mode: 'none', label: 'Активный источник SillyImages не обнаружен' };
+    }
+    const prof = profileId
+        ? chosen.profiles.find((p) => p.id === profileId)
+        : null;
+    const profName = prof?.name || chosen.activeProfileName || 'Default';
+    const apiLabel = prof?.apiType || chosen.apiType || 'api';
+    return {
+        mode: chosen.key,
+        key: chosen.key,
+        ready: prof ? prof.ready : chosen.ready,
+        reason: prof ? prof.reason : chosen.reason,
+        label: `${chosen.key} -> Профиль «${profName}» (${apiLabel})`,
+    };
+}
+
 function pickEffectiveBucket(sourcePref = 'auto') {
-    const ctx = window.SillyTavern?.getContext?.();
+    const ctx = getTavernContext();
     const all = ctx?.extensionSettings || {};
+    const buckets = listImageExtensionBuckets();
+
     if (sourcePref && sourcePref !== 'auto' && sourcePref !== 'iig' && sourcePref !== 'st_sd' && sourcePref !== 'off') {
-        if (all[sourcePref] && typeof all[sourcePref] === 'object') {
+        const explicitBucket = buckets.find((b) => b.key === sourcePref);
+        if (explicitBucket && !explicitBucket.enabled) {
+            throw new Error(`Источник изображений «${sourcePref}» отключён в настройках SillyTavern.`);
+        }
+        if (explicitBucket && all[sourcePref]) {
             return { key: sourcePref, cfg: all[sourcePref] };
         }
+        throw new Error(`Источник изображений «${sourcePref}» не найден.`);
     }
-    const buckets = listImageExtensionBuckets();
-    const readyOne = buckets.find((b) => b.ready) || buckets[0];
+
+    const enabledBuckets = buckets.filter((b) => b.enabled);
+    const readyOne = enabledBuckets.find((b) => b.ready) || enabledBuckets[0];
     if (readyOne && all[readyOne.key]) {
         return { key: readyOne.key, cfg: all[readyOne.key] };
     }
@@ -442,11 +1587,11 @@ function pickEffectiveBucket(sourcePref = 'auto') {
 }
 
 export function detectImageExtensions() {
-    const ctx = window.SillyTavern?.getContext?.();
+    const ctx = getTavernContext();
     const ext = ctx?.extensionSettings || {};
-    const disabled = ext.disabledExtensions || [];
+    const disabled = Array.isArray(ext.disabledExtensions) ? ext.disabledExtensions : [];
     const buckets = listImageExtensionBuckets();
-    const hasIig = buckets.some((b) => b.ready);
+    const hasIig = buckets.some((b) => b.enabled && b.ready);
     const sdCfg = ext.sd || {};
     const hasStSd = Boolean(!disabled.includes('sd') && sdCfg.source && sdCfg.model);
 
@@ -473,12 +1618,130 @@ function sleepAbortable(ms, signal) {
     });
 }
 
+function formatHttpProviderError(providerName, status, rawDetail = '') {
+    const shortDetail = String(rawDetail || '').trim().slice(0, 180);
+    if (status === 401 || status === 403) {
+        return `${providerName}: неверный или неавторизованный API-ключ (HTTP ${status})${shortDetail ? ` — ${shortDetail}` : ''}`;
+    }
+    if (status === 429) {
+        return `${providerName}: превышен лимит запросов провайдера (HTTP 429)${shortDetail ? ` — ${shortDetail}` : ''}`;
+    }
+    if (status >= 500) {
+        return `${providerName}: временная ошибка сервера провайдера (HTTP ${status})${shortDetail ? ` — ${shortDetail}` : ''}`;
+    }
+    return `${providerName} HTTP ${status}${shortDetail ? `: ${shortDetail}` : ''}`;
+}
+
 function isNonRetryableArtError(err) {
+    if (err?.code === 'ABORTED') return true;
     const msg = String(err?.message || err || '');
-    if (/остановлена|aborted|AbortError/i.test(msg)) return true;
-    if (/HTTP (?:401|402|403|404)\b/i.test(msg)) return true;
-    if (/SAFETY|PROHIBITED|BLOCKED|не заполнены URL|отключена|не настроен|пуст/i.test(msg)) return true;
+    if (/остановлена|отменён|aborted|AbortError/i.test(msg)) return true;
+    if (/HTTP (?:401|402|403|404)\b|неверный или неавторизованный API-ключ|Anlas protection/i.test(msg)) return true;
+    if (/SAFETY|PROHIBITED|BLOCKED|не заполнен|отключ|не поддерживается|не выбрана модель/i.test(msg)) return true;
     return false;
+}
+
+// 1:1 NovelAI parameter builder & Anlas protection matching 0xl0cal/sillyimages/src/novelai.js (fixes NMF-008)
+function buildNovelAiPayload(imgCfg, fullPrompt, negativePrompt, requestedAspect = '2:3') {
+    const model = resolveBucketModel(imgCfg);
+    const medium = model === NOVELAI_MEDIUM_MODEL;
+    const protectAnlas = imgCfg.novelaiNeverSpendAnlas !== false;
+    const resTier = protectAnlas ? 'normal' : (NOVELAI_RESOLUTION_PRESETS[imgCfg.novelaiResolution] ? imgCfg.novelaiResolution : 'normal');
+    const validAspects = ['1:1', '2:3', '3:2', '9:16', '16:9'];
+    const aspectKey = (requestedAspect !== 'native' && validAspects.includes(requestedAspect))
+        ? requestedAspect
+        : (validAspects.includes(imgCfg.novelaiAspectRatio) ? imgCfg.novelaiAspectRatio : '2:3');
+    const [width, height] = NOVELAI_RESOLUTION_PRESETS[resTier][aspectKey] || [832, 1216];
+
+    const steps = medium
+        ? 14
+        : (protectAnlas ? (model.startsWith('nai-diffusion-4-5-') ? 28 : 23) : Math.max(1, Math.min(50, Number(imgCfg.novelaiSteps) || 23)));
+    const sampler = medium ? 'k_euler_ancestral' : (imgCfg.novelaiSampler || 'k_euler_ancestral');
+    const scale = Math.max(0, Math.min(10, Number(imgCfg.novelaiCfgScale ?? 7)));
+    const cfgRescale = medium ? 0 : Math.max(0, Math.min(1, Number(imgCfg.novelaiCfgRescale ?? 0)));
+    const rawSeed = Number(imgCfg.novelaiSeed ?? -1);
+    const seed = rawSeed < 0 ? Math.floor(Math.random() * 4294967296) : rawSeed;
+
+    const splitPipes = (txt) => {
+        const [base = '', ...characters] = String(txt || '').split(/\\?\|/u).map((s) => s.trim());
+        return { base, characters };
+    };
+    const pos = splitPipes(fullPrompt);
+    const neg = splitPipes(medium ? NOVELAI_MEDIUM_NEGATIVE : negativePrompt);
+    const makeCaption = (base, chars) => ({
+        base_caption: base,
+        char_captions: chars.map((char_caption) => ({ char_caption, centers: [{ x: 0.5, y: 0.5 }] })),
+    });
+
+    const parameters = {
+        params_version: 4,
+        width,
+        height,
+        steps,
+        scale,
+        cfg_rescale: cfgRescale,
+        sampler,
+        noise_schedule: imgCfg.novelaiNoiseSchedule || 'karras',
+        seed,
+        n_samples: 1,
+        negative_prompt: neg.base,
+        qualityToggle: false,
+        ucPreset: medium ? 0 : 3,
+        deliberate_euler_ancestral_bug: false,
+        prefer_brownian: true,
+        skip_cfg_above_sigma: Number(imgCfg.novelaiSkipCfgAboveSigma) || null,
+        v4_prompt: { caption: makeCaption(pos.base, pos.characters), use_coords: false, use_order: true },
+        v4_negative_prompt: {
+            caption: makeCaption(
+                neg.base,
+                Array.from({ length: Math.max(pos.characters.length, neg.characters.length) }, (_, i) => neg.characters[i] || '')
+            ),
+            legacy_uc: false,
+        },
+    };
+    if (model.startsWith('nai-diffusion-5-')) {
+        delete parameters.noise_schedule;
+        delete parameters.skip_cfg_above_sigma;
+    }
+    if (medium) {
+        delete parameters.cfg_rescale;
+    }
+    return {
+        action: 'generate',
+        model,
+        input: pos.base,
+        parameters,
+    };
+}
+
+async function verifyNovelAiFreeAllowance(generateUrl, apiKey, model, timeoutMs, signal) {
+    let target;
+    try {
+        target = new URL(generateUrl);
+    } catch {
+        throw new Error('NovelAI Anlas protection: некорректный URL генерации.');
+    }
+    if (!target.pathname.endsWith('/ai/generate-image') || target.search || target.hash) {
+        throw new Error('NovelAI Anlas protection: проверка бесплатного лимита недоступна на нестандартном URL.');
+    }
+    target.pathname = target.pathname.replace(/\/ai\/generate-image$/, '/user/subscription');
+    const subRes = await fetchWithTimeout(target.href, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    }, Math.min(15000, timeoutMs), signal);
+    if (!subRes.ok) {
+        throw new Error(`NovelAI Anlas protection: не удалось проверить подписку Opus (HTTP ${subRes.status}).`);
+    }
+    const sub = await subRes.json();
+    if (sub?.active !== true || sub.tier !== 3 || typeof sub.expiresAt !== 'number' || sub.expiresAt * 1000 <= Date.now()) {
+        throw new Error('NovelAI Anlas protection: для генерации без траты Anlas требуется активная подписка Opus.');
+    }
+    const usage = sub.usage;
+    const hasRegular = usage?.isNegative === false && Number.isFinite(usage.percent) && usage.percent > 0;
+    const hasExtra = Number.isFinite(usage?.purchasedPercent) && usage.purchasedPercent > 0 && usage.purchasedPercent <= 400;
+    if (model.startsWith('nai-diffusion-5-') && !hasRegular && !hasExtra) {
+        throw new Error('NovelAI Anlas protection: бесплатный лимит V5 исчерпан.');
+    }
 }
 
 export async function generateCharacterPortrait(visualPrompt, options = {}) {
@@ -491,6 +1754,9 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const aspect = typeof options === 'object' && options.aspectRatio ? options.aspectRatio : '1:1';
     const signal = typeof options === 'object' ? (options.signal || null) : null;
     const maxAttempts = typeof options === 'object' && Number(options.maxAttempts) > 0 ? Number(options.maxAttempts) : 3;
+    const timeoutMs = typeof options === 'object' && Number(options.timeoutMs) > 0
+        ? Number(options.timeoutMs)
+        : DEFAULT_IMAGE_REQUEST_TIMEOUT_MS;
     const onStatus = typeof options === 'object' && typeof options.onStatus === 'function' ? options.onStatus : null;
 
     const emit = (stage, detail = '', attempt = 1, providerLabel = '') => {
@@ -506,7 +1772,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
 
     if (sourcePref === 'st_sd') {
         emit('Генерация [Попытка 1/1]', 'Отправка команды в штатный генератор /sd Таверны...', 1, 'ST /sd');
-        const ctx = window.SillyTavern?.getContext?.();
+        const ctx = getTavernContext();
         if (typeof ctx?.executeSlashCommandsWithOptions !== 'function') {
             throw new Error('Штатная команда /sd недоступна.');
         }
@@ -514,41 +1780,32 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         const res = await ctx.executeSlashCommandsWithOptions(`/sd quiet=true "${escaped}"`);
         const outUrl = String(res?.pipe || res || '').trim();
         if (!outUrl || (!outUrl.startsWith('data:') && !outUrl.startsWith('/') && !outUrl.startsWith('http'))) {
-            throw new Error('Штатный /sd не настроен. Выберите Inline Image Generation в шестерёнке настроек.');
+            throw new Error('Штатный /sd не настроен. Выберите SillyImages в настройках.');
         }
         emit('Обработка кадра', 'Загрузка и декодирование полученного изображения...', 1, 'ST /sd');
-        return outUrl.startsWith('data:') ? outUrl : await urlToDataUrl(outUrl, signal);
+        return outUrl.startsWith('data:') ? outUrl : await urlToDataUrl(outUrl, signal, timeoutMs);
     }
 
-    emit('Подготовка генерации', 'Чтение профиля и стиля расширения картинок...', 1, '');
+    emit('Подготовка генерации', 'Чтение изолированного профиля и стиля...', 1, '');
 
     const picked = pickEffectiveBucket(sourcePref);
     if (!picked) {
-        throw new Error('Не найдено настроенное расширение картинок.');
+        throw new Error('Не найдено включённое и настроенное расширение генерации изображений (SillyImages).');
     }
 
-    const cfgBase = picked.cfg;
-    const profiles = Array.isArray(cfgBase.connectionProfiles) ? cfgBase.connectionProfiles : [];
-    const wantedProfId = profileId || cfgBase.activeConnectionProfileId || '';
-    const profObj = profiles.find((p) => p && p.id === wantedProfId) || null;
-    const imgCfg = profObj
-        ? {
-            ...cfgBase,
-            ...Object.fromEntries(
-                Object.entries(profObj).filter(([k, v]) => k !== 'id' && k !== 'name' && v !== undefined && v !== '')
-            ),
-        }
-        : { ...cfgBase };
-
-    const isPollinations = imgCfg.apiType === 'pollinations' || /pollinations\.ai/i.test(String(imgCfg.endpoint || ''));
-    if (!isPollinations && !isBucketReady(imgCfg)) {
-        throw new Error(`В настройках ${picked.key} не заполнены URL, ключ или модель.`);
+    const imgCfg = resolveIsolatedImageConfig(picked.cfg, profileId);
+    const validation = validateResolvedImageConfig(imgCfg);
+    if (!validation.ready) {
+        throw new Error(`${picked.key} (${imgCfg.profileName}): ${validation.reason}`);
     }
 
+    const apiType = imgCfg.apiType;
+    const isPollinations = apiType === 'pollinations' || /pollinations\.ai/i.test(String(imgCfg.endpoint || ''));
     const model = resolveBucketModel(imgCfg);
     const rawEndpointFlag = Boolean(imgCfg.rawEndpoint);
-    const endpoint = String(imgCfg.endpoint || '').trim().replace(/\/+$/, '');
-    const providerLabel = [imgCfg.apiType || picked.key, model ? String(model).split('/').pop() : ''].filter(Boolean).join(' · ');
+    const endpoint = imgCfg.endpoint;
+    const negativePrompt = getEffectiveNegativePromptForConfig(imgCfg);
+    const providerLabel = [apiType || picked.key, model ? String(model).split('/').pop() : ''].filter(Boolean).join(' · ');
 
     let styleText = '';
     if (styleId !== '__none__') {
@@ -576,25 +1833,62 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             const seed = Math.floor(Math.random() * 1000000);
             const pUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${dims.width}&height=${dims.height}&model=${encodeURIComponent(pModel)}&seed=${seed}&nologo=true`;
             emit(stagePrefix, `Ожидание рендера Pollinations (${pModel})...`, attemptNum, providerLabel);
-            return await urlToDataUrl(pUrl, signal);
+            return await urlToDataUrl(pUrl, signal, timeoutMs);
         }
 
-        // 1. NAISTERA
-        if (imgCfg.apiType === 'naistera') {
-            const base = endpoint || 'https://naistera.org';
+        // 1. NOVELAI DIRECT API (1:1 parity with SillyImages NovelAIProvider + Anlas guard)
+        if (apiType === 'novelai') {
+            const url = rawEndpointFlag || endpoint.endsWith('/ai/generate-image')
+                ? endpoint
+                : `${endpoint}/ai/generate-image`;
+            if (imgCfg.novelaiNeverSpendAnlas !== false) {
+                await verifyNovelAiFreeAllowance(url, imgCfg.apiKey, model, timeoutMs, signal);
+            }
+            const naiPrompt = styleText ? `${styleText}, ${cleanPrompt}` : cleanPrompt;
+            const body = buildNovelAiPayload(imgCfg, naiPrompt, negativePrompt, aspect);
+            const resp = await fetchWithTimeout(url, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${imgCfg.apiKey}`,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify(body),
+            }, timeoutMs, signal);
+
+            if (!resp.ok) {
+                throw new Error(formatHttpProviderError('NovelAI', resp.status, await resp.text().catch(() => '')));
+            }
+            const j = await resp.json();
+            const imageB64 = j?.images?.[0]?.image;
+            if (typeof imageB64 !== 'string' || !imageB64.trim()) {
+                throw new Error('NovelAI не вернул изображение в ответе.');
+            }
+            return `data:image/png;base64,${imageB64.trim()}`;
+        }
+
+        // 2. NAISTERA
+        if (apiType === 'naistera') {
+            const base = endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.naistera;
             const url = rawEndpointFlag ? base : (base.endsWith('/api/generate') ? base : `${base}/api/generate`);
-            const body = { prompt: fullPrompt, model: model || undefined };
+            const body = {
+                prompt: fullPrompt,
+                model: model || undefined,
+                steps: Math.round(Number(imgCfg.naisteraSteps) || 23),
+                scale: Number(imgCfg.naisteraCfgScale) || 7,
+            };
             if (aspect !== 'native') body.aspect_ratio = aspect;
             else if (imgCfg.naisteraAspectRatio) body.aspect_ratio = imgCfg.naisteraAspectRatio;
-            if (imgCfg.naisteraPreset) body.preset = imgCfg.naisteraPreset;
+            if (negativePrompt) body.negative_prompt = negativePrompt;
 
-            const resp = await fetch(url, {
+            const resp = await fetchWithTimeout(url, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${imgCfg.apiKey}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
-                signal,
-            });
-            if (!resp.ok) throw new Error(`Naistera HTTP ${resp.status}: ${(await resp.text()).slice(0, 140)}`);
+            }, timeoutMs, signal);
+            if (!resp.ok) {
+                throw new Error(formatHttpProviderError('Naistera', resp.status, await resp.text().catch(() => '')));
+            }
             const j = await resp.json();
             if (j?.data_url) {
                 emit('Декодирование арта', 'Получен готовый кадр от Naistera...', attemptNum, providerLabel);
@@ -602,70 +1896,102 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             }
             if (j?.job_id) {
                 const jobBase = base.replace(/\/api\/generate$/i, '');
-                for (let poll = 1; poll <= 30; poll++) {
-                    await sleepAbortable(1500, signal);
+                const pollInterval = Math.max(1000, Math.min(10000, Number(imgCfg.naisteraPollIntervalMs) || 2000));
+                const maxPollDeadline = Date.now() + Math.min(timeoutMs, Number(imgCfg.naisteraPollTimeoutMs) || 120000);
+                let poll = 0;
+                while (Date.now() < maxPollDeadline) {
+                    poll += 1;
+                    await sleepAbortable(pollInterval, signal);
                     emit(stagePrefix, `Очередь Naistera · проверка готовности #${poll}...`, attemptNum, providerLabel);
-                    const jr = await fetch(`${jobBase}/api/jobs/${encodeURIComponent(j.job_id)}`, {
+                    const jr = await fetchWithTimeout(`${jobBase}/api/jobs/${encodeURIComponent(j.job_id)}`, {
                         headers: { Authorization: `Bearer ${imgCfg.apiKey}` },
-                        signal,
-                    });
-                    if (!jr.ok) throw new Error(`Naistera job HTTP ${jr.status}`);
+                    }, Math.min(30000, timeoutMs), signal);
+                    if (!jr.ok) throw new Error(formatHttpProviderError('Naistera job', jr.status));
                     const jd = await jr.json();
                     if (jd?.data_url) return String(jd.data_url);
                     if (String(jd?.status || '').toLowerCase() === 'failed' || jd?.error) {
                         throw new Error(`Naistera: ${jd.error || 'ошибка рендера'}`);
                     }
                 }
+                throw new Error('Naistera: превышено время ожидания готовности изображения в очереди.');
             }
             throw new Error('Naistera не вернула изображение.');
         }
 
-        // 2. A1111
-        if (imgCfg.apiType === 'a1111') {
-            const url = rawEndpointFlag ? endpoint : `${endpoint}/sdapi/v1/txt2img`;
+        // 3. A1111 / FORGE
+        if (apiType === 'a1111') {
+            const base = endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.a1111;
+            const url = rawEndpointFlag ? base : `${base}/sdapi/v1/txt2img`;
             const dims = getTargetCanvasDimensions(aspect);
             const headers = { 'Content-Type': 'application/json' };
-            if (imgCfg.apiKey) headers.Authorization = `Bearer ${imgCfg.apiKey}`;
-            const resp = await fetch(url, {
+            if (imgCfg.apiKey) {
+                headers.Authorization = imgCfg.apiKey.includes(':')
+                    ? `Basic ${btoa(imgCfg.apiKey)}`
+                    : `Bearer ${imgCfg.apiKey}`;
+            }
+            const a1111Body = {
+                prompt: imgCfg.a1111PromptPrefix ? `${imgCfg.a1111PromptPrefix}, ${fullPrompt}` : fullPrompt,
+                negative_prompt: negativePrompt,
+                width: Number(imgCfg.a1111Width) > 0 && aspect === 'native' ? Number(imgCfg.a1111Width) : dims.width,
+                height: Number(imgCfg.a1111Height) > 0 && aspect === 'native' ? Number(imgCfg.a1111Height) : dims.height,
+                steps: Number(imgCfg.a1111Steps) || 20,
+                cfg_scale: Number(imgCfg.a1111CfgScale) || 7,
+                sampler_name: imgCfg.a1111Sampler || 'Euler a',
+            };
+            if (model) {
+                a1111Body.override_settings = { sd_model_checkpoint: model };
+            }
+            const resp = await fetchWithTimeout(url, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({
-                    prompt: imgCfg.a1111PromptPrefix ? `${imgCfg.a1111PromptPrefix}, ${fullPrompt}` : fullPrompt,
-                    negative_prompt: imgCfg.a1111NegativePrompt || '',
-                    width: dims.width,
-                    height: dims.height,
-                    steps: Number(imgCfg.a1111Steps) || 24,
-                    cfg_scale: Number(imgCfg.a1111CfgScale) || 7,
-                }),
-                signal,
-            });
-            if (!resp.ok) throw new Error(`A1111 HTTP ${resp.status}: ${(await resp.text()).slice(0, 140)}`);
+                body: JSON.stringify(a1111Body),
+            }, timeoutMs, signal);
+            if (!resp.ok) {
+                throw new Error(formatHttpProviderError('A1111', resp.status, await resp.text().catch(() => '')));
+            }
             emit('Декодирование арта', 'Чтение ответа локального SD / Forge...', attemptNum, providerLabel);
             const j = await resp.json();
             if (!j?.images?.[0]) throw new Error('A1111 не вернул изображение.');
             return `data:image/png;base64,${j.images[0]}`;
         }
 
-        // 3. OPENROUTER
-        if (imgCfg.apiType === 'openrouter' || /openrouter\.ai/i.test(endpoint)) {
-            const base = (endpoint || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+        // 4. OPENROUTER (1:1 parity: enable_base64_output, image_config.image_size, URL & Base64 extraction)
+        if (apiType === 'openrouter') {
+            const base = (endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.openrouter).replace(/\/+$/, '');
             const url = rawEndpointFlag ? base : (base.endsWith('/chat/completions') ? base : `${base}/chat/completions`);
             const isGeminiOrText = /gemini|gpt|banana/i.test(model);
+            const supportsImageSize = /gemini-3|3\.1-flash-image|nano-banana-2/i.test(model);
+
+            const headers = {
+                Authorization: `Bearer ${imgCfg.apiKey}`,
+                'Content-Type': 'application/json',
+            };
+            try {
+                if (new URL(url).hostname.endsWith('openrouter.ai') && globalThis.window?.location?.origin) {
+                    headers['HTTP-Referer'] = globalThis.window.location.origin;
+                    headers['X-Title'] = 'SillyTavern NexusMatch Forge';
+                }
+            } catch {}
+
             const sendOpenRouter = async (withAspect) => {
                 const payload = {
                     model,
                     messages: [{ role: 'user', content: fullPrompt }],
                     modalities: isGeminiOrText ? ['image', 'text'] : ['image'],
+                    enable_base64_output: true,
                 };
                 if (withAspect && aspect !== 'native') {
-                    payload.image_config = { aspect_ratio: aspect };
+                    const imageConfig = { aspect_ratio: aspect };
+                    if (supportsImageSize && imgCfg.imageSize && /^(0\.5K|1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
+                        imageConfig.image_size = String(imgCfg.imageSize).toUpperCase();
+                    }
+                    payload.image_config = imageConfig;
                 }
-                return await fetch(url, {
+                return await fetchWithTimeout(url, {
                     method: 'POST',
-                    headers: { Authorization: `Bearer ${imgCfg.apiKey}`, 'Content-Type': 'application/json' },
+                    headers,
                     body: JSON.stringify(payload),
-                    signal,
-                });
+                }, timeoutMs, signal);
             };
 
             let resp = await sendOpenRouter(aspect !== 'native');
@@ -673,24 +1999,37 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 emit(stagePrefix, 'Модель не принимает image_config · повтор в родном формате модели...', attemptNum, providerLabel);
                 resp = await sendOpenRouter(false);
             }
-            if (!resp.ok) throw new Error(`OpenRouter HTTP ${resp.status}: ${(await resp.text()).slice(0, 140)}`);
-            emit('Декодирование арта', 'Загрузка изображения из ответа OpenRouter...', attemptNum, providerLabel);
+            if (!resp.ok) {
+                throw new Error(formatHttpProviderError('OpenRouter', resp.status, await resp.text().catch(() => '')));
+            }
+            emit('Декодирование арта', 'Извлечение изображения из ответа OpenRouter...', attemptNum, providerLabel);
             const j = await resp.json();
             const msg = j?.choices?.[0]?.message;
             const imgObj = msg?.images?.[0];
-            const imgUrl = imgObj?.image_url?.url
+            let imgUrl = imgObj?.image_url?.url
                 || imgObj?.data_url
                 || (imgObj?.b64_json ? `data:${imgObj?.media_type || 'image/png'};base64,${imgObj.b64_json}` : '')
-                || imgObj?.url;
-            if (imgUrl) return imgUrl.startsWith('data:') ? imgUrl : await urlToDataUrl(imgUrl, signal);
-            throw new Error('OpenRouter не вернул картинку.');
+                || imgObj?.url
+                || '';
+
+            if (!imgUrl && Array.isArray(msg?.content)) {
+                const part = msg.content.find((p) => p?.image_url?.url || p?.url);
+                imgUrl = part?.image_url?.url || part?.url || '';
+            }
+            if (!imgUrl && typeof msg?.content === 'string') {
+                const dataMatch = msg.content.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/);
+                const httpMatch = msg.content.match(/https?:\/\/[^\s)"']+/);
+                imgUrl = dataMatch?.[0] || httpMatch?.[0] || '';
+            }
+
+            if (imgUrl) {
+                return imgUrl.startsWith('data:') ? imgUrl : await urlToDataUrl(imgUrl, signal, timeoutMs);
+            }
+            throw new Error('OpenRouter не вернул изображение в ответе.');
         }
 
-        // 4. GEMINI / NANO-BANANA
-        const isGemini = imgCfg.apiType === 'gemini'
-            || /gemini|banana|imagen/i.test(String(model))
-            || /google-ai/i.test(endpoint);
-
+        // 5. GEMINI / NANO-BANANA
+        const isGemini = apiType === 'gemini' || (apiType === 'openai' && /google-ai/i.test(endpoint));
         if (isGemini) {
             const pathModel = String(model).includes('/') ? String(model).slice(String(model).indexOf('/') + 1) : String(model);
             const baseClean = endpoint.replace(/\/v1beta$/i, '');
@@ -712,15 +2051,14 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                         genCfg.imageConfig.imageSize = String(imgCfg.imageSize).toUpperCase();
                     }
                 }
-                return await fetch(url, {
+                return await fetchWithTimeout(url, {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
                         contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
                         generationConfig: genCfg,
                     }),
-                    signal,
-                });
+                }, timeoutMs, signal);
             };
 
             let resp = await sendGemini(aspect !== 'native');
@@ -728,7 +2066,9 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 emit(stagePrefix, 'Модель не принимает imageConfig · повтор в родном формате модели...', attemptNum, providerLabel);
                 resp = await sendGemini(false);
             }
-            if (!resp.ok) throw new Error(`Gemini HTTP ${resp.status}: ${(await resp.text()).slice(0, 140)}`);
+            if (!resp.ok) {
+                throw new Error(formatHttpProviderError('Gemini', resp.status, await resp.text().catch(() => '')));
+            }
 
             emit('Декодирование арта', 'Извлечение кадра из ответа Gemini...', attemptNum, providerLabel);
             const j = await resp.json();
@@ -746,29 +2086,26 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
 
             const blockReason = j?.promptFeedback?.blockReason || j?.candidates?.[0]?.finishReason || '';
             throw new Error(
-                `Модель не вернула фото` +
+                `Gemini не вернул изображение` +
                 (blockReason ? ` (${blockReason})` : '') +
                 (textPart ? `: ${textPart.slice(0, 90)}` : '')
             );
         }
 
-        // 5. OPENAI-COMPATIBLE / XAI / ELECTRONHUB (1:1 parity with sillyimages OpenAIProvider!)
-        const defaultBase = imgCfg.apiType === 'xai' ? 'https://api.x.ai' : 'https://api.openai.com';
+        // 6. OPENAI-COMPATIBLE / XAI / ELECTRON HUB (with exact provider default endpoints!)
+        const defaultBase = SILLYIMAGES_DEFAULT_ENDPOINTS[apiType] || 'https://api.openai.com';
         const oaBase = (endpoint || defaultBase)
             .replace(/\/compatible$/i, '')
             .replace(/\/v1\/images\/generations$/i, '')
             .replace(/\/images\/generations$/i, '')
             .replace(/\/v1$/i, '');
-        const oaUrl = rawEndpointFlag ? endpoint : `${oaBase}/v1/images/generations`;
+        const oaUrl = rawEndpointFlag ? (endpoint || defaultBase) : `${oaBase}/v1/images/generations`;
 
         const mLow = String(model || '').toLowerCase();
         const isGptImg = mLow.includes('gpt-image');
         const isDalle3 = mLow.includes('dall-e-3');
         const isDalle2 = mLow.includes('dall-e-2');
 
-        // Exact sillyimages aspectRatioToSize rule:
-        // Only map aspect->size for families with documented OpenAI size tables (gpt-image*, dall-e-3, dall-e-2).
-        // For xAI / Grok / Flux / custom proxy models, NEVER force unsupported OpenAI dimensions — use profile's imgCfg.size!
         let resolvedSize = '';
         if (aspect !== 'native') {
             if (isGptImg) {
@@ -801,36 +2138,34 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         const sendOpenAiCompat = async (minimalFallback = false) => {
             const body = { model, prompt: fullPrompt, n: 1 };
             if (!minimalFallback) {
-                if (imgCfg.apiType === 'xai') {
+                if (apiType === 'xai') {
                     if (aspect !== 'native') body.aspect_ratio = aspect;
                 } else {
                     if (resolvedSize) body.size = resolvedSize;
                     if (resolvedQuality) body.quality = resolvedQuality;
                 }
             }
-            // CRITICAL FIX: Always send response_format: 'b64_json' for Grok / xAI / non-gpt-image models (just like sillyimages!),
-            // otherwise xAI returns a temporary CDN URL that 404s when fetched from browser/proxy!
             if (!isGptImg) {
                 body.response_format = 'b64_json';
             } else {
                 body.moderation = 'low';
             }
 
-            return await fetch(oaUrl, {
+            return await fetchWithTimeout(oaUrl, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${imgCfg.apiKey}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
-                signal,
-            });
+            }, timeoutMs, signal);
         };
 
         let resp = await sendOpenAiCompat(false);
-        // Automatic self-healing fallback if model/proxy rejects size, quality, or aspect_ratio (400 / 404 / 422)!
         if (!resp.ok && [400, 404, 422].includes(resp.status)) {
             emit(stagePrefix, 'Модель не принимает заданный размер · повтор в родном формате модели...', attemptNum, providerLabel);
             resp = await sendOpenAiCompat(true);
         }
-        if (!resp.ok) throw new Error(`Image API HTTP ${resp.status}: ${(await resp.text()).slice(0, 140)}`);
+        if (!resp.ok) {
+            throw new Error(formatHttpProviderError(apiType === 'electronhub' ? 'Electron Hub' : 'Image API', resp.status, await resp.text().catch(() => '')));
+        }
 
         emit('Декодирование арта', 'Распаковка сгенерированного кадра...', attemptNum, providerLabel);
         const j = await resp.json();
@@ -839,13 +2174,13 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             const mime = String(d.b64_json).startsWith('/9j/') ? 'image/jpeg' : 'image/png';
             return `data:${mime};base64,${d.b64_json}`;
         }
-        if (d?.url || j?.url) return await urlToDataUrl(d?.url || j?.url, signal);
-        throw new Error('Image API не вернул картинку.');
+        if (d?.url || j?.url) return await urlToDataUrl(d?.url || j?.url, signal, timeoutMs);
+        throw new Error('Image API не вернул изображение.');
     };
 
     let lastErr = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (signal?.aborted) throw new Error('Генерация остановлена.');
+        if (signal?.aborted) throw new Error('Генерация остановлена пользователем.');
         try {
             const outDataUrl = await executeSingleAttempt(attempt);
             emit('Готово', 'Изображение успешно получено!', attempt, providerLabel);
@@ -871,9 +2206,8 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     throw lastErr || new Error('Не удалось сгенерировать изображение.');
 }
 
-// Build ephemeral message array sending the ENTIRE active SillyTavern preset around the 'chatHistory' slot!
-// Preserves ALL user-enabled preset blocks and trailing whitespace-only blocks ("\n") byte-for-byte WITHOUT .trim()!
-function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', presetCorrectionPrompt = '') {
+// Chat Completion preset message builder — fixes assistant_prefill preservation even when post-history blocks exist! (fixes NMF-011)
+export function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', presetCorrectionPrompt = '') {
     const oai = ctx?.chatCompletionSettings || {};
     const prompts = Array.isArray(oai.prompts) ? oai.prompts : [];
     const byId = new Map(prompts.map((p) => [p?.identifier, p]));
@@ -885,7 +2219,6 @@ function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', pre
     const chatIdx = orderList.findIndex((x) => x.identifier === 'chatHistory');
     const messages = [];
 
-    // Skip only runtime dynamic chat/character/world placeholders so an unrelated background chat never leaks into card creation
     const DYNAMIC_SLOTS = new Set([
         'worldInfoBefore', 'worldInfoAfter', 'charDescription', 'charPersonality',
         'scenario', 'personaDescription', 'dialogueExamples', 'chatHistory', 'enhanceDefinitions',
@@ -901,7 +2234,6 @@ function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', pre
     }
 
     if (chatIdx === -1) {
-        // Fallback if custom preset has no explicit chatHistory marker: send ALL enabled preset blocks, then user task, then prefill
         for (const item of orderList) {
             if (DYNAMIC_SLOTS.has(item.identifier)) continue;
             const p = byId.get(item.identifier);
@@ -909,26 +2241,15 @@ function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', pre
             messages.push({ role: p.role || 'system', content: p.content });
         }
         messages.push({ role: 'user', content: finalUserTask });
-        if (oai.assistant_prefill && String(oai.assistant_prefill).length > 0) {
-            messages.push({ role: 'assistant', content: String(oai.assistant_prefill) });
+    } else {
+        for (let i = 0; i < chatIdx; i++) {
+            const id = orderList[i].identifier;
+            if (DYNAMIC_SLOTS.has(id)) continue;
+            const p = byId.get(id);
+            if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
+            messages.push({ role: p.role || 'system', content: p.content });
         }
-        return messages;
-    }
-
-    // 1. BEFORE chatHistory: send ALL enabled static preset blocks in exact user order!
-    for (let i = 0; i < chatIdx; i++) {
-        const id = orderList[i].identifier;
-        if (DYNAMIC_SLOTS.has(id)) continue;
-        const p = byId.get(id);
-        if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-        messages.push({ role: p.role || 'system', content: p.content });
-    }
-
-    // 2. AT chatHistory slot: inject our ephemeral User request + Correction Note (NEVER saved into ST chat!)
-    messages.push({ role: 'user', content: finalUserTask });
-
-    // 3. AFTER chatHistory: send ALL enabled post-history blocks in exact user order (preserving prefill & "\n" 100% intact!)
-    if (chatIdx < orderList.length - 1) {
+        messages.push({ role: 'user', content: finalUserTask });
         for (let i = chatIdx + 1; i < orderList.length; i++) {
             const id = orderList[i].identifier;
             if (DYNAMIC_SLOTS.has(id)) continue;
@@ -936,34 +2257,44 @@ function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', pre
             if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
             messages.push({ role: p.role || 'user', content: p.content });
         }
-    } else if (oai.assistant_prefill && String(oai.assistant_prefill).length > 0) {
-        messages.push({ role: 'assistant', content: String(oai.assistant_prefill) });
+    }
+
+    // Always append assistant_prefill if configured and not already identical to the tail message
+    if (oai.assistant_prefill && String(oai.assistant_prefill).length > 0) {
+        const prefillStr = String(oai.assistant_prefill);
+        const lastMsg = messages[messages.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.content !== prefillStr) {
+            messages.push({ role: 'assistant', content: prefillStr });
+        }
     }
 
     return messages;
 }
 
-// Extract reasoning ("думалка") across all providers (Google Makersuite/Vertex thought parts, OpenRouter, DeepSeek, Claude, <think> tags)
-async function extractUniversalReasoningAndText(data, rawFallbackText = '') {
+// Reasoning & text extraction using public getContext() APIs without importing internal /scripts/reasoning.js (fixes NMF-015)
+function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
     let text = rawFallbackText;
     let reasoning = '';
 
     try {
-        const scriptMod = await import('/script.js');
-        const reasonMod = await import('/scripts/reasoning.js').catch(() => ({}));
-        if (data && typeof data === 'object') {
-            if (typeof scriptMod.extractMessageFromData === 'function') {
-                text = String(scriptMod.extractMessageFromData(data) || '');
+        if (typeof data === 'string') {
+            text = data;
+        } else if (data && typeof data === 'object') {
+            if (typeof ctx?.extractMessageFromData === 'function') {
+                text = String(ctx.extractMessageFromData(data) || '');
+            } else if (typeof data?.choices?.[0]?.message?.content === 'string') {
+                text = data.choices[0].message.content;
+            } else if (typeof data?.content === 'string') {
+                text = data.content;
+            } else {
+                // If generateRawData({ jsonSchema }) returned an extracted JSON object directly
+                text = JSON.stringify(data);
             }
-            if (typeof reasonMod.extractReasoningFromData === 'function') {
-                reasoning = String(reasonMod.extractReasoningFromData(data, { ignoreShowThoughts: true }) || '');
-            }
-            // Direct check for Gemini / proxy responseContent.parts[].thought or choices[0].message.reasoning_content
-            if (!reasoning) {
-                const gParts = data?.responseContent?.parts || data?.candidates?.[0]?.content?.parts || [];
-                const thoughtParts = gParts.filter((pt) => pt && pt.thought && pt.text).map((pt) => pt.text);
-                if (thoughtParts.length) reasoning = thoughtParts.join('\n\n');
-            }
+
+            const gParts = data?.responseContent?.parts || data?.candidates?.[0]?.content?.parts || [];
+            const thoughtParts = gParts.filter((pt) => pt && pt.thought && pt.text).map((pt) => pt.text);
+            if (thoughtParts.length) reasoning = thoughtParts.join('\n\n');
+
             if (!reasoning) {
                 reasoning = String(
                     data?.choices?.[0]?.message?.reasoning_content
@@ -973,11 +2304,17 @@ async function extractUniversalReasoningAndText(data, rawFallbackText = '') {
                 );
             }
         }
+
+        if (typeof ctx?.parseReasoningFromString === 'function' && text) {
+            const parsed = ctx.parseReasoningFromString(text, { strict: false });
+            if (parsed?.reasoning && !reasoning.includes(parsed.reasoning)) {
+                reasoning = [reasoning, parsed.reasoning].filter(Boolean).join('\n\n');
+            }
+        }
     } catch (e) {
         console.warn('[NexusMatch Forge] Reasoning extraction warning:', e);
     }
 
-    // Also capture inline <think>...</think> or <thought>...</thought> if model emitted tags inside content
     const inlineMatches = [...String(text || '').matchAll(/<(?:think|thought)>([\s\S]*?)<\/(?:think|thought)>/gi)];
     if (inlineMatches.length > 0) {
         const inlineTxt = inlineMatches.map((m) => m[1].trim()).filter(Boolean).join('\n\n');
@@ -989,96 +2326,118 @@ async function extractUniversalReasoningAndText(data, rawFallbackText = '') {
     return { text: String(text || ''), reasoning: String(reasoning || '').trim() };
 }
 
-// Stores latest model reasoning so UI can display it in a clean collapsible drawer
 export let lastGenerationReasoning = '';
 
-export function abortTavernTextGeneration() {
-    try {
-        const ctx = window.SillyTavern?.getContext?.();
-        if (typeof ctx?.stopGeneration === 'function') {
-            ctx.stopGeneration();
-            return;
-        }
-        const ev = ctx?.eventTypes?.GENERATION_STOPPED || ctx?.event_types?.GENERATION_STOPPED || 'generation_stopped';
-        ctx?.eventSource?.emit?.(ev);
-    } catch (e) {
-        console.warn('[NexusMatch Forge] stopGeneration warning:', e);
-    }
-}
-
-export async function runLlmGeneration({ system = '', user = '', transportMode = 'prefill_user_msg', presetCorrectionPrompt = '', signal = null }) {
-    const ctx = window.SillyTavern?.getContext?.();
+// Isolated background LLM runner:
+// - Never invokes global chat stop or emits global GENERATION_STOPPED (fixes NMF-005)
+// - Never attaches global chat settings event mutators (fixes NMF-012)
+// - Separates OpenAI Chat Completion vs Text Completion APIs (fixes NMF-011)
+// - Passes native jsonSchema into generateRawData when in json_schema mode (fixes NMF-010)
+export async function runLlmGeneration({
+    system = '',
+    user = '',
+    jsonSchema = null,
+    transportMode = 'prefill_user_msg',
+    presetCorrectionPrompt = '',
+    signal = null,
+}) {
+    const ctx = getTavernContext();
     if (!ctx) throw new Error('Контекст SillyTavern ещё не готов.');
 
-    const scriptMod = await import('/script.js').catch(() => ({}));
-    const rawDataFn = scriptMod.generateRawData;
-    const rawFn = ctx.generateRaw || scriptMod.generateRaw;
+    const rawDataFn = ctx.generateRawData;
+    const rawFn = ctx.generateRaw;
 
     if (typeof rawDataFn !== 'function' && typeof rawFn !== 'function') {
         throw new Error('API генерации SillyTavern недоступно. Проверьте подключение модели.');
     }
 
-    const onAbort = () => abortTavernTextGeneration();
-    if (signal) {
-        if (signal.aborted) {
-            abortTavernTextGeneration();
-            throw new Error('Генерация остановлена.');
-        }
-        signal.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+        throw new Error('Генерация остановлена пользователем.');
     }
 
-    // Force include_reasoning: true ONLY for our single outgoing request via one-shot event listener (without mutating saved preset!)
-    const readyEv = ctx?.eventTypes?.CHAT_COMPLETION_SETTINGS_READY || ctx?.event_types?.CHAT_COMPLETION_SETTINGS_READY || 'chat_completion_settings_ready';
-    const forceReasoningHook = (genData) => {
-        if (genData && typeof genData === 'object') {
-            genData.include_reasoning = true;
+    const activeApi = ctx.mainApi || 'openai';
+    const isChatCompletion = activeApi === 'openai';
+    const correctionClean = String(presetCorrectionPrompt || '').trim();
+
+    let promptPayload;
+    let sysPayload = '';
+    let prefillPayload = '';
+    let schemaPayload = null;
+
+    if (transportMode === 'prefill_user_msg') {
+        if (isChatCompletion) {
+            promptPayload = buildPresetAlignedMessages(ctx, user, system, presetCorrectionPrompt);
+            sysPayload = '';
+        } else {
+            // Text Completion API (Kobold / TextGenWebUI / NovelAI): let Core apply active Text Completion Context & Instruct templates!
+            const combinedUser = correctionClean ? `${user}\n\n${correctionClean}` : user;
+            promptPayload = combinedUser;
+            sysPayload = system;
+            prefillPayload = String(ctx?.textCompletionSettings?.start_reply_with || '');
         }
-    };
-    ctx?.eventSource?.on?.(readyEv, forceReasoningHook);
+    } else {
+        promptPayload = user;
+        sysPayload = system;
+        schemaPayload = isChatCompletion && jsonSchema ? jsonSchema : null;
+    }
 
-    try {
-        const runPromise = (async () => {
-            const promptPayload = transportMode === 'prefill_user_msg'
-                ? buildPresetAlignedMessages(ctx, user, system, presetCorrectionPrompt)
-                : user;
-            const sysPayload = transportMode === 'prefill_user_msg' ? '' : system;
-
-            if (typeof rawDataFn === 'function') {
-                const data = await rawDataFn({
-                    prompt: promptPayload,
-                    api: ctx.mainApi || 'openai',
-                    systemPrompt: sysPayload,
-                    prefill: '',
-                    instructOverride: false,
-                    quietToLoud: false,
-                });
-                const { text, reasoning } = await extractUniversalReasoningAndText(data);
-                lastGenerationReasoning = reasoning;
-                return text;
-            }
-
-            const fallbackTxt = await rawFn({
+    let cancelledLocally = false;
+    const runPromise = (async () => {
+        if (typeof rawDataFn === 'function') {
+            const data = await rawDataFn({
                 prompt: promptPayload,
+                api: activeApi,
                 systemPrompt: sysPayload,
-                prefill: '',
+                prefill: prefillPayload,
                 instructOverride: false,
                 quietToLoud: false,
+                jsonSchema: schemaPayload,
+                signal, // Forwarded harmlessly now; automatically picked up if Core adds request-scoped signal support
             });
-            const { text, reasoning } = await extractUniversalReasoningAndText(null, String(fallbackTxt || ''));
+            if (cancelledLocally || signal?.aborted) return '';
+            const { text, reasoning } = extractUniversalReasoningAndText(ctx, data);
             lastGenerationReasoning = reasoning;
             return text;
-        })();
+        }
 
-        if (!signal) return await runPromise;
+        const fallbackTxt = await rawFn({
+            prompt: promptPayload,
+            api: activeApi,
+            systemPrompt: sysPayload,
+            prefill: prefillPayload,
+            instructOverride: false,
+            quietToLoud: false,
+            jsonSchema: schemaPayload,
+        });
+        if (cancelledLocally || signal?.aborted) return '';
+        const { text, reasoning } = extractUniversalReasoningAndText(ctx, null, String(fallbackTxt || ''));
+        lastGenerationReasoning = reasoning;
+        return text;
+    })();
 
-        return await Promise.race([
-            runPromise,
-            new Promise((_, reject) => {
-                signal.addEventListener('abort', () => reject(new Error('Генерация остановлена пользователем.')), { once: true });
-            }),
-        ]);
-    } finally {
-        ctx?.eventSource?.removeListener?.(readyEv, forceReasoningHook);
-        if (signal) signal.removeEventListener('abort', onAbort);
-    }
+    if (!signal) return await runPromise;
+
+    return await new Promise((resolve, reject) => {
+        const onAbort = () => {
+            cancelledLocally = true;
+            reject(new Error('Генерация в NexusMatch Forge отменена пользователем.'));
+        };
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+        runPromise.then(
+            (val) => {
+                signal.removeEventListener('abort', onAbort);
+                if (cancelledLocally) return;
+                resolve(val);
+            },
+            (err) => {
+                signal.removeEventListener('abort', onAbort);
+                if (cancelledLocally) return;
+                reject(err);
+            }
+        );
+    });
 }

@@ -1,5 +1,7 @@
 import { NMF_THEMES, NMF_LANGUAGES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js';
 import {
+    MAX_LIKED_CANDIDATES,
+    MAX_PASSED_CANDIDATES,
     CARD_FORMATS,
     GREETING_STYLES,
     GREETING_POVS,
@@ -18,6 +20,7 @@ import {
     resolveGenderSummary,
     isWorldOrRpgMode,
     createDefaultSession,
+    normalizeAndMigrateSettings,
     buildFullCardRequest,
     parseFullCardResponse,
     buildTinderPreviewRequest,
@@ -27,27 +30,47 @@ import {
     buildReworkCardRequest,
 } from './modules/nmf_templates_and_prompts.js';
 import {
+    ALL_EDITABLE_CARD_FIELDS,
+    markCardFieldDirty,
+    createCardStateFromTavernChar,
+    createCardStateFromImportedJson,
+    computeCardDiff,
     buildV2CardObject,
     buildCardPngBlob,
+    embedCharaChunkIntoPng,
     triggerDownload,
     importCardIntoTavern,
+    fetchFullTavernCharacter,
+    updateExistingCardInTavern,
     fetchTavernRosterAndWorlds,
     urlToDataUrl,
     detectPocketCodex,
     openPocketCodexForge,
     detectImageExtensions,
     listImageExtensionBuckets,
+    resolveAutoImageSourceSummary,
     generateCharacterPortrait,
-    abortTavernTextGeneration,
+    getTavernContext,
     runLlmGeneration,
     lastGenerationReasoning,
 } from './modules/nmf_card_io_and_art.js';
+import {
+    base64ToBytes,
+    resolveEntityAvatarUrl,
+    saveMediaDataUrl,
+    hydrateSessionsMedia,
+    migrateInlineSessionMediaToVault,
+    pruneOrphanedMedia,
+    listCardBackups,
+    getCardBackupById,
+} from './modules/nmf_media_vault.js';
 
 const EXT_KEY = 'st_nexus_match_forge';
+let nextBusyRunId = 1;
 
-const state = {
+export const state = {
     activeTab: 'swipe', // swipe | matches | blitz | create | editor
-    matchesSubTab: 'liked', // liked | passed ('Мимо' archive!)
+    matchesSubTab: 'liked', // liked | passed
     intakeSheetOpen: false,
     intakeStep: 'who', // who | vibe | style
     editorSubTab: 'main', // main | greet | meta
@@ -57,8 +80,14 @@ const state = {
     swipeControlsOpen: false,
     manualBanDraft: '',
     editingCandRef: null, // { pool: 'queue'|'liked'|'passed', idx: number }
+    overwriteConfirmInfo: null, // { targetAvatar, diff, allowExternalOverride }
+    recentBackups: [],
     busy: false,
     busyMinimized: false,
+    busyCancellable: true,
+    busyCancelRequested: false,
+    busyTaskType: 'llm',
+    activeRunId: 0,
     busyAbort: null,
     busyTaskLabel: '',
     busyQuip: '',
@@ -66,23 +95,25 @@ const state = {
     busyTimerId: null,
     loadingArtIds: new Set(),
     artAborts: new Map(), // candId -> AbortController
-    artErrors: new Map(), // candId -> human-readable error message
-    artStatuses: new Map(), // candId -> { stage, detail, attempt, maxAttempts, providerLabel, elapsedSec, timerId }
+    artErrors: new Map(), // candId -> error message
+    artStatuses: new Map(), // candId -> live status
     editorArtLoading: false,
     editorArtAbort: null,
     editorArtStatus: null,
     editorArtError: '',
     rosterChars: [],
     worldNames: [],
-    popStateArmed: false,
+    historyEntryPushed: false,
+    closingViaHistorySync: false,
 };
 
-function esc(str) {
+export function esc(str) {
     return String(str ?? '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function parseCleanQuote(q) {
@@ -95,79 +126,65 @@ function countWords(str) {
 }
 
 let fallbackStore = null;
+let lastMigratedRef = null;
+
 function getFallbackStore() {
     if (!fallbackStore) {
-        fallbackStore = {
-            theme: 'krakoa',
-            transportMode: 'prefill_user_msg',
-            presetCorrectionPrompt: DEFAULT_PRESET_CORRECTION_PROMPT,
-            imageSource: 'auto',
-            imageProfileId: '',
-            imageStyleId: '',
-            imageAspectRatio: '1:1', // Default 1:1 square as requested!
-            imageCropFocus: 'top',
-            activeSessionId: '',
-            sessions: [createDefaultSession(1)],
-        };
-        fallbackStore.activeSessionId = fallbackStore.sessions[0].id;
+        fallbackStore = normalizeAndMigrateSettings(null).settings;
     }
     return fallbackStore;
 }
 
-function getSettings() {
-    const ctx = window.SillyTavern?.getContext?.();
-    if (!ctx) return getFallbackStore();
-    if (!ctx.extensionSettings[EXT_KEY]) {
-        const codexTheme = ctx.extensionSettings?.st_pocket_codex?.theme || 'krakoa';
-        ctx.extensionSettings[EXT_KEY] = {
-            theme: codexTheme,
-            transportMode: 'prefill_user_msg',
-            presetCorrectionPrompt: DEFAULT_PRESET_CORRECTION_PROMPT,
-            imageSource: 'auto',
-            imageProfileId: '',
-            imageStyleId: '',
-            imageAspectRatio: '1:1',
-            imageCropFocus: 'top',
-            activeSessionId: '',
-            sessions: [createDefaultSession(1)],
-        };
+export function getSettings() {
+    const ctx = getTavernContext();
+    if (!ctx || !ctx.extensionSettings) return getFallbackStore();
+
+    const codexTheme = ctx.extensionSettings?.st_pocket_codex?.theme || 'krakoa';
+    if (!ctx.extensionSettings[EXT_KEY] || lastMigratedRef !== ctx.extensionSettings[EXT_KEY]) {
+        const { settings, migrated, recoveredFromCorruption } = normalizeAndMigrateSettings(
+            ctx.extensionSettings[EXT_KEY],
+            { defaultTheme: codexTheme }
+        );
+        ctx.extensionSettings[EXT_KEY] = settings;
+        lastMigratedRef = settings;
+
+        if (recoveredFromCorruption) {
+            notifyToast('Часть старых настроек сессии была повреждена и безопасно восстановлена.', true);
+        }
+        // Asynchronously move any legacy inline Base64 images out of extensionSettings into IndexedDB
+        migrateInlineSessionMediaToVault(settings.sessions).then((moved) => {
+            if ((migrated || moved) && typeof ctx?.saveSettingsDebounced === 'function') {
+                ctx.saveSettingsDebounced();
+            }
+        }).catch(() => {});
     }
-    const cfg = ctx.extensionSettings[EXT_KEY];
-    if (!cfg.imageAspectRatio) cfg.imageAspectRatio = '1:1';
-    if (!cfg.imageCropFocus) cfg.imageCropFocus = 'top';
-    if (cfg.presetCorrectionPrompt === undefined) cfg.presetCorrectionPrompt = DEFAULT_PRESET_CORRECTION_PROMPT;
-    if (!Array.isArray(cfg.sessions) || cfg.sessions.length === 0) {
-        cfg.sessions = [createDefaultSession(1)];
-    }
+    return ctx.extensionSettings[EXT_KEY];
+}
+
+function stripResidualInlineImagesSync(cfg) {
+    if (!cfg || !Array.isArray(cfg.sessions)) return;
     for (const s of cfg.sessions) {
-        if (s?.intake) {
-            if (!s.intake.userGender) s.intake.userGender = 'any';
-            if (s.intake.userGenderCustom === undefined) s.intake.userGenderCustom = '';
-            if (!s.intake.targetGender) s.intake.targetGender = 'any';
-            if (s.intake.targetGenderCustom === undefined) s.intake.targetGenderCustom = '';
-            if (!s.intake.language) s.intake.language = '{{language}}';
-            if (s.intake.customLanguage === undefined) s.intake.customLanguage = '';
+        if (s?.card?.avatarDataUrl) s.card.avatarDataUrl = '';
+        for (const pool of ['queue', 'liked', 'passed']) {
+            const arr = s?.tinder?.[pool];
+            if (!Array.isArray(arr)) continue;
+            for (const c of arr) {
+                if (c?.avatarDataUrl) c.avatarDataUrl = '';
+            }
+        }
+        if (s?.tinder?.lastDislikedCandidate?.avatarDataUrl) {
+            s.tinder.lastDislikedCandidate.avatarDataUrl = '';
         }
     }
-    if (!cfg.activeSessionId || !cfg.sessions.some((s) => s.id === cfg.activeSessionId)) {
-        cfg.activeSessionId = cfg.sessions[0].id;
-    }
-    for (const s of cfg.sessions) {
-        if (!s.intake.greetingStyle) s.intake.greetingStyle = 'fanfic';
-        if (!s.intake.greetingPov) s.intake.greetingPov = 'third';
-        if (s.intake.greetingCustomRules === undefined) s.intake.greetingCustomRules = '';
-        if (!s.intake.playerNameMode) s.intake.playerNameMode = 'macro';
-        if (!s.tinder) s.tinder = createDefaultSession(1).tinder;
-        if (!Array.isArray(s.tinder.passed)) s.tinder.passed = [];
-        if (!s.architect) s.architect = { subMode: 'idea', freeConcept: '' };
-        if (!s.architect.subMode) s.architect.subMode = 'idea';
-    }
-    return cfg;
 }
 
 function saveSettings() {
-    const ctx = window.SillyTavern?.getContext?.();
-    if (ctx?.saveSettingsDebounced) ctx.saveSettingsDebounced();
+    const cfg = getSettings();
+    stripResidualInlineImagesSync(cfg);
+    const ctx = getTavernContext();
+    if (typeof ctx?.saveSettingsDebounced === 'function') {
+        ctx.saveSettingsDebounced();
+    }
 }
 
 function getActiveSession() {
@@ -182,6 +199,7 @@ function getThemeColor() {
 }
 
 function notifyToast(msg, isError = false) {
+    if (typeof globalThis.window === 'undefined') return;
     if (isError) {
         if (window.toastr?.error) window.toastr.error(msg, 'NexusMatch');
     } else if (window.toastr?.info) {
@@ -214,17 +232,28 @@ async function compressImageFileToDataUrl(file, maxSide = 896) {
     }
 }
 
-async function refreshRosterData() {
+async function refreshRosterData(signal = null) {
     try {
-        const { characters, worlds } = await fetchTavernRosterAndWorlds();
+        const { characters, worlds } = await fetchTavernRosterAndWorlds({ signal });
         state.rosterChars = characters;
         state.worldNames = worlds;
     } catch (err) {
-        console.warn('[NexusMatch Forge] Roster fetch warning:', err);
+        if (!signal?.aborted) {
+            console.warn('[NexusMatch Forge] Roster fetch warning:', err);
+        }
+    }
+}
+
+async function refreshBackupsList() {
+    try {
+        state.recentBackups = await listCardBackups();
+    } catch {
+        state.recentBackups = [];
     }
 }
 
 function ensureStylesMounted() {
+    if (typeof document === 'undefined') return;
     let st = document.getElementById('nmf-core-style');
     if (!st) {
         st = document.createElement('style');
@@ -245,7 +274,18 @@ function ensureDialogMounted() {
             if (e.target === dlg) closeForgeDialog();
         });
         dlg.addEventListener('close', () => {
-            state.popStateArmed = false;
+            // Clean up pushed history entry if user closed dialog via Esc or UI button (fixes NMF-019)
+            if (state.historyEntryPushed && !state.closingViaHistorySync) {
+                state.historyEntryPushed = false;
+                if (typeof history !== 'undefined' && history.state?.nmfModal === true) {
+                    state.closingViaHistorySync = true;
+                    try {
+                        history.back();
+                    } catch {
+                        state.closingViaHistorySync = false;
+                    }
+                }
+            }
         });
         document.body.appendChild(dlg);
         bindWindowDelegation(dlg.querySelector('#nmf-window'));
@@ -254,46 +294,73 @@ function ensureDialogMounted() {
 }
 
 export async function openForgeDialog(initialTab = '') {
+    if (typeof document === 'undefined') return;
     const dlg = ensureDialogMounted();
     if (initialTab) state.activeTab = initialTab;
-    await refreshRosterData();
+    const cfg = getSettings();
+    await Promise.all([
+        refreshRosterData(),
+        hydrateSessionsMedia(cfg.sessions),
+        refreshBackupsList(),
+    ]);
     renderWindow();
     if (!dlg.open) {
         dlg.showModal();
-        if (!state.popStateArmed) {
+        if (!state.historyEntryPushed && typeof history !== 'undefined' && history.state?.nmfModal !== true) {
             history.pushState({ nmfModal: true }, '');
-            state.popStateArmed = true;
+            state.historyEntryPushed = true;
         }
     }
 }
 
 export function closeForgeDialog() {
+    if (typeof document === 'undefined') return;
     const dlg = document.getElementById('nmf-dialog');
     if (dlg?.open) dlg.close();
 }
 
-window.addEventListener('popstate', () => {
-    const dlg = document.getElementById('nmf-dialog');
-    if (dlg?.open) {
-        if (state.editingCandRef) {
-            state.editingCandRef = null;
-            history.pushState({ nmfModal: true }, '');
-            renderWindow();
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('popstate', () => {
+        if (state.closingViaHistorySync) {
+            state.closingViaHistorySync = false;
             return;
         }
-        if (state.intakeSheetOpen) {
-            state.intakeSheetOpen = false;
-            history.pushState({ nmfModal: true }, '');
-            renderWindow();
-            return;
+        const dlg = typeof document !== 'undefined' ? document.getElementById('nmf-dialog') : null;
+        if (dlg?.open) {
+            if (state.overwriteConfirmInfo) {
+                state.overwriteConfirmInfo = null;
+                history.pushState({ nmfModal: true }, '');
+                state.historyEntryPushed = true;
+                renderWindow();
+                return;
+            }
+            if (state.editingCandRef) {
+                state.editingCandRef = null;
+                history.pushState({ nmfModal: true }, '');
+                state.historyEntryPushed = true;
+                renderWindow();
+                return;
+            }
+            if (state.intakeSheetOpen) {
+                state.intakeSheetOpen = false;
+                history.pushState({ nmfModal: true }, '');
+                state.historyEntryPushed = true;
+                renderWindow();
+                return;
+            }
+            state.historyEntryPushed = false;
+            state.closingViaHistorySync = true;
+            dlg.close();
+            state.closingViaHistorySync = false;
         }
-        state.popStateArmed = false;
-        dlg.close();
-    }
-});
+    });
+}
 
 function renderFilterSummaryBanner(sess) {
     const it = sess.intake;
+    const effectiveOriginKey = it.cardFormat === 'rpg_gm_engine'
+        ? 'rpg_gm'
+        : (it.cardFormat === 'world_sandbox' ? 'world_sandbox' : it.originType);
     const originShort = {
         oc: 'Персонаж OC',
         canon: 'Канон',
@@ -301,7 +368,7 @@ function renderFilterSummaryBanner(sess) {
         fandom_oc: 'OC в Фандоме',
         world_sandbox: 'Мир-Песочница',
         rpg_gm: 'РПГ-Мастер',
-    }[it.originType] || 'OC';
+    }[effectiveOriginKey] || 'OC';
     const styleShort = {
         fanfic: 'Фанфик-проза',
         classic_rp: 'РП *звёздочки*',
@@ -334,13 +401,12 @@ function renderFilterSummaryBanner(sess) {
     </div>`;
 }
 
-// Separate Clean 3-Step Modal Sheet for Session Intake Preferences (now with World & RPG modes!)
 function renderIntakeSheetModal(sess) {
     if (!state.intakeSheetOpen) return '';
     const it = sess.intake;
     const worldMode = isWorldOrRpgMode(it);
     const ratingObj = RATING_OPTIONS.find((r) => r.id === it.rating) || RATING_OPTIONS[0];
-    const personaName = window.SillyTavern?.getContext?.()?.name1 || '';
+    const personaName = getTavernContext()?.name1 || '';
     const needsFandom = ['canon', 'fandom_au', 'fandom_oc'].includes(it.originType);
 
     let stepBody = '';
@@ -354,8 +420,8 @@ function renderIntakeSheetModal(sess) {
                         <option value="canon" ${it.originType === 'canon' ? 'selected' : ''}>Персонаж — Канонный герой из фандома</option>
                         <option value="fandom_au" ${it.originType === 'fandom_au' ? 'selected' : ''}>Персонаж — Фандом в другой вселенной (AU)</option>
                         <option value="fandom_oc" ${it.originType === 'fandom_oc' ? 'selected' : ''}>Персонаж — Новый герой внутри фандома</option>
-                        <option value="world_sandbox" ${it.originType === 'world_sandbox' ? 'selected' : ''}>Мир / Сеттинг-песочница (Карточка Мира и НПС)</option>
-                        <option value="rpg_gm" ${it.originType === 'rpg_gm' ? 'selected' : ''}>РПГ-Мастер / Система (Квесты + Фракции + Механики)</option>
+                        <option value="world_sandbox" ${it.originType === 'world_sandbox' ? 'selected' : ''}>Мир / Сеттинг-песочница (Шаблон в Character Card V2)</option>
+                        <option value="rpg_gm" ${it.originType === 'rpg_gm' ? 'selected' : ''}>РПГ-Мастер / Система (Шаблон в Character Card V2)</option>
                     </select>
                 </div>
 
@@ -527,7 +593,6 @@ function renderIntakeSheetModal(sess) {
     </div>`;
 }
 
-// Modal Sheet to Edit / Replace / Tweak ANY Candidate (from Active Swipe, Matches, or Passed "Мимо"!)
 function renderCandidateEditModal(sess) {
     const ref = state.editingCandRef;
     if (!ref) return '';
@@ -593,6 +658,61 @@ function renderCandidateEditModal(sess) {
     </div>`;
 }
 
+// Pre-overwrite diff & backup confirmation sheet (fixes NMF-001 & Phase A diff requirement)
+function renderOverwriteConfirmModal() {
+    const info = state.overwriteConfirmInfo;
+    if (!info) return '';
+    const { targetAvatar, diff, externalWarning } = info;
+
+    return `
+    <div class="nmf-sheet-backdrop" id="nmf-overwrite-backdrop">
+        <div class="nmf-sheet-panel">
+            <div class="nmf-sheet-head">
+                <div style="font-family:var(--nmf-font-title);font-size:14.5px;font-weight:700;color:var(--nmf-accent)">
+                    Безопасное обновление оригинала · ${esc(targetAvatar)}
+                </div>
+                <button type="button" class="nmf-icon-btn nmf-sq" data-act="cancel-overwrite-confirm">${NMF_ICONS.close}</button>
+            </div>
+            <div class="nmf-sheet-body">
+                <div class="nmf-panel">
+                    ${externalWarning ? `
+                    <div class="nmf-warn-box" style="border-color:#ff5c77;margin-bottom:8px">
+                        ${NMF_ICONS.warn}
+                        <span><strong>Внимание:</strong> файл «${esc(targetAvatar)}» был изменён в SillyTavern после его открытия в редакторе. Подтвердите запись только если вы уверены.</span>
+                    </div>` : ''}
+
+                    <div class="nmf-field">
+                        <label class="nmf-label" style="color:var(--nmf-accent)">Будут обновлены только выбранные поля (${diff.changedFields.length}):</label>
+                        <div class="nmf-chip-wrap" style="margin-top:4px">
+                            ${diff.changedFields.map((f) => `<span class="nmf-chip nmf-on">${esc(f)}</span>`).join('')}
+                        </div>
+                    </div>
+
+                    <div class="nmf-field" style="margin-top:8px">
+                        <label class="nmf-label">Останутся строго без изменений:</label>
+                        <div class="nmf-chip-wrap" style="margin-top:4px">
+                            ${diff.preservedProtected.map((p) => `<span class="nmf-chip">${esc(p)}</span>`).join('')}
+                        </div>
+                    </div>
+
+                    <div class="nmf-warn-box" style="margin-top:8px;font-size:11px">
+                        ${NMF_ICONS.save}
+                        <span>Перед записью исходный PNG и полный V2 JSON автоматически сохраняются в локальный сейф резервных копий NexusMatch Forge.</span>
+                    </div>
+                </div>
+            </div>
+            <div class="nmf-sheet-foot" style="justify-content:flex-end">
+                <div class="nmf-btn-row">
+                    <button type="button" class="nmf-btn-secondary" data-act="cancel-overwrite-confirm">Отмена</button>
+                    <button type="button" class="nmf-btn-primary" data-act="confirm-overwrite-execute" ${state.busy ? 'disabled' : ''}>
+                        ${NMF_ICONS.save} Создать бэкап и обновить
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
 // 1. SWIPE DECK SCREEN
 function renderSwipeTab(sess) {
     const td = sess.tinder;
@@ -600,6 +720,7 @@ function renderSwipeTab(sess) {
     const imgCaps = detectImageExtensions();
     const canArt = imgCaps.hasAny && cfg.imageSource !== 'off';
     const current = td.queue[0] || null;
+    const currentAvatarUrl = resolveEntityAvatarUrl(current);
     const hasNext = td.queue.length > 1;
     const lastRejected = td.lastDislikedCandidate;
     const isArtLoading = current ? state.loadingArtIds.has(current.id) : false;
@@ -684,10 +805,10 @@ function renderSwipeTab(sess) {
             <div class="nmf-stamp nmf-stamp-like" id="nmf-stamp-like">LIKE</div>
             <div class="nmf-stamp nmf-stamp-nope" id="nmf-stamp-nope">PASS</div>
 
-            <div class="nmf-hero-visual ${(current.avatarDataUrl || isArtLoading) ? 'nmf-has-photo' : ''}">
-                ${current.avatarDataUrl ? `<img class="nmf-hero-photo" src="${esc(current.avatarDataUrl)}" alt="Profile"/>` : ''}
+            <div class="nmf-hero-visual ${(currentAvatarUrl || isArtLoading) ? 'nmf-has-photo' : ''}">
+                ${currentAvatarUrl ? `<img class="nmf-hero-photo" src="${esc(currentAvatarUrl)}" alt="Profile"/>` : ''}
                 ${isArtLoading ? `
-                <div class="nmf-photo-loading" style="${current.avatarDataUrl ? 'background:rgba(8,11,18,0.72);backdrop-filter:blur(3px)' : ''}">
+                <div class="nmf-photo-loading" style="${currentAvatarUrl ? 'background:rgba(8,11,18,0.72);backdrop-filter:blur(3px)' : ''}">
                     <div class="nmf-art-status-hud">
                         <div class="nmf-art-status-head">
                             <span data-art-stage="${esc(current.id)}">${esc(artStat?.stage || 'Генерация [Попытка 1/3]')}</span>
@@ -707,7 +828,7 @@ function renderSwipeTab(sess) {
                         </button>
                         ${canArt ? (isArtLoading
                             ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art">Стоп</button>`
-                            : `<button type="button" class="nmf-art-chip-btn" data-act="gen-cand-art">${NMF_ICONS.image} ${current.avatarDataUrl ? 'Переснять' : 'Фото'}</button>`
+                            : `<button type="button" class="nmf-art-chip-btn" data-act="gen-cand-art">${NMF_ICONS.image} ${currentAvatarUrl ? 'Переснять' : 'Фото'}</button>`
                         ) : ''}
                     </div>
                 </div>
@@ -760,7 +881,7 @@ function renderSwipeTab(sess) {
     </div>`}`;
 }
 
-// 2. MATCHES & PASSED ("МИМО") ARCHIVE SCREEN — FIND, EDIT, RESTORE OR BUILD ANY CARD!
+// 2. MATCHES & PASSED ARCHIVE SCREEN
 function renderMatchesTab(sess) {
     const liked = sess.tinder.liked || [];
     const passed = sess.tinder.passed || [];
@@ -790,11 +911,13 @@ function renderMatchesTab(sess) {
         </div>
     </div>` : `
     <div class="nmf-matches-grid">
-        ${items.map((c, idx) => `
+        ${items.map((c, idx) => {
+            const thumbUrl = resolveEntityAvatarUrl(c);
+            return `
         <div class="nmf-match-tile">
             <div>
                 <div class="nmf-match-thumb">
-                    ${c.avatarDataUrl ? `<img src="${esc(c.avatarDataUrl)}" alt="Card"/>` : ''}
+                    ${thumbUrl ? `<img src="${esc(thumbUrl)}" alt="Card"/>` : ''}
                     <div class="nmf-match-thumb-ov">
                         <div style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;line-height:1.2">${esc(c.name)}</div>
                         <div style="font-family:var(--nmf-font-mono);font-size:9px;color:var(--nmf-accent-2);margin-top:2px">${esc((c.archetype || '').slice(0, 34))}</div>
@@ -819,7 +942,8 @@ function renderMatchesTab(sess) {
                     ${NMF_ICONS.trash}
                 </button>
             </div>
-        </div>`).join('')}
+        </div>`;
+        }).join('')}
     </div>`}`;
 }
 
@@ -915,7 +1039,7 @@ function renderCreateTab(sess) {
             <label class="nmf-label">Как переносим?</label>
             <select class="nmf-select" data-rework="reworkMode" ${sess.frozen ? 'disabled' : ''}>
                 <option value="au_shift" ${rw.reworkMode === 'au_shift' ? 'selected' : ''}>В другую эпоху / сеттинг (бережно сохранить стиль и оформление оригинала)</option>
-                <option value="full_rework" ${rw.reworkMode === 'full_rework' ? 'selected' : ''}>Полная пересборка под выбранный шаблон Анкеты</option>
+                <option value="full_rebuild" ${(rw.reworkMode === 'full_rebuild' || rw.reworkMode === 'full_rework') ? 'selected' : ''}>Полная пересборка под выбранный шаблон Анкеты</option>
             </select>
         </div>
 
@@ -950,12 +1074,17 @@ function renderCreateTab(sess) {
 function renderEditorTab(sess) {
     const c = sess.card;
     const cfg = getSettings();
+    const cardAvatarUrl = resolveEntityAvatarUrl(c);
     const totalWords = countWords(c.description) + countWords(c.personality) + countWords(c.scenario) + countWords(c.first_mes);
     const approxTokens = Math.round(totalWords * 1.45);
     const hasCodex = detectPocketCodex();
     const imgCaps = detectImageExtensions();
     const canArt = imgCaps.hasAny && cfg.imageSource !== 'off';
     const cssRatio = cfg.imageAspectRatio === 'native' ? '1 / 1' : (cfg.imageAspectRatio || '1:1').replace(':', ' / ');
+    const canOverwriteOriginal = Boolean(c.sourceAvatarId && c.sourceLoadedFromTavern);
+    const latestBackupForCard = canOverwriteOriginal
+        ? state.recentBackups.find((b) => b.avatarFileName === c.sourceAvatarId)
+        : state.recentBackups[0] || null;
 
     let subBody = '';
     if (state.editorSubTab === 'main') {
@@ -964,12 +1093,12 @@ function renderEditorTab(sess) {
         <div class="nmf-panel">
             <div style="display:grid;grid-template-columns:104px minmax(0,1fr);gap:11px;align-items:start">
                 <div style="position:relative;aspect-ratio:${cssRatio};border:1px solid var(--nmf-border-active);background:var(--nmf-bg);overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--nmf-text-muted);text-align:center">
-                    ${c.avatarDataUrl
-                        ? `<img src="${esc(c.avatarDataUrl)}" style="width:100%;height:100%;object-fit:var(--nmf-art-fit,cover);object-position:var(--nmf-art-pos,center 18%)" alt="Avatar"/>`
+                    ${cardAvatarUrl
+                        ? `<img src="${esc(cardAvatarUrl)}" style="width:100%;height:100%;object-fit:var(--nmf-art-fit,cover);object-position:var(--nmf-art-pos,center 18%)" alt="Avatar"/>`
                         : ''}
                     ${state.editorArtLoading
-                        ? `<div class="nmf-photo-loading" style="padding:6px;gap:5px;${c.avatarDataUrl ? 'background:rgba(8,11,18,0.75)' : ''}"><div class="nmf-photo-spinner"></div><span id="nmf-editor-art-badge" style="font-family:var(--nmf-font-mono);font-size:9.5px;color:var(--nmf-accent)">${esc(`${edStat?.attempt || 1}/${edStat?.maxAttempts || 3} · ${edStat?.elapsedSec || 0}с`)}</span></div>`
-                        : (!c.avatarDataUrl ? `${NMF_ICONS.image}<span>${esc(cfg.imageAspectRatio)}</span>` : '')}
+                        ? `<div class="nmf-photo-loading" style="padding:6px;gap:5px;${cardAvatarUrl ? 'background:rgba(8,11,18,0.75)' : ''}"><div class="nmf-photo-spinner"></div><span id="nmf-editor-art-badge" style="font-family:var(--nmf-font-mono);font-size:9.5px;color:var(--nmf-accent)">${esc(`${edStat?.attempt || 1}/${edStat?.maxAttempts || 3} · ${edStat?.elapsedSec || 0}с`)}</span></div>`
+                        : (!cardAvatarUrl ? `${NMF_ICONS.image}<span>${esc(cfg.imageAspectRatio)}</span>` : '')}
                 </div>
                 <div style="display:flex;flex-direction:column;gap:7px;min-width:0">
                     <div class="nmf-field">
@@ -981,7 +1110,7 @@ function renderEditorTab(sess) {
                             ${NMF_ICONS.upload} Своё фото
                             <input type="file" id="nmf-avatar-upload" accept="image/*" style="display:none" ${sess.frozen ? 'disabled' : ''}/>
                         </label>
-                        ${c.avatarDataUrl ? `<button type="button" class="nmf-btn-secondary nmf-btn-danger" style="height:30px;font-size:11px" data-act="clear-avatar">Убрать</button>` : ''}
+                        ${cardAvatarUrl ? `<button type="button" class="nmf-btn-secondary nmf-btn-danger" style="height:30px;font-size:11px" data-act="clear-avatar">Убрать</button>` : ''}
                     </div>
                     ${canArt ? `
                     <div style="display:flex;gap:5px">
@@ -1036,7 +1165,7 @@ function renderEditorTab(sess) {
         <div class="nmf-panel">
             <div class="nmf-grid-2">
                 <div class="nmf-field">
-                    <label class="nmf-label"><span>Привязать Лорбук</span><button type="button" class="nmf-chip" data-act="refresh-roster">↻</button></label>
+                    <label class="nmf-label"><span>Привязать Лорбук</span><button type="button" class="nmf-chip" data-act="refresh-roster">Обновить</button></label>
                     <select class="nmf-select" data-card="world">
                         <option value="">— Без Лорбука —</option>
                         ${state.worldNames.map((w) => `<option value="${esc(w)}" ${c.world === w ? 'selected' : ''}>${esc(w)}</option>`).join('')}
@@ -1091,8 +1220,8 @@ function renderEditorTab(sess) {
     }
 
     return `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <span class="nmf-label" style="color:var(--nmf-accent)">Профиль Карточки (без ИИ)</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span class="nmf-label" style="color:var(--nmf-accent)">Профиль Карточки${canOverwriteOriginal ? ` · Источник: ${esc(c.sourceAvatarId)}` : ''}</span>
         <span style="font-family:var(--nmf-font-mono);font-size:10.5px;color:var(--nmf-text-muted)">${totalWords} слов (~${approxTokens} ток.) · Арт ${esc(cfg.imageAspectRatio)}</span>
     </div>
 
@@ -1107,9 +1236,9 @@ function renderEditorTab(sess) {
     <div class="nmf-panel nmf-panel-sub">
         <div class="nmf-btn-row">
             <button type="button" class="nmf-btn-primary" style="flex:1" data-act="save-to-tavern-new" ${state.busy ? 'disabled' : ''}>
-                ${NMF_ICONS.save} В Таверну
+                ${NMF_ICONS.save} В Таверну (новая)
             </button>
-            ${c.sourceAvatarId ? `
+            ${canOverwriteOriginal ? `
             <button type="button" class="nmf-btn-secondary" data-act="save-to-tavern-overwrite" ${state.busy ? 'disabled' : ''}>
                 Обновить оригинал
             </button>` : ''}
@@ -1120,6 +1249,11 @@ function renderEditorTab(sess) {
                 <input type="file" id="nmf-json-import" accept=".json,application/json" style="display:none"/>
             </label>
         </div>
+        ${latestBackupForCard ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--nmf-border);font-size:11px;color:var(--nmf-text-muted)">
+            <span>Резервная копия в сейфе: <strong>${esc(latestBackupForCard.characterName || latestBackupForCard.avatarFileName)}</strong></span>
+            <button type="button" class="nmf-chip" data-act="download-card-backup" data-bid="${esc(latestBackupForCard.id)}">${NMF_ICONS.download} Скачать бэкап PNG</button>
+        </div>` : ''}
     </div>`;
 }
 
@@ -1139,9 +1273,11 @@ function renderLoadingOverlay() {
             <button type="button" class="nmf-btn-primary" data-act="minimize-busy">
                 Свернуть в фон
             </button>
-            <button type="button" class="nmf-btn-secondary nmf-btn-danger" data-act="cancel-busy">
-                Прервать запрос
-            </button>
+            ${state.busyCancellable ? `
+            <button type="button" class="nmf-btn-secondary nmf-btn-danger" data-act="cancel-busy" ${state.busyCancelRequested ? 'disabled' : ''}>
+                ${state.busyCancelRequested ? 'Отмена...' : 'Отменить задачу'}
+            </button>` : `
+            <span class="nmf-chip" style="opacity:0.85">Запись файла (не прерывать)</span>`}
         </div>
     </div>`;
 }
@@ -1158,12 +1294,15 @@ function renderBackgroundBusyStrip() {
         </div>
         <div class="nmf-btn-row" style="flex-shrink:0">
             <button type="button" class="nmf-chip" data-act="expand-busy">Развернуть</button>
-            <button type="button" class="nmf-chip nmf-ban" data-act="cancel-busy">Стоп</button>
+            ${state.busyCancellable
+                ? `<button type="button" class="nmf-chip nmf-ban" data-act="cancel-busy" ${state.busyCancelRequested ? 'disabled' : ''}>Стоп</button>`
+                : `<span class="nmf-chip">Запись</span>`}
         </div>
     </div>`;
 }
 
-function renderWindow() {
+export function renderWindow() {
+    if (typeof document === 'undefined') return;
     const win = document.getElementById('nmf-window');
     if (!win) return;
     const prevBody = win.querySelector('.nmf-body');
@@ -1174,14 +1313,15 @@ function renderWindow() {
     const sess = getActiveSession();
     const activeTheme = NMF_THEMES.find((t) => t.id === cfg.theme) || NMF_THEMES[1];
     const buckets = listImageExtensionBuckets();
+    const enabledBuckets = buckets.filter((b) => b.enabled);
     const activeBucket = (cfg.imageSource && cfg.imageSource !== 'auto' && cfg.imageSource !== 'iig' && cfg.imageSource !== 'st_sd' && cfg.imageSource !== 'off')
         ? buckets.find((b) => b.key === cfg.imageSource)
-        : (buckets.find((b) => b.ready) || buckets[0] || null);
+        : (enabledBuckets.find((b) => b.ready) || enabledBuckets[0] || null);
+    const autoSummary = resolveAutoImageSourceSummary(cfg.imageSource, cfg.imageProfileId);
 
     win.className = `nmf-theme-${activeTheme.id}`;
     win.dataset.renderedTab = state.activeTab;
 
-    // Apply live CSS crop variables according to user's chosen aspect ratio (default 1:1, or 'native') & crop focus!
     const ratioCss = cfg.imageAspectRatio === 'native' ? '1 / 1' : (cfg.imageAspectRatio || '1:1').replace(':', ' / ');
     const fitCss = (cfg.imageCropFocus === 'contain' || cfg.imageAspectRatio === 'native') ? 'contain' : 'cover';
     const posCss = cfg.imageCropFocus === 'top' ? 'center 18%' : 'center center';
@@ -1249,14 +1389,14 @@ function renderWindow() {
                     <label class="nmf-label">Способ отправки к ИИ</label>
                     <select class="nmf-select" data-cfg="transportMode">
                         <option value="prefill_user_msg" ${cfg.transportMode === 'prefill_user_msg' ? 'selected' : ''}>Полный активный пресет (Prefill)</option>
-                        <option value="json_schema" ${cfg.transportMode === 'json_schema' ? 'selected' : ''}>Строгая JSON-схема (Экономия токенов)</option>
+                        <option value="json_schema" ${cfg.transportMode === 'json_schema' ? 'selected' : ''}>Строгая JSON-схема (Core JSON Schema)</option>
                     </select>
                 </div>
                 <div class="nmf-field">
                     <label class="nmf-label">Расширение генерации артов</label>
                     <select class="nmf-select" data-cfg="imageSource">
-                        <option value="auto" ${(cfg.imageSource === 'auto' || cfg.imageSource === 'iig') ? 'selected' : ''}>Авто (${activeBucket ? `${activeBucket.key} — ${activeBucket.model || activeBucket.apiType}` : 'не настроено'})</option>
-                        ${buckets.map((b) => `<option value="${esc(b.key)}" ${cfg.imageSource === b.key ? 'selected' : ''}>${esc(b.key)} — ${esc(b.ready ? (b.model || b.apiType) : 'пусто')}</option>`).join('')}
+                        <option value="auto" ${(cfg.imageSource === 'auto' || cfg.imageSource === 'iig') ? 'selected' : ''}>Авто (${esc(autoSummary.label)})</option>
+                        ${buckets.map((b) => `<option value="${esc(b.key)}" ${cfg.imageSource === b.key ? 'selected' : ''} ${!b.enabled ? 'disabled' : ''}>${esc(b.key)} — ${esc(!b.enabled ? 'отключено в ST' : (b.ready ? (b.model || b.apiType) : 'не готов'))}</option>`).join('')}
                         <option value="st_sd" ${cfg.imageSource === 'st_sd' ? 'selected' : ''}>Штатный /sd Таверны</option>
                         <option value="off" ${cfg.imageSource === 'off' ? 'selected' : ''}>Выключено</option>
                     </select>
@@ -1266,7 +1406,7 @@ function renderWindow() {
             ${cfg.transportMode === 'prefill_user_msg' ? `
             <div class="nmf-warn-box" style="margin-top:8px;font-size:11px">
                 ${NMF_ICONS.warn}
-                <span><strong>Внимание:</strong> отправляется весь активный пресет целиком. Пресет может сломать карточку и формат, либо вместо анкеты может быть выдано обычное сообщение модели. Рекомендуется внести правку в Промпт коррекции (ниже или в пресете), либо переключиться на «Строгую JSON-схему» для экономии токенов.</span>
+                <span><strong>Внимание:</strong> для Chat Completion отправляется активный пресет целиком, для Text Completion — штатный Context/Instruct шаблон ST. Если ролевые блоки пресета сбивают структуру, скорректируйте Промпт коррекции ниже или включите «Строгую JSON-схему».</span>
             </div>
             <div class="nmf-field" style="margin-top:7px">
                 <label class="nmf-label">
@@ -1292,13 +1432,13 @@ function renderWindow() {
                 </div>
             </div>` : ''}
 
-            ${(activeBucket && cfg.imageSource !== 'st_sd' && cfg.imageSource !== 'off') ? `
+            ${(activeBucket && activeBucket.enabled && cfg.imageSource !== 'st_sd' && cfg.imageSource !== 'off') ? `
             <div class="nmf-grid-2" style="margin-top:8px">
                 <div class="nmf-field">
                     <label class="nmf-label">Профиль (${esc(activeBucket.key)})</label>
                     <select class="nmf-select" data-cfg="imageProfileId">
-                        <option value="">Активный профиль</option>
-                        ${activeBucket.profiles.map((p) => `<option value="${esc(p.id)}" ${cfg.imageProfileId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+                        <option value="">Активный профиль (${esc(activeBucket.activeProfileName)})</option>
+                        ${activeBucket.profiles.map((p) => `<option value="${esc(p.id)}" ${cfg.imageProfileId === p.id ? 'selected' : ''}>${esc(p.name)}${p.ready ? '' : ' [не заполнен]'}</option>`).join('')}
                     </select>
                 </div>
                 <div class="nmf-field">
@@ -1310,9 +1450,14 @@ function renderWindow() {
                     </select>
                 </div>
             </div>
+            ${autoSummary.ready === false && autoSummary.reason ? `
+            <div class="nmf-warn-box" style="margin-top:8px;border-color:#ff5c77;font-size:11px">
+                ${NMF_ICONS.warn}
+                <span>Профиль не готов: ${esc(autoSummary.reason)}</span>
+            </div>` : ''}
             <div class="nmf-warn-box" style="margin-top:8px;font-size:11px">
                 ${NMF_ICONS.warn}
-                <span>Памятка: если вы сменили расширение для артов или пропорции кадра (${esc(cfg.imageAspectRatio)}), проверьте, чтобы такой же формат (${aspectMismatch ? `сейчас в ${esc(activeBucket.key)} стоит ${esc(activeBucket.extAspectRatio)}` : esc(cfg.imageAspectRatio)}) был выставлен и в настройках самого картинко-расширения.</span>
+                <span>Поддерживаются изолированные профили SillyImages (OpenAI, xAI, Gemini, OpenRouter, Electron Hub, Naistera, NovelAI, A1111). Чат-библиотеки референсов ({{char}} / {{user}} / Lorebook refs) относятся к внутреннему пайплайну чата SillyImages и при создании новых карточек не передаются.${aspectMismatch ? ` Текущий формат в ${esc(activeBucket.key)}: ${esc(activeBucket.extAspectRatio)}.` : ''}</span>
             </div>` : ''}
         </div>
 
@@ -1346,7 +1491,7 @@ function renderWindow() {
             <button type="button" class="nmf-nav-item ${state.activeTab === 'blitz' ? 'nmf-active' : ''}" data-act="switch-tab" data-tab="blitz">
                 ${NMF_ICONS.blitz}<span>Блиц 10</span>
             </button>
-            <button type="button" class="nmf-nav-item ${state.activeTab === 'create' ? 'nmf-active' : ''}" data-act="switch-tab" data-tab="create">
+            <button type="button" class="nmf-nav-item ${state.activeTab === 'create' ? 'nmf-active' : ''}" data-act="create-submode-nav" data-tab="create">
                 ${NMF_ICONS.architect}<span>Создать</span>
             </button>
             <button type="button" class="nmf-nav-item ${state.activeTab === 'editor' ? 'nmf-active' : ''}" data-act="switch-tab" data-tab="editor">
@@ -1356,6 +1501,7 @@ function renderWindow() {
 
         ${renderIntakeSheetModal(sess)}
         ${renderCandidateEditModal(sess)}
+        ${renderOverwriteConfirmModal()}
         ${renderLoadingOverlay()}
     `;
 
@@ -1375,11 +1521,12 @@ function maybeAutoTriggerCurrentCardArt() {
     if (!sess || sess.frozen || !sess.tinder.autoArt) return;
     if (cfg.imageSource === 'off' || !detectImageExtensions().hasAny) return;
     const cur = sess.tinder.queue[0];
-    if (!cur || cur.avatarDataUrl || state.loadingArtIds.has(cur.id) || state.artErrors.has(cur.id)) return;
+    if (!cur || resolveEntityAvatarUrl(cur) || state.loadingArtIds.has(cur.id) || state.artErrors.has(cur.id)) return;
     triggerCandidateArtInBackground(cur, false);
 }
 
 function syncCandArtStatusDom(candId) {
+    if (typeof document === 'undefined' || typeof CSS === 'undefined') return;
     const st = state.artStatuses.get(candId);
     if (!st) return;
     const stageEl = document.querySelector(`[data-art-stage="${CSS.escape(candId)}"]`);
@@ -1393,6 +1540,7 @@ function syncCandArtStatusDom(candId) {
 }
 
 function syncEditorArtStatusDom() {
+    if (typeof document === 'undefined') return;
     const st = state.editorArtStatus;
     if (!st) return;
     const badgeEl = document.getElementById('nmf-editor-art-badge');
@@ -1452,7 +1600,8 @@ async function triggerCandidateArtInBackground(cand, isManual = false) {
                 syncCandArtStatusDom(cand.id);
             },
         });
-        cand.avatarDataUrl = dataUrl;
+        cand.avatarId = await saveMediaDataUrl(dataUrl, cand.avatarId || '');
+        cand.avatarDataUrl = '';
         state.artErrors.delete(cand.id);
         saveSettings();
     } catch (err) {
@@ -1543,26 +1692,37 @@ function attachSwipeCardGestures(win) {
 }
 
 function handleSwipeDecision(kind) {
+    const cfg = getSettings();
     const sess = getActiveSession();
     const cur = sess.tinder.queue.shift();
     if (!cur) return;
 
-    // Abort in-flight art on swiped-away card if passed
     if (kind === 'dislike' && state.artAborts.has(cur.id)) {
         state.artAborts.get(cur.id)?.abort();
     }
 
+    let evicted = false;
     if (kind === 'like') {
         sess.tinder.liked.unshift(cur);
+        if (sess.tinder.liked.length > MAX_LIKED_CANDIDATES) {
+            sess.tinder.liked.length = MAX_LIKED_CANDIDATES;
+            evicted = true;
+        }
         sess.tinder.lastDislikedCandidate = null;
         saveSettings();
         notifyToast(`«${cur.name}» добавлен в Мэтчи!`);
     } else {
         if (!Array.isArray(sess.tinder.passed)) sess.tinder.passed = [];
         sess.tinder.passed.unshift(cur);
-        if (sess.tinder.passed.length > 50) sess.tinder.passed.length = 50;
+        if (sess.tinder.passed.length > MAX_PASSED_CANDIDATES) {
+            sess.tinder.passed.length = MAX_PASSED_CANDIDATES;
+            evicted = true;
+        }
         sess.tinder.lastDislikedCandidate = cur;
         saveSettings();
+    }
+    if (evicted) {
+        pruneOrphanedMedia(cfg.sessions).catch(() => {});
     }
     renderWindow();
 }
@@ -1589,6 +1749,7 @@ function saveEditedCandidateFields(sess) {
 }
 
 function applyGeneratedToSessionCard(sess, parsed, extra = {}) {
+    const isLinkedTavernCard = Boolean(extra.sourceAvatarId && extra.sourceLoadedFromTavern);
     sess.card = {
         ...sess.card,
         name: parsed.name || sess.card.name || 'Новая Карточка',
@@ -1598,13 +1759,157 @@ function applyGeneratedToSessionCard(sess, parsed, extra = {}) {
         first_mes: parsed.first_mes || '',
         alternate_greetings: Array.isArray(parsed.alternate_greetings) ? parsed.alternate_greetings : [],
         mes_example: parsed.mes_example || '',
-        system_prompt: parsed.system_prompt || sess.card.system_prompt || '',
-        post_history_instructions: parsed.post_history_instructions || sess.card.post_history_instructions || '',
+        system_prompt: parsed.system_prompt || (isLinkedTavernCard ? sess.card.system_prompt : '') || '',
+        post_history_instructions: parsed.post_history_instructions || (isLinkedTavernCard ? sess.card.post_history_instructions : '') || '',
         creator_notes: parsed.creator_notes || '',
         tags: parsed.tags || '',
-        imagePrompt: parsed.imagePrompt || sess.card.imagePrompt || '',
+        imagePrompt: parsed.imagePrompt || '',
+        avatarDataUrl: '',
+        sourceAvatarId: '',
+        sourceLoadedFromTavern: false,
+        sourceSnapshotHash: '',
+        originalCardData: null,
+        avatarDirty: false,
+        dirtyFields: [
+            'name',
+            'description',
+            'personality',
+            'scenario',
+            'first_mes',
+            'alternate_greetings',
+            'mes_example',
+            'system_prompt',
+            'post_history_instructions',
+            'creator_notes',
+            'tags',
+            'imagePrompt',
+        ],
         ...extra,
     };
+}
+
+// Local-only cancellation handler — never invokes global chat generation stop (fixes NMF-005 & NMF-006)
+export function requestCancelBusyTask() {
+    if (!state.busy) return false;
+    if (!state.busyCancellable) {
+        notifyToast('Операция записи файла уже идёт и не может быть прервана для сохранности карточки.');
+        return false;
+    }
+    if (state.busyCancelRequested) return true;
+    state.busyCancelRequested = true;
+    state.busyAbort?.abort(new Error('Cancelled locally by NMF user'));
+    renderWindow();
+    return true;
+}
+
+// Concurrency-safe task runner with unique runId & task-scoped cancellation (fixes NMF-005 & NMF-006)
+export async function withBusy(taskLabel, fn, { taskType = 'llm', cancellable = true } = {}) {
+    if (state.busy) return false;
+
+    const runId = nextBusyRunId++;
+    const cfg = getSettings();
+    const quipPool = THEME_LOADING_QUIPS[cfg.theme] || THEME_LOADING_QUIPS.krakoa;
+    let quipIdx = Math.floor(Math.random() * quipPool.length);
+
+    const abortCtl = new AbortController();
+    state.activeRunId = runId;
+    state.busy = true;
+    state.busyMinimized = false;
+    state.busyTaskType = taskType;
+    state.busyCancellable = Boolean(cancellable);
+    state.busyCancelRequested = false;
+    state.busyAbort = abortCtl;
+    state.busyTaskLabel = taskLabel;
+    state.busyQuip = quipPool[quipIdx];
+    state.busyElapsedSec = 0;
+    renderWindow();
+
+    const timerId = setInterval(() => {
+        if (state.activeRunId !== runId) return;
+        state.busyElapsedSec += 1;
+        if (typeof document !== 'undefined') {
+            const timerEl = document.getElementById('nmf-live-timer');
+            if (timerEl) timerEl.textContent = `Прошло: ${state.busyElapsedSec} сек.`;
+            const miniEl = document.getElementById('nmf-mini-timer');
+            if (miniEl) miniEl.textContent = String(state.busyElapsedSec);
+        }
+
+        if (state.busyElapsedSec % 3 === 0) {
+            quipIdx = (quipIdx + 1) % quipPool.length;
+            state.busyQuip = quipPool[quipIdx];
+            if (typeof document !== 'undefined') {
+                const quipEl = document.getElementById('nmf-live-quip');
+                if (quipEl) quipEl.textContent = `«${state.busyQuip}»`;
+            }
+        }
+    }, 1000);
+    state.busyTimerId = timerId;
+
+    try {
+        await fn(abortCtl.signal, runId);
+        if (state.activeRunId === runId && state.busyMinimized && !abortCtl.signal.aborted) {
+            notifyToast(`Готово в фоне: ${taskLabel}!`);
+        }
+        return true;
+    } catch (err) {
+        if (abortCtl.signal.aborted || state.busyCancelRequested) {
+            notifyToast('Задача NexusMatch Forge отменена (активный чат Таверны не затронут).');
+        } else {
+            console.error('[NexusMatch Forge]', err);
+            notifyToast(err?.message || String(err), true);
+        }
+        return false;
+    } finally {
+        clearInterval(timerId);
+        if (state.activeRunId === runId) {
+            state.busyTimerId = null;
+            state.busyAbort = null;
+            state.busy = false;
+            state.busyMinimized = false;
+            state.busyCancelRequested = false;
+            state.busyCancellable = true;
+            state.activeRunId = 0;
+            renderWindow();
+        }
+    }
+}
+
+async function executeOverwriteFlow(sess, cfg, allowExternalOverride = false) {
+    const targetAvatar = sess.card.sourceAvatarId;
+    if (!targetAvatar || !sess.card.sourceLoadedFromTavern) return;
+
+    await withBusy('Безопасно обновляем карточку в SillyTavern', async () => {
+        try {
+            const avatarDataUrl = resolveEntityAvatarUrl(sess.card);
+            const result = await updateExistingCardInTavern(sess.card, {
+                avatarFileName: targetAvatar,
+                avatarDataUrl,
+                accentHex: getThemeColor(),
+                aspectRatio: cfg.imageAspectRatio || '1:1',
+                cropFocus: cfg.imageCropFocus || 'top',
+                allowExternalChangeOverride: allowExternalOverride,
+            });
+            state.overwriteConfirmInfo = null;
+            saveSettings();
+            await Promise.all([refreshRosterData(), refreshBackupsList()]);
+            if (result.noop) {
+                notifyToast('Нет изменённых полей для записи.');
+            } else if (globalThis.window?.toastr?.success) {
+                window.toastr.success(`Карточка «${sess.card.name}» обновлена (бэкап сохранён)!`, 'NexusMatch');
+            }
+        } catch (err) {
+            if (err?.code === 'EXTERNAL_CARD_MODIFIED' && !allowExternalOverride) {
+                const diff = computeCardDiff(sess.card);
+                state.overwriteConfirmInfo = {
+                    targetAvatar,
+                    diff,
+                    externalWarning: true,
+                };
+                return;
+            }
+            throw err;
+        }
+    }, { taskType: 'save', cancellable: false });
 }
 
 function bindWindowDelegation(win) {
@@ -1633,7 +1938,6 @@ function bindWindowDelegation(win) {
         if (el.dataset.intake) {
             const k = el.dataset.intake;
             sess.intake[k] = el.type === 'number' ? Number(el.value) : el.value;
-            // Auto-sync cardFormat & greeting style when switching to World/RPG mode!
             if (k === 'originType') {
                 if (el.value === 'world_sandbox') {
                     sess.intake.cardFormat = 'world_sandbox';
@@ -1646,16 +1950,12 @@ function bindWindowDelegation(win) {
                 }
             }
             saveSettings();
-            if (['originType', 'rating', 'wordBudgetId', 'greetingBudgetId', 'userGender', 'targetGender', 'language'].includes(k)) {
-                renderWindow();
-            }
             return;
         }
         if (el.dataset.tinder) {
             const k = el.dataset.tinder;
-            sess.tinder[k] = k === 'batchSize' ? Number(el.value) : el.value;
+            sess.tinder[k] = el.type === 'number' ? Number(el.value) : el.value;
             saveSettings();
-            if (k === 'batchSize') renderWindow();
             return;
         }
         if (el.dataset.blitz) {
@@ -1682,7 +1982,9 @@ function bindWindowDelegation(win) {
             return;
         }
         if (el.dataset.card) {
-            sess.card[el.dataset.card] = el.value;
+            const field = el.dataset.card;
+            sess.card[field] = el.value;
+            markCardFieldDirty(sess.card, field);
             saveSettings();
             return;
         }
@@ -1690,6 +1992,7 @@ function bindWindowDelegation(win) {
             const idx = Number(el.dataset.altIdx);
             if (Array.isArray(sess.card.alternate_greetings)) {
                 sess.card.alternate_greetings[idx] = el.value;
+                markCardFieldDirty(sess.card, 'alternate_greetings');
                 saveSettings();
             }
         }
@@ -1700,6 +2003,16 @@ function bindWindowDelegation(win) {
         const cfg = getSettings();
         const sess = getActiveSession();
 
+        if (el.dataset.card && sess) {
+            const field = el.dataset.card;
+            sess.card[field] = el.value;
+            markCardFieldDirty(sess.card, field);
+            saveSettings();
+            if (el.tagName === 'SELECT') {
+                renderWindow();
+            }
+            return;
+        }
         if (el.dataset.intake && sess) {
             const k = el.dataset.intake;
             const nextVal = el.type === 'number' ? Number(el.value) : el.value;
@@ -1716,7 +2029,7 @@ function bindWindowDelegation(win) {
                     }
                 }
                 saveSettings();
-                if (['originType', 'rating', 'wordBudgetId', 'greetingBudgetId', 'userGender', 'targetGender', 'language'].includes(k)) {
+                if (['originType', 'cardFormat', 'rating', 'wordBudgetId', 'greetingBudgetId', 'userGender', 'targetGender', 'language'].includes(k)) {
                     renderWindow();
                 }
             }
@@ -1733,43 +2046,36 @@ function bindWindowDelegation(win) {
             syncExtSettingsPanel();
             return;
         }
-        if (el.id === 'nmf-avatar-upload' && el.files?.[0]) {
+        if (el.id === 'nmf-avatar-upload' && el.files?.[0] && sess) {
             try {
-                sess.card.avatarDataUrl = await compressImageFileToDataUrl(el.files[0], 896);
+                const compressed = await compressImageFileToDataUrl(el.files[0], 896);
+                sess.card.avatarId = await saveMediaDataUrl(compressed, sess.card.avatarId || '');
+                sess.card.avatarDataUrl = '';
+                sess.card.avatarDirty = true;
                 saveSettings();
                 notifyToast('Изображение прикреплено.');
                 renderWindow();
             } catch (err) {
                 notifyToast('Не удалось прочитать файл: ' + err.message, true);
+            } finally {
+                el.value = '';
             }
             return;
         }
-        if (el.id === 'nmf-json-import' && el.files?.[0]) {
+        if (el.id === 'nmf-json-import' && el.files?.[0] && sess) {
             try {
                 const txt = await el.files[0].text();
                 const obj = JSON.parse(txt);
-                const d = obj.data || obj;
-                sess.card = {
-                    ...sess.card,
-                    name: d.name || '',
-                    description: d.description || '',
-                    personality: d.personality || '',
-                    scenario: d.scenario || '',
-                    first_mes: d.first_mes || '',
-                    alternate_greetings: Array.isArray(d.alternate_greetings) ? d.alternate_greetings : [],
-                    mes_example: d.mes_example || '',
-                    creator_notes: d.creator_notes || obj.creatorcomment || '',
-                    system_prompt: d.system_prompt || '',
-                    post_history_instructions: d.post_history_instructions || '',
-                    tags: Array.isArray(d.tags) ? d.tags.join(', ') : (d.tags || ''),
-                    creator: d.creator || '',
-                    world: d.extensions?.world || '',
-                };
+                // Strictly resets sourceAvatarId, previous avatar, and previous imagePrompt! (fixes NMF-004 & NMF-003)
+                sess.card = createCardStateFromImportedJson(obj);
+                await pruneOrphanedMedia(cfg.sessions);
                 saveSettings();
-                notifyToast('JSON-карточка загружена.');
+                notifyToast('JSON-карточка загружена как независимый черновик.');
                 renderWindow();
             } catch (err) {
                 notifyToast('Ошибка JSON: ' + err.message, true);
+            } finally {
+                el.value = '';
             }
         }
     });
@@ -1781,6 +2087,10 @@ function bindWindowDelegation(win) {
         }
         if (e.target?.id === 'nmf-cand-edit-backdrop') {
             state.editingCandRef = null;
+            return renderWindow();
+        }
+        if (e.target?.id === 'nmf-overwrite-backdrop') {
+            state.overwriteConfirmInfo = null;
             return renderWindow();
         }
 
@@ -1800,12 +2110,32 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
         if (act === 'cancel-busy') {
-            abortTavernTextGeneration();
-            if (state.busyAbort) state.busyAbort.abort();
-            state.busy = false;
-            state.busyMinimized = false;
-            notifyToast('Запрос прерван (уже готовые карточки сохранены).');
+            requestCancelBusyTask();
+            return;
+        }
+        if (act === 'cancel-overwrite-confirm') {
+            state.overwriteConfirmInfo = null;
             return renderWindow();
+        }
+        if (act === 'confirm-overwrite-execute') {
+            const allowOverride = Boolean(state.overwriteConfirmInfo?.externalWarning);
+            await executeOverwriteFlow(sess, cfg, allowOverride);
+            return;
+        }
+        if (act === 'download-card-backup') {
+            const bak = await getCardBackupById(btn.dataset.bid);
+            if (!bak) {
+                notifyToast('Резервная копия не найдена.', true);
+                return;
+            }
+            if (bak.pngBase64) {
+                const bytes = base64ToBytes(bak.pngBase64);
+                triggerDownload(new Blob([bytes], { type: 'image/png' }), `BACKUP_${bak.avatarFileName || 'card.png'}`);
+            } else if (bak.cardJson) {
+                const v2Blob = new Blob([JSON.stringify(bak.cardJson, null, 2)], { type: 'application/json' });
+                triggerDownload(v2Blob, `BACKUP_${(bak.avatarFileName || 'card').replace(/\.png$/i, '')}.json`);
+            }
+            return;
         }
         if (act === 'open-intake-sheet') {
             state.intakeSheetOpen = true;
@@ -1830,6 +2160,10 @@ function bindWindowDelegation(win) {
         if (act === 'create-submode') {
             sess.architect.subMode = btn.dataset.sub;
             saveSettings();
+            return renderWindow();
+        }
+        if (act === 'create-submode-nav' || act === 'switch-tab') {
+            state.activeTab = btn.dataset.tab;
             return renderWindow();
         }
         if (act === 'toggle-swipe-opts') {
@@ -1872,10 +2206,6 @@ function bindWindowDelegation(win) {
             notifyToast('Промпт коррекции сброшен к стандартному.');
             return renderWindow();
         }
-        if (act === 'switch-tab') {
-            state.activeTab = btn.dataset.tab;
-            return renderWindow();
-        }
         if (act === 'new-session') {
             const ns = createDefaultSession(cfg.sessions.length + 1);
             cfg.sessions.push(ns);
@@ -1886,6 +2216,7 @@ function bindWindowDelegation(win) {
         if (act === 'switch-session') {
             cfg.activeSessionId = btn.dataset.sid;
             saveSettings();
+            await hydrateSessionsMedia(cfg.sessions);
             return renderWindow();
         }
         if (act === 'toggle-freeze') {
@@ -1907,6 +2238,7 @@ function bindWindowDelegation(win) {
             if (!window.confirm(`Удалить «${sess.title}»?`)) return;
             cfg.sessions = cfg.sessions.filter((s) => s.id !== sess.id);
             cfg.activeSessionId = cfg.sessions[0].id;
+            await pruneOrphanedMedia(cfg.sessions);
             saveSettings();
             return renderWindow();
         }
@@ -1931,7 +2263,7 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
 
-        // MANUAL BAN & "МИМО" ARCHIVE / EDITING CONTROLS
+        // MANUAL BAN & ARCHIVE CONTROLS
         if (act === 'add-manual-ban') {
             const rawTxt = state.manualBanDraft.trim();
             if (!rawTxt) return;
@@ -1999,7 +2331,6 @@ function bindWindowDelegation(win) {
             if (cand) await expandCandidateIntoFullCard(sess, cand, cfg.transportMode);
             return;
         }
-
         if (act === 'dismiss-reject-pop') {
             sess.tinder.lastDislikedCandidate = null;
             saveSettings();
@@ -2025,11 +2356,17 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
         if (act === 'refresh-roster') {
-            await refreshRosterData();
-            notifyToast(`Карточек: ${state.rosterChars.length}, Лорбуков: ${state.worldNames.length}`);
-            return renderWindow();
+            await withBusy('Обновляем список карточек и Лорбуков', async (signal) => {
+                await refreshRosterData(signal);
+                notifyToast(`Карточек: ${state.rosterChars.length}, Лорбуков: ${state.worldNames.length}`);
+            }, { taskType: 'roster', cancellable: true });
+            return;
         }
         if (act === 'open-codex-forge') {
+            if (!detectPocketCodex()) {
+                notifyToast('Pocket Codex & Forge сейчас не активен.', true);
+                return;
+            }
             closeForgeDialog();
             openPocketCodexForge();
             return;
@@ -2052,7 +2389,7 @@ function bindWindowDelegation(win) {
                 sess.tinder.queue.push(...cands);
                 sess.tinder.lastDislikedCandidate = null;
                 saveSettings();
-            });
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
         if (act === 'gen-cand-art') {
@@ -2073,6 +2410,7 @@ function bindWindowDelegation(win) {
             const cur = sess.tinder.queue.shift();
             if (!cur) return;
             sess.tinder.liked.unshift(cur);
+            if (sess.tinder.liked.length > MAX_LIKED_CANDIDATES) sess.tinder.liked.length = MAX_LIKED_CANDIDATES;
             await expandCandidateIntoFullCard(sess, cur, cfg.transportMode);
             return;
         }
@@ -2088,11 +2426,13 @@ function bindWindowDelegation(win) {
         }
         if (act === 'del-liked') {
             sess.tinder.liked.splice(Number(btn.dataset.idx), 1);
+            await pruneOrphanedMedia(cfg.sessions);
             saveSettings();
             return renderWindow();
         }
         if (act === 'del-passed') {
             sess.tinder.passed.splice(Number(btn.dataset.idx), 1);
+            await pruneOrphanedMedia(cfg.sessions);
             saveSettings();
             return renderWindow();
         }
@@ -2111,7 +2451,7 @@ function bindWindowDelegation(win) {
                 if (!qs.length) throw new Error('Не удалось разобрать список вопросов.');
                 sess.blitz.questions = qs.slice(0, 10);
                 saveSettings();
-            });
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
         if (act === 'blitz-skip') {
@@ -2146,7 +2486,7 @@ function bindWindowDelegation(win) {
                 if (!qs[0]) throw new Error('Не удалось получить новый вопрос.');
                 sess.blitz.questions[idx] = qs[0];
                 saveSettings();
-            });
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
         if (act === 'build-from-blitz') {
@@ -2164,15 +2504,20 @@ function bindWindowDelegation(win) {
                     signal,
                 });
                 const parsed = parseFullCardResponse(raw, cfg.transportMode, sess.intake.playerNameMode || 'macro');
-                applyGeneratedToSessionCard(sess, parsed, { sourceAvatarId: '' });
+                applyGeneratedToSessionCard(sess, parsed, {
+                    avatarId: '',
+                    sourceAvatarId: '',
+                    sourceLoadedFromTavern: false,
+                });
+                await pruneOrphanedMedia(cfg.sessions);
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
                 saveSettings();
-            });
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
 
-        // CREATE / AU REWORK ACTIONS
+        // CREATE / AU REWORK ACTIONS (with FULL unshallowed character loading — fixes NMF-002!)
         if (act === 'build-from-architect') {
             await withBusy('Собираем карточку по вашей задумке', async (signal) => {
                 const req = buildFullCardRequest(sess, sess.architect.freeConcept, cfg.transportMode);
@@ -2183,60 +2528,65 @@ function bindWindowDelegation(win) {
                     signal,
                 });
                 const parsed = parseFullCardResponse(raw, cfg.transportMode, sess.intake.playerNameMode || 'macro');
-                applyGeneratedToSessionCard(sess, parsed, { sourceAvatarId: '' });
+                applyGeneratedToSessionCard(sess, parsed, {
+                    avatarId: '',
+                    sourceAvatarId: '',
+                    sourceLoadedFromTavern: false,
+                });
+                await pruneOrphanedMedia(cfg.sessions);
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
                 saveSettings();
-            });
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
+
         if (act === 'load-char-to-editor' || act === 'run-rework') {
-            const srcChar = state.rosterChars.find((c) => c.avatar === sess.rework.sourceAvatar);
-            if (!srcChar) {
+            const chosenAvatar = String(sess.rework.sourceAvatar || '').trim();
+            if (!chosenAvatar) {
                 notifyToast('Сначала выберите карточку из списка.', true);
                 return;
             }
-            const d = srcChar.data || srcChar;
-            let srcAvatarDataUrl = '';
-            try {
-                srcAvatarDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(srcChar.avatar)}`);
-            } catch {}
 
             if (act === 'load-char-to-editor') {
-                sess.card = {
-                    name: srcChar.name || d.name || '',
-                    description: d.description || srcChar.description || '',
-                    personality: d.personality || srcChar.personality || '',
-                    scenario: d.scenario || srcChar.scenario || '',
-                    first_mes: d.first_mes || srcChar.first_mes || '',
-                    alternate_greetings: Array.isArray(d.alternate_greetings) ? [...d.alternate_greetings] : [],
-                    mes_example: d.mes_example || srcChar.mes_example || '',
-                    creator_notes: d.creator_notes || srcChar.creatorcomment || '',
-                    system_prompt: d.system_prompt || '',
-                    post_history_instructions: d.post_history_instructions || '',
-                    tags: Array.isArray(d.tags) ? d.tags.join(', ') : (d.tags || ''),
-                    creator: d.creator || '',
-                    character_version: d.character_version || '1.0',
-                    world: d.extensions?.world || '',
-                    imagePrompt: '',
-                    avatarDataUrl: srcAvatarDataUrl,
-                    sourceAvatarId: srcChar.avatar,
-                };
-                state.activeTab = 'editor';
-                state.editorSubTab = 'main';
-                saveSettings();
-                return renderWindow();
+                await withBusy('Загружаем полную карточку из SillyTavern', async (signal) => {
+                    const { fullChar } = await fetchFullTavernCharacter(chosenAvatar, { signal });
+                    let previewAvatarId = '';
+                    try {
+                        const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(chosenAvatar)}`, signal);
+                        previewAvatarId = await saveMediaDataUrl(srcDataUrl, sess.card.avatarId || '');
+                    } catch {
+                        previewAvatarId = '';
+                    }
+                    sess.card = createCardStateFromTavernChar(fullChar, { avatarId: previewAvatarId });
+                    await pruneOrphanedMedia(cfg.sessions);
+                    state.activeTab = 'editor';
+                    state.editorSubTab = 'main';
+                    saveSettings();
+                }, { taskType: 'load', cancellable: true });
+                return;
             }
 
-            await withBusy(`Переносим «${srcChar.name}» в новую вселенную`, async (signal) => {
+            await withBusy('Загружаем полную карточку и переносим в новую вселенную', async (signal) => {
+                const { fullChar, rawCardObject, snapshotHash } = await fetchFullTavernCharacter(chosenAvatar, { signal });
+                const baseState = createCardStateFromTavernChar(fullChar);
+                let previewAvatarId = '';
+                try {
+                    const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(chosenAvatar)}`, signal);
+                    previewAvatarId = await saveMediaDataUrl(srcDataUrl, sess.card.avatarId || '');
+                } catch {
+                    previewAvatarId = sess.card.avatarId || '';
+                }
+
                 const req = buildReworkCardRequest(sess, {
-                    name: srcChar.name || d.name,
-                    description: d.description || srcChar.description,
-                    personality: d.personality || srcChar.personality,
-                    scenario: d.scenario || srcChar.scenario,
-                    first_mes: d.first_mes || srcChar.first_mes,
-                    mes_example: d.mes_example || srcChar.mes_example,
+                    name: baseState.name,
+                    description: baseState.description,
+                    personality: baseState.personality,
+                    scenario: baseState.scenario,
+                    first_mes: baseState.first_mes,
+                    mes_example: baseState.mes_example,
                 }, cfg.transportMode);
+
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,
@@ -2245,21 +2595,31 @@ function bindWindowDelegation(win) {
                 });
                 const parsed = parseFullCardResponse(raw, cfg.transportMode, sess.intake.playerNameMode || 'macro');
                 applyGeneratedToSessionCard(sess, parsed, {
-                    avatarDataUrl: srcAvatarDataUrl || sess.card.avatarDataUrl,
-                    sourceAvatarId: srcChar.avatar,
-                    world: d.extensions?.world || sess.card.world || '',
+                    avatarId: previewAvatarId,
+                    avatarDirty: false,
+                    sourceAvatarId: chosenAvatar,
+                    sourceLoadedFromTavern: true,
+                    sourceSnapshotHash: snapshotHash,
+                    originalCardData: structuredClone(rawCardObject),
+                    world: baseState.world,
+                    creator: baseState.creator,
+                    character_version: baseState.character_version,
                 });
+                await pruneOrphanedMedia(cfg.sessions);
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
                 saveSettings();
-            });
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
 
         // PROFILE EDITOR ACTIONS
         if (act === 'clear-avatar') {
+            sess.card.avatarId = '';
             sess.card.avatarDataUrl = '';
+            sess.card.avatarDirty = true;
             state.editorArtError = '';
+            await pruneOrphanedMedia(cfg.sessions);
             saveSettings();
             return renderWindow();
         }
@@ -2296,7 +2656,7 @@ function bindWindowDelegation(win) {
             renderWindow();
             try {
                 const p = sess.card.imagePrompt || `${sess.card.name}, detailed artwork`;
-                sess.card.avatarDataUrl = await generateCharacterPortrait(p, {
+                const dataUrl = await generateCharacterPortrait(p, {
                     imageSource: cfg.imageSource,
                     imageProfileId: cfg.imageProfileId,
                     imageStyleId: cfg.imageStyleId,
@@ -2311,6 +2671,10 @@ function bindWindowDelegation(win) {
                         syncEditorArtStatusDom();
                     },
                 });
+                sess.card.avatarId = await saveMediaDataUrl(dataUrl, sess.card.avatarId || '');
+                sess.card.avatarDataUrl = '';
+                sess.card.avatarDirty = true;
+                markCardFieldDirty(sess.card, 'imagePrompt');
                 state.editorArtError = '';
                 saveSettings();
             } catch (err) {
@@ -2329,20 +2693,23 @@ function bindWindowDelegation(win) {
         if (act === 'add-alt-greeting') {
             if (!Array.isArray(sess.card.alternate_greetings)) sess.card.alternate_greetings = [];
             sess.card.alternate_greetings.push('');
+            markCardFieldDirty(sess.card, 'alternate_greetings');
             saveSettings();
             return renderWindow();
         }
         if (act === 'del-alt-greeting') {
             sess.card.alternate_greetings.splice(Number(btn.dataset.idx), 1);
+            markCardFieldDirty(sess.card, 'alternate_greetings');
             saveSettings();
             return renderWindow();
         }
         if (act === 'export-png') {
             try {
+                const avatarUrl = resolveEntityAvatarUrl(sess.card);
                 const blob = await buildCardPngBlob(sess.card, getThemeColor(), {
                     aspectRatio: cfg.imageAspectRatio || '1:1',
                     cropFocus: cfg.imageCropFocus || 'top',
-                });
+                }, avatarUrl);
                 const slug = (sess.card.name || 'Character').trim().replace(/[\\/:*?"<>|]+/g, '_');
                 triggerDownload(blob, `${slug}.png`);
             } catch (err) {
@@ -2352,35 +2719,39 @@ function bindWindowDelegation(win) {
         }
         if (act === 'export-json') {
             const v2 = buildV2CardObject(sess.card);
-            const slug = (v2.data.name || 'Character').replace(/[\\/:*?"<>|]+/g, '_');
+            const slug = ((v2.data?.name || v2.name || 'Character')).replace(/[\\/:*?"<>|]+/g, '_');
             triggerDownload(new Blob([JSON.stringify(v2, null, 2)], { type: 'application/json' }), `${slug}.json`);
             return;
         }
         if (act === 'save-to-tavern-new') {
-            await withBusy('Сохраняем карточку в SillyTavern', async () => {
+            await withBusy('Сохраняем новую карточку в SillyTavern', async () => {
+                const avatarUrl = resolveEntityAvatarUrl(sess.card);
                 await importCardIntoTavern(sess.card, {
+                    avatarDataUrl: avatarUrl,
                     accentHex: getThemeColor(),
                     aspectRatio: cfg.imageAspectRatio || '1:1',
                     cropFocus: cfg.imageCropFocus || 'top',
                 });
                 await refreshRosterData();
-                if (window.toastr?.success) window.toastr.success(`«${sess.card.name}» добавлена в Таверну!`, 'NexusMatch');
-            });
+                if (globalThis.window?.toastr?.success) {
+                    window.toastr.success(`«${sess.card.name}» добавлена как новая карточка в Таверну!`, 'NexusMatch');
+                }
+            }, { taskType: 'save', cancellable: false });
             return;
         }
         if (act === 'save-to-tavern-overwrite') {
-            if (!sess.card.sourceAvatarId) return;
-            if (!window.confirm(`Обновить исходную карточку (${sess.card.sourceAvatarId})?`)) return;
-            await withBusy('Обновляем карточку в SillyTavern', async () => {
-                await importCardIntoTavern(sess.card, {
-                    preserveAvatarFile: sess.card.sourceAvatarId,
-                    accentHex: getThemeColor(),
-                    aspectRatio: cfg.imageAspectRatio || '1:1',
-                    cropFocus: cfg.imageCropFocus || 'top',
-                });
-                await refreshRosterData();
-                if (window.toastr?.success) window.toastr.success(`Карточка «${sess.card.name}» обновлена!`, 'NexusMatch');
-            });
+            if (!sess.card.sourceAvatarId || !sess.card.sourceLoadedFromTavern) return;
+            const diff = computeCardDiff(sess.card);
+            if (!diff.hasChanges) {
+                notifyToast('В карточке пока нет изменённых полей.');
+                return;
+            }
+            state.overwriteConfirmInfo = {
+                targetAvatar: sess.card.sourceAvatarId,
+                diff,
+                externalWarning: false,
+            };
+            renderWindow();
         }
     });
 }
@@ -2406,71 +2777,25 @@ async function expandCandidateIntoFullCard(sess, cand, transportMode) {
             signal,
         });
         const parsed = parseFullCardResponse(raw, transportMode, sess.intake.playerNameMode || 'macro');
+        const candMediaUrl = resolveEntityAvatarUrl(cand);
+        const newCardAvatarId = candMediaUrl ? await saveMediaDataUrl(candMediaUrl) : '';
         applyGeneratedToSessionCard(sess, parsed, {
-            avatarDataUrl: cand.avatarDataUrl || '',
+            avatarId: newCardAvatarId,
+            avatarDirty: Boolean(newCardAvatarId),
             imagePrompt: parsed.imagePrompt || cand.imagePrompt || '',
             sourceAvatarId: '',
+            sourceLoadedFromTavern: false,
         });
         state.activeTab = 'editor';
         state.editorSubTab = 'main';
         saveSettings();
-    });
-}
-
-async function withBusy(taskLabel, fn) {
-    if (state.busy) return;
-    const cfg = getSettings();
-    const quipPool = THEME_LOADING_QUIPS[cfg.theme] || THEME_LOADING_QUIPS.krakoa;
-    let quipIdx = Math.floor(Math.random() * quipPool.length);
-
-    const abortCtl = new AbortController();
-    state.busy = true;
-    state.busyMinimized = false;
-    state.busyAbort = abortCtl;
-    state.busyTaskLabel = taskLabel;
-    state.busyQuip = quipPool[quipIdx];
-    state.busyElapsedSec = 0;
-    renderWindow();
-
-    state.busyTimerId = setInterval(() => {
-        state.busyElapsedSec += 1;
-        const timerEl = document.getElementById('nmf-live-timer');
-        if (timerEl) timerEl.textContent = `Прошло: ${state.busyElapsedSec} сек.`;
-        const miniEl = document.getElementById('nmf-mini-timer');
-        if (miniEl) miniEl.textContent = String(state.busyElapsedSec);
-
-        if (state.busyElapsedSec % 3 === 0) {
-            quipIdx = (quipIdx + 1) % quipPool.length;
-            state.busyQuip = quipPool[quipIdx];
-            const quipEl = document.getElementById('nmf-live-quip');
-            if (quipEl) quipEl.textContent = `«${state.busyQuip}»`;
-        }
-    }, 1000);
-
-    try {
-        await fn(abortCtl.signal);
-        if (state.busyMinimized) {
-            notifyToast(`Готово в фоне: ${taskLabel}!`);
-        }
-    } catch (err) {
-        console.error('[NexusMatch Forge]', err);
-        if (!abortCtl.signal.aborted) notifyToast(err?.message || String(err), true);
-    } finally {
-        if (state.busyTimerId) {
-            clearInterval(state.busyTimerId);
-            state.busyTimerId = null;
-        }
-        state.busyAbort = null;
-        state.busy = false;
-        state.busyMinimized = false;
-        renderWindow();
-    }
+    }, { taskType: 'llm', cancellable: true });
 }
 
 function mountRosterButton() {
-    if (document.getElementById('nmf-roster-btn')) return;
+    if (typeof document === 'undefined' || document.getElementById('nmf-roster-btn')) return true;
     const bar = document.getElementById('rm_button_bar');
-    if (!bar) return;
+    if (!bar) return false;
 
     const btn = document.createElement('div');
     btn.id = 'nmf-roster-btn';
@@ -2490,9 +2815,11 @@ function mountRosterButton() {
     } else {
         bar.prepend(btn);
     }
+    return true;
 }
 
 function syncExtSettingsPanel() {
+    if (typeof document === 'undefined') return;
     const themeSel = document.getElementById('nmf-ext-theme');
     const modeSel = document.getElementById('nmf-ext-transport');
     const cfg = getSettings();
@@ -2501,9 +2828,9 @@ function syncExtSettingsPanel() {
 }
 
 function mountExtensionManagerPanel() {
-    if (document.getElementById('nmf-ext-settings-block')) return;
+    if (typeof document === 'undefined' || document.getElementById('nmf-ext-settings-block')) return true;
     const host = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
-    if (!host) return;
+    if (!host) return false;
 
     const cfg = getSettings();
     const wrap = document.createElement('div');
@@ -2516,7 +2843,7 @@ function mountExtensionManagerPanel() {
         </div>
         <div class="inline-drawer-content" style="display:none;padding:8px 4px;">
             <div style="font-size:12px;opacity:0.85;margin-bottom:8px;">
-                Студия свайпов, блиц-знакомств, создания персонажей, Миров и РПГ-карточек.
+                Студия свайпов, блиц-знакомств, создания персонажей, Миров и РПГ-карточек (V2).
             </div>
             <div id="nmf-ext-open-btn" class="menu_button interactable" style="width:100%;justify-content:center;gap:6px;margin-bottom:8px;">
                 ${NMF_ICONS.rosterBtn} <span>Открыть NexusMatch Forge</span>
@@ -2528,10 +2855,10 @@ function mountExtensionManagerPanel() {
             <label style="font-size:11.5px;display:block;margin-bottom:3px;">Режим отправки запросов к ИИ:</label>
             <select id="nmf-ext-transport" class="text_pole">
                 <option value="prefill_user_msg" ${cfg.transportMode === 'prefill_user_msg' ? 'selected' : ''}>Полный активный пресет (Prefill)</option>
-                <option value="json_schema" ${cfg.transportMode === 'json_schema' ? 'selected' : ''}>Строгая JSON-схема (Экономия токенов)</option>
+                <option value="json_schema" ${cfg.transportMode === 'json_schema' ? 'selected' : ''}>Строгая JSON-схема (Core JSON Schema)</option>
             </select>
             <div style="font-size:11px;opacity:0.78;margin-top:6px;line-height:1.38;">
-                При отправке полного пресета ролевые блоки могут сбить формат карточки или выдать обычный ответ модели — при необходимости поправьте Промпт коррекции внутри настроек окна Форджа или переключитесь на JSON-схему.
+                При отправке полного пресета ролевые блоки могут сбить формат карточки — при необходимости поправьте Промпт коррекции внутри настроек окна Форджа или переключитесь на JSON-схему.
             </div>
         </div>
     `;
@@ -2546,22 +2873,48 @@ function mountExtensionManagerPanel() {
         getSettings().transportMode = e.target.value;
         saveSettings();
     });
+    return true;
 }
 
-function initNexusMatchForge() {
+// Scoped, self-disconnecting DOM lifecycle observer (fixes NMF-018)
+let mountObserver = null;
+
+function tryMountAllAndDisconnectIfReady() {
+    const okRoster = mountRosterButton();
+    const okExt = mountExtensionManagerPanel();
+    if (okRoster && okExt && mountObserver) {
+        mountObserver.disconnect();
+        mountObserver = null;
+    }
+    return okRoster && okExt;
+}
+
+export function initNexusMatchForge() {
+    if (typeof document === 'undefined') return;
     ensureStylesMounted();
-    mountRosterButton();
-    mountExtensionManagerPanel();
+    if (tryMountAllAndDisconnectIfReady()) return;
 
-    const obs = new MutationObserver(() => {
-        if (!document.getElementById('nmf-roster-btn')) mountRosterButton();
-        if (!document.getElementById('nmf-ext-settings-block')) mountExtensionManagerPanel();
-    });
-    obs.observe(document.body, { childList: true, subtree: true });
+    const ctx = getTavernContext();
+    const appReadyEv = ctx?.eventTypes?.APP_READY || ctx?.event_types?.APP_READY;
+    if (appReadyEv && typeof ctx?.eventSource?.on === 'function') {
+        ctx.eventSource.on(appReadyEv, () => {
+            tryMountAllAndDisconnectIfReady();
+        });
+    }
+
+    if (typeof MutationObserver !== 'undefined' && document.body && !mountObserver) {
+        const targetContainer = document.getElementById('top-settings-holder') || document.body;
+        mountObserver = new MutationObserver(() => {
+            tryMountAllAndDisconnectIfReady();
+        });
+        mountObserver.observe(targetContainer, { childList: true, subtree: true });
+    }
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initNexusMatchForge);
-} else {
-    initNexusMatchForge();
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initNexusMatchForge);
+    } else {
+        initNexusMatchForge();
+    }
 }

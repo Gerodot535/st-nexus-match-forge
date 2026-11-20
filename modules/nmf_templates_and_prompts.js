@@ -1,4 +1,9 @@
 // 8 Character, World & RPG Card Formats synthesized from ST / Chub / JanitorAI / GM-Authoring guides
+// Note (NMF-017): World Sandbox and RPG GM Engine are structured content templates packaged inside standard Character Card V2 (chara_card_v2).
+export const SETTINGS_SCHEMA_VERSION = 2;
+export const MAX_LIKED_CANDIDATES = 100;
+export const MAX_PASSED_CANDIDATES = 50;
+
 export const CARD_FORMATS = [
     {
         id: 'dossier_19',
@@ -55,8 +60,8 @@ export const CARD_FORMATS = [
     },
     {
         id: 'world_sandbox',
-        name: 'World Sandbox / Карточка Мира-Песочницы (Рассказчик)',
-        desc: 'Живой сеттинг без привязки к одному герою: законы мира, локации, фракции и ведущий-рассказчик.',
+        name: 'World Sandbox / Карточка Мира-Песочницы (Рассказчик, V2)',
+        desc: 'Шаблон живого сеттинга внутри Character Card V2: законы мира, локации, фракции и ведущий-рассказчик.',
         instructions: `Build a dedicated WORLD SANDBOX / SETTING NARRATOR card where { {char} } is the living World & Storyteller (NOT a single person):
 ### [WORLD FOUNDATION & LAWS]
 Core truths, atmosphere, magic/tech rules, social hierarchy, and daily life.
@@ -69,8 +74,8 @@ Reactive world with consequences; describe the scene and NPC actions vividly, th
     },
     {
         id: 'rpg_gm_engine',
-        name: 'RPG Game Master / РПГ-Система (Квесты + Механики + Мир)',
-        desc: 'Полноценный Гейм-Мастер для текстовой РПГ: мир, классы/ранги, живые НПС, квесты и компактный статус-блок.',
+        name: 'RPG Game Master / РПГ-Система (Шаблон в Character Card V2)',
+        desc: 'Шаблон Гейм-Мастера внутри Character Card V2: мир, ранги, живые НПС, квесты и компактный статус-блок.',
         instructions: `Build a dedicated RPG GAME MASTER / SYSTEM ENGINE card where { {char} } runs an interactive RPG campaign:
 ### [CAMPAIGN SETTING & PREMISE]
 Irreducible world facts, danger level, economy/currency, and power/rank progression.
@@ -272,6 +277,113 @@ export const TARGET_GENDER_OPTIONS = [
 export const DEFAULT_PRESET_CORRECTION_PROMPT =
     '[CORRECTION OVERRIDE: For this request, do NOT write a roleplay chat reply, status tracker, or HTML info-box from the preset. Think using the user preset parameters, then output ONLY the exact NexusMatch card structure requested above.]';
 
+// Real SillyTavern Core JsonSchema objects (fixes NMF-010)
+export const FULL_CARD_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_full_card_v2',
+    description: 'Complete Character Card V2 synthesis payload for NexusMatch Forge',
+    strict: true,
+    returnInvalid: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'name',
+            'description',
+            'personality',
+            'scenario',
+            'first_mes',
+            'alternate_greetings',
+            'mes_example',
+            'creator_notes',
+            'system_prompt',
+            'post_history_instructions',
+            'tags',
+            'image_prompt',
+        ],
+        properties: {
+            name: { type: 'string' },
+            description: { type: 'string' },
+            personality: { type: 'string' },
+            scenario: { type: 'string' },
+            first_mes: { type: 'string' },
+            alternate_greetings: { type: 'array', items: { type: 'string' } },
+            mes_example: { type: 'string' },
+            creator_notes: { type: 'string' },
+            system_prompt: { type: 'string' },
+            post_history_instructions: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+            image_prompt: { type: 'string' },
+        },
+    },
+});
+
+export const TINDER_PREVIEW_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_swipe_candidates',
+    description: 'List of NexusMatch Forge swipe preview candidates',
+    strict: true,
+    returnInvalid: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['candidates'],
+        properties: {
+            candidates: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: [
+                        'name',
+                        'compatibility',
+                        'archetype',
+                        'pitch',
+                        'appearance',
+                        'quote',
+                        'tags',
+                        'image_prompt',
+                    ],
+                    properties: {
+                        name: { type: 'string' },
+                        compatibility: { type: 'number' },
+                        archetype: { type: 'string' },
+                        pitch: { type: 'string' },
+                        appearance: { type: 'string' },
+                        quote: { type: 'string' },
+                        tags: { type: 'array', items: { type: 'string' } },
+                        image_prompt: { type: 'string' },
+                    },
+                },
+            },
+        },
+    },
+});
+
+export const BLITZ_QUESTIONS_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_blitz_questions',
+    description: 'NexusMatch Forge Blitz questionnaire items',
+    strict: true,
+    returnInvalid: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['questions'],
+        properties: {
+            questions: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['question', 'options'],
+                    properties: {
+                        question: { type: 'string' },
+                        options: { type: 'array', items: { type: 'string' } },
+                    },
+                },
+            },
+        },
+    },
+});
+
 const LOCALE_MAP = {
     ru: 'Russian (Русский)',
     en: 'English',
@@ -294,10 +406,11 @@ const LOCALE_MAP = {
 
 export function detectUserLocaleLanguage() {
     try {
+        const g = typeof globalThis !== 'undefined' ? globalThis : {};
         const rawLoc = String(
-            window.localStorage?.getItem('language')
-            || document.documentElement?.lang
-            || navigator.language
+            g.window?.localStorage?.getItem?.('language')
+            || g.document?.documentElement?.lang
+            || g.navigator?.language
             || 'en'
         ).trim().toLowerCase().replace(/_/g, '-');
 
@@ -314,8 +427,9 @@ export function detectUserLocaleLanguage() {
 }
 
 export function resolveOutputLanguageSpec(intake = {}) {
+    const safeIntake = intake && typeof intake === 'object' ? intake : {};
     const detected = detectUserLocaleLanguage();
-    const rawChoice = String(intake.language || '{{language}}').trim();
+    const rawChoice = String(safeIntake.language || '{{language}}').trim();
 
     if (rawChoice === '{{language}}') {
         return {
@@ -336,7 +450,7 @@ export function resolveOutputLanguageSpec(intake = {}) {
         };
     }
     if (rawChoice === 'custom') {
-        const customRaw = String(intake.customLanguage || '').trim() || '{{language}}';
+        const customRaw = String(safeIntake.customLanguage || '').trim() || '{{language}}';
         const expanded = customRaw.replace(/\{\{\s*(?:language|lang|card_lang)\s*\}\}/gi, detected);
         return {
             shortLabel: expanded,
@@ -351,21 +465,22 @@ export function resolveOutputLanguageSpec(intake = {}) {
 }
 
 export function resolveGenderSummary(intake = {}) {
-    const uMode = intake.userGender || 'any';
-    const tMode = intake.targetGender || 'any';
+    const safeIntake = intake && typeof intake === 'object' ? intake : {};
+    const uMode = safeIntake.userGender || 'any';
+    const tMode = safeIntake.targetGender || 'any';
 
     let userSpec = '';
     if (uMode === 'male') userSpec = 'Male (Мужчина)';
     else if (uMode === 'female') userSpec = 'Female (Женщина)';
-    else if (uMode === 'custom' && String(intake.userGenderCustom || '').trim()) {
-        userSpec = String(intake.userGenderCustom).trim();
+    else if (uMode === 'custom' && String(safeIntake.userGenderCustom || '').trim()) {
+        userSpec = String(safeIntake.userGenderCustom).trim();
     }
 
     let targetSpec = '';
     if (tMode === 'male') targetSpec = 'Male (Мужчина)';
     else if (tMode === 'female') targetSpec = 'Female (Женщина)';
-    else if (tMode === 'custom' && String(intake.targetGenderCustom || '').trim()) {
-        targetSpec = String(intake.targetGenderCustom).trim();
+    else if (tMode === 'custom' && String(safeIntake.targetGenderCustom || '').trim()) {
+        targetSpec = String(safeIntake.targetGenderCustom).trim();
     }
 
     return { userSpec, targetSpec };
@@ -387,7 +502,7 @@ export function shieldMacrosForPrompt(str) {
 
 function getActivePersonaName() {
     try {
-        return String(window.SillyTavern?.getContext?.()?.name1 || '').trim();
+        return String(globalThis.window?.SillyTavern?.getContext?.()?.name1 || '').trim();
     } catch {
         return '';
     }
@@ -415,10 +530,11 @@ export function buildUniversalMacroRule(playerNameMode = 'macro') {
     ].join('\n');
 }
 
-export function buildGreetingStyleDirective(intake) {
-    const styleObj = GREETING_STYLES.find((s) => s.id === (intake.greetingStyle || 'fanfic')) || GREETING_STYLES[0];
-    const povObj = GREETING_POVS.find((p) => p.id === (intake.greetingPov || 'third')) || GREETING_POVS[0];
-    const customRules = String(intake.greetingCustomRules || '').trim();
+export function buildGreetingStyleDirective(intake = {}) {
+    const safeIntake = intake && typeof intake === 'object' ? intake : {};
+    const styleObj = GREETING_STYLES.find((s) => s.id === (safeIntake.greetingStyle || 'fanfic')) || GREETING_STYLES[0];
+    const povObj = GREETING_POVS.find((p) => p.id === (safeIntake.greetingPov || 'third')) || GREETING_POVS[0];
+    const customRules = String(safeIntake.greetingCustomRules || '').trim();
 
     return [
         `[OPENING SCENE / FIRST MESSAGE STYLE & FORMATTING]`,
@@ -493,7 +609,7 @@ export function createDefaultSession(index = 1) {
             promptHint: '',
             queue: [],
             liked: [],
-            passed: [], // Full archive of "Мимо" candidates so user can find, edit, restore or build any of them!
+            passed: [],
             dislikedTags: [],
             dislikedNotes: [],
             lastDislikedCandidate: null,
@@ -531,26 +647,319 @@ export function createDefaultSession(index = 1) {
             character_version: '1.0',
             world: '',
             imagePrompt: '',
+            avatarId: '',
             avatarDataUrl: '',
+            avatarDirty: false,
             sourceAvatarId: '',
+            sourceLoadedFromTavern: false,
+            sourceSnapshotHash: '',
+            originalCardData: null,
+            dirtyFields: [],
         },
     };
 }
 
-export function resolveWordTarget(intake) {
-    if (intake.wordBudgetId === 'custom') return Math.max(100, Math.min(4000, Number(intake.customWords) || 800));
-    const found = WORD_BUDGETS.find((b) => b.id === intake.wordBudgetId);
+function normalizeCandidateEntry(rawCand, idx = 0) {
+    if (!rawCand || typeof rawCand !== 'object') return null;
+    const inlineUrl = typeof rawCand.avatarDataUrl === 'string' && rawCand.avatarDataUrl.startsWith('data:')
+        ? rawCand.avatarDataUrl
+        : '';
+    return {
+        id: String(rawCand.id || '').trim() || `cand_mig_${Date.now().toString(36)}_${idx}`,
+        name: String(rawCand.name || 'Кандидат').trim(),
+        compatibility: Number.isFinite(Number(rawCand.compatibility)) ? Number(rawCand.compatibility) : 85,
+        archetype: String(rawCand.archetype || ''),
+        pitch: String(rawCand.pitch || ''),
+        appearance: String(rawCand.appearance || ''),
+        quote: String(rawCand.quote || ''),
+        tags: Array.isArray(rawCand.tags)
+            ? rawCand.tags.map((t) => String(t).trim()).filter(Boolean)
+            : String(rawCand.tags || '').split(',').map((t) => t.trim()).filter(Boolean),
+        imagePrompt: String(rawCand.imagePrompt || rawCand.image_prompt || ''),
+        avatarId: String(rawCand.avatarId || ''),
+        avatarDataUrl: inlineUrl,
+    };
+}
+
+function normalizeQuestionEntry(rawQ, idx = 0) {
+    if (!rawQ || (typeof rawQ !== 'object' && typeof rawQ !== 'string')) return null;
+    if (typeof rawQ === 'string') {
+        return {
+            id: `q_mig_${idx}`,
+            question: rawQ.trim(),
+            options: [],
+            answer: '',
+            skipped: false,
+        };
+    }
+    return {
+        id: String(rawQ.id || '').trim() || `q_mig_${Date.now().toString(36)}_${idx}`,
+        question: String(rawQ.question || '').trim(),
+        options: Array.isArray(rawQ.options) ? rawQ.options.map((o) => String(o)).filter(Boolean) : [],
+        answer: String(rawQ.answer || ''),
+        skipped: Boolean(rawQ.skipped),
+    };
+}
+
+// Deep, crash-proof session normalizer (fixes NMF-014)
+export function normalizeSession(rawSession, index = 1) {
+    const base = createDefaultSession(index);
+    if (!rawSession || typeof rawSession !== 'object' || Array.isArray(rawSession)) {
+        return base;
+    }
+
+    const rawIntake = rawSession.intake && typeof rawSession.intake === 'object' && !Array.isArray(rawSession.intake)
+        ? rawSession.intake
+        : {};
+    const intake = {
+        ...base.intake,
+        ...Object.fromEntries(Object.entries(rawIntake).filter(([, v]) => v !== undefined && v !== null)),
+        genres: Array.isArray(rawIntake.genres) ? rawIntake.genres.map(String).filter(Boolean) : [...base.intake.genres],
+        customWords: Number.isFinite(Number(rawIntake.customWords)) ? Number(rawIntake.customWords) : base.intake.customWords,
+        customGreetingWords: Number.isFinite(Number(rawIntake.customGreetingWords))
+            ? Number(rawIntake.customGreetingWords)
+            : base.intake.customGreetingWords,
+    };
+    if (!intake.greetingStyle) intake.greetingStyle = 'fanfic';
+    if (!intake.greetingPov) intake.greetingPov = 'third';
+    if (!intake.playerNameMode) intake.playerNameMode = 'macro';
+    if (!intake.userGender) intake.userGender = 'any';
+    if (!intake.targetGender) intake.targetGender = 'any';
+    if (!intake.language) intake.language = '{{language}}';
+    if (!intake.rating) intake.rating = 'sfw';
+    if (!intake.originType) intake.originType = 'oc';
+    if (!intake.cardFormat) intake.cardFormat = 'dossier_19';
+
+    const rawTinder = rawSession.tinder && typeof rawSession.tinder === 'object' && !Array.isArray(rawSession.tinder)
+        ? rawSession.tinder
+        : {};
+    const tinder = {
+        ...base.tinder,
+        batchSize: [1, 3, 5].includes(Number(rawTinder.batchSize)) ? Number(rawTinder.batchSize) : 1,
+        autoArt: Boolean(rawTinder.autoArt),
+        promptHint: String(rawTinder.promptHint ?? ''),
+        queue: Array.isArray(rawTinder.queue) ? rawTinder.queue.map(normalizeCandidateEntry).filter(Boolean) : [],
+        liked: Array.isArray(rawTinder.liked)
+            ? rawTinder.liked.map(normalizeCandidateEntry).filter(Boolean).slice(0, MAX_LIKED_CANDIDATES)
+            : [],
+        passed: Array.isArray(rawTinder.passed)
+            ? rawTinder.passed.map(normalizeCandidateEntry).filter(Boolean).slice(0, MAX_PASSED_CANDIDATES)
+            : [],
+        dislikedTags: Array.isArray(rawTinder.dislikedTags) ? rawTinder.dislikedTags.map(String).filter(Boolean) : [],
+        dislikedNotes: Array.isArray(rawTinder.dislikedNotes) ? rawTinder.dislikedNotes.map(String).filter(Boolean) : [],
+        lastDislikedCandidate: rawTinder.lastDislikedCandidate
+            ? normalizeCandidateEntry(rawTinder.lastDislikedCandidate, 999)
+            : null,
+    };
+
+    const rawBlitz = rawSession.blitz && typeof rawSession.blitz === 'object' && !Array.isArray(rawSession.blitz)
+        ? rawSession.blitz
+        : {};
+    const blitz = {
+        ...base.blitz,
+        topic: String(rawBlitz.topic ?? ''),
+        includeChoices: Boolean(rawBlitz.includeChoices),
+        questions: Array.isArray(rawBlitz.questions)
+            ? rawBlitz.questions.map(normalizeQuestionEntry).filter(Boolean)
+            : [],
+    };
+
+    const rawArch = rawSession.architect && typeof rawSession.architect === 'object' && !Array.isArray(rawSession.architect)
+        ? rawSession.architect
+        : {};
+    const architect = {
+        subMode: rawArch.subMode === 'rework' ? 'rework' : 'idea',
+        freeConcept: String(rawArch.freeConcept ?? ''),
+    };
+
+    const rawRework = rawSession.rework && typeof rawSession.rework === 'object' && !Array.isArray(rawSession.rework)
+        ? rawSession.rework
+        : {};
+    const rework = {
+        sourceAvatar: String(rawRework.sourceAvatar ?? ''),
+        reworkMode: rawRework.reworkMode === 'full_rebuild' ? 'full_rebuild' : 'au_shift',
+        targetSettingEra: String(rawRework.targetSettingEra ?? ''),
+        encounterIdea: String(rawRework.encounterIdea ?? ''),
+        moodTone: String(rawRework.moodTone ?? ''),
+        keepFormatting: rawRework.keepFormatting !== false,
+    };
+
+    const rawCard = rawSession.card && typeof rawSession.card === 'object' && !Array.isArray(rawSession.card)
+        ? rawSession.card
+        : {};
+    const inlineCardAvatar = typeof rawCard.avatarDataUrl === 'string' && rawCard.avatarDataUrl.startsWith('data:')
+        ? rawCard.avatarDataUrl
+        : '';
+    const card = {
+        name: String(rawCard.name ?? ''),
+        description: String(rawCard.description ?? ''),
+        personality: String(rawCard.personality ?? ''),
+        scenario: String(rawCard.scenario ?? ''),
+        first_mes: String(rawCard.first_mes ?? ''),
+        alternate_greetings: Array.isArray(rawCard.alternate_greetings)
+            ? rawCard.alternate_greetings.map((g) => String(g ?? ''))
+            : [],
+        mes_example: String(rawCard.mes_example ?? ''),
+        creator_notes: String(rawCard.creator_notes ?? ''),
+        system_prompt: String(rawCard.system_prompt ?? ''),
+        post_history_instructions: String(rawCard.post_history_instructions ?? ''),
+        tags: Array.isArray(rawCard.tags) ? rawCard.tags.join(', ') : String(rawCard.tags ?? ''),
+        creator: String(rawCard.creator ?? ''),
+        character_version: String(rawCard.character_version ?? '1.0') || '1.0',
+        world: String(rawCard.world ?? ''),
+        imagePrompt: String(rawCard.imagePrompt ?? ''),
+        avatarId: String(rawCard.avatarId ?? ''),
+        avatarDataUrl: inlineCardAvatar,
+        avatarDirty: Boolean(rawCard.avatarDirty),
+        sourceAvatarId: String(rawCard.sourceAvatarId ?? ''),
+        sourceLoadedFromTavern: Boolean(rawCard.sourceLoadedFromTavern ?? Boolean(rawCard.sourceAvatarId)),
+        sourceSnapshotHash: String(rawCard.sourceSnapshotHash ?? ''),
+        originalCardData: rawCard.originalCardData && typeof rawCard.originalCardData === 'object' && !Array.isArray(rawCard.originalCardData)
+            ? structuredClone(rawCard.originalCardData)
+            : null,
+        dirtyFields: Array.isArray(rawCard.dirtyFields) ? [...new Set(rawCard.dirtyFields.map(String))] : [],
+    };
+
+    return {
+        id: String(rawSession.id || '').trim() || base.id,
+        title: String(rawSession.title || '').trim() || base.title,
+        frozen: Boolean(rawSession.frozen),
+        createdAt: Number.isFinite(Number(rawSession.createdAt)) ? Number(rawSession.createdAt) : base.createdAt,
+        intake,
+        tinder,
+        blitz,
+        architect,
+        rework,
+        card,
+    };
+}
+
+function createCompactMigrationSnapshot(rawCfg) {
+    try {
+        const clone = JSON.parse(JSON.stringify(rawCfg, (key, val) => {
+            if (key === 'avatarDataUrl' && typeof val === 'string' && val.length > 120) {
+                return `[inline_media_${val.length}b]`;
+            }
+            if (key === '_preMigrationBackup') return undefined;
+            return val;
+        }));
+        return {
+            backedUpAt: Date.now(),
+            fromVersion: Number(rawCfg?.settingsSchemaVersion || 1),
+            snapshot: clone,
+        };
+    } catch {
+        return null;
+    }
+}
+
+// Versioned settings migration & recovery (fixes NMF-014)
+export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'krakoa' } = {}) {
+    let recoveredFromCorruption = false;
+    let migrated = false;
+
+    if (!rawCfg || typeof rawCfg !== 'object' || Array.isArray(rawCfg)) {
+        recoveredFromCorruption = rawCfg !== undefined && rawCfg !== null;
+        const fresh = {
+            settingsSchemaVersion: SETTINGS_SCHEMA_VERSION,
+            theme: defaultTheme || 'krakoa',
+            transportMode: 'prefill_user_msg',
+            presetCorrectionPrompt: DEFAULT_PRESET_CORRECTION_PROMPT,
+            imageSource: 'auto',
+            imageProfileId: '',
+            imageStyleId: '',
+            imageAspectRatio: '1:1',
+            imageCropFocus: 'top',
+            activeSessionId: '',
+            sessions: [createDefaultSession(1)],
+        };
+        fresh.activeSessionId = fresh.sessions[0].id;
+        return { settings: fresh, migrated: true, recoveredFromCorruption };
+    }
+
+    const prevVersion = Number(rawCfg.settingsSchemaVersion || 1);
+    let preMigrationBackup = rawCfg._preMigrationBackup || null;
+    if (prevVersion < SETTINGS_SCHEMA_VERSION) {
+        preMigrationBackup = createCompactMigrationSnapshot(rawCfg) || preMigrationBackup;
+        migrated = true;
+    }
+
+    let sessions = [];
+    if (Array.isArray(rawCfg.sessions) && rawCfg.sessions.length > 0) {
+        const nonNullRawSessions = rawCfg.sessions.filter((item) => {
+            if (item === null || item === undefined) {
+                recoveredFromCorruption = true;
+                return false;
+            }
+            return true;
+        });
+        sessions = nonNullRawSessions
+            .map((s, idx) => {
+                try {
+                    if (typeof s !== 'object' || Array.isArray(s)) {
+                        recoveredFromCorruption = true;
+                        return null;
+                    }
+                    return normalizeSession(s, idx + 1);
+                } catch {
+                    recoveredFromCorruption = true;
+                    return null;
+                }
+            })
+            .filter(Boolean);
+    }
+
+    if (sessions.length === 0) {
+        if (rawCfg.sessions !== undefined) recoveredFromCorruption = true;
+        sessions = [createDefaultSession(1)];
+        migrated = true;
+    }
+
+    const activeSessionId = (rawCfg.activeSessionId && sessions.some((s) => s.id === rawCfg.activeSessionId))
+        ? String(rawCfg.activeSessionId)
+        : sessions[0].id;
+
+    const normalized = {
+        settingsSchemaVersion: SETTINGS_SCHEMA_VERSION,
+        theme: typeof rawCfg.theme === 'string' && rawCfg.theme.trim() ? rawCfg.theme.trim() : (defaultTheme || 'krakoa'),
+        transportMode: rawCfg.transportMode === 'json_schema' ? 'json_schema' : 'prefill_user_msg',
+        presetCorrectionPrompt: rawCfg.presetCorrectionPrompt !== undefined && rawCfg.presetCorrectionPrompt !== null
+            ? String(rawCfg.presetCorrectionPrompt)
+            : DEFAULT_PRESET_CORRECTION_PROMPT,
+        imageSource: typeof rawCfg.imageSource === 'string' && rawCfg.imageSource.trim() ? rawCfg.imageSource.trim() : 'auto',
+        imageProfileId: typeof rawCfg.imageProfileId === 'string' ? rawCfg.imageProfileId : '',
+        imageStyleId: typeof rawCfg.imageStyleId === 'string' ? rawCfg.imageStyleId : '',
+        imageAspectRatio: typeof rawCfg.imageAspectRatio === 'string' && rawCfg.imageAspectRatio.trim()
+            ? rawCfg.imageAspectRatio.trim()
+            : '1:1',
+        imageCropFocus: typeof rawCfg.imageCropFocus === 'string' && rawCfg.imageCropFocus.trim()
+            ? rawCfg.imageCropFocus.trim()
+            : 'top',
+        activeSessionId,
+        sessions,
+    };
+
+    if (preMigrationBackup) {
+        normalized._preMigrationBackup = preMigrationBackup;
+    }
+
+    return { settings: normalized, migrated, recoveredFromCorruption };
+}
+
+export function resolveWordTarget(intake = {}) {
+    if (intake?.wordBudgetId === 'custom') return Math.max(100, Math.min(4000, Number(intake.customWords) || 800));
+    const found = WORD_BUDGETS.find((b) => b.id === intake?.wordBudgetId);
     return found ? found.words : 600;
 }
 
-export function resolveGreetingTarget(intake) {
-    if (intake.greetingBudgetId === 'custom') return Math.max(50, Math.min(2000, Number(intake.customGreetingWords) || 320));
-    const found = GREETING_BUDGETS.find((b) => b.id === intake.greetingBudgetId);
+export function resolveGreetingTarget(intake = {}) {
+    if (intake?.greetingBudgetId === 'custom') return Math.max(50, Math.min(2000, Number(intake.customGreetingWords) || 320));
+    const found = GREETING_BUDGETS.find((b) => b.id === intake?.greetingBudgetId);
     return found ? found.words : 280;
 }
 
 export function summarizeIntakeBlock(session) {
-    const it = session.intake;
+    const it = session?.intake || createDefaultSession(1).intake;
     const originMap = {
         oc: 'Single Character — Original Character & World (OC)',
         canon: 'Single Character — Known Fandom Canon Character',
@@ -560,8 +969,8 @@ export function summarizeIntakeBlock(session) {
         rpg_gm: 'INTERACTIVE RPG / GAME MASTER SYSTEM CARD (World + Factions + Quests/Mechanics + GM Engine)',
     };
     const genresList = [...(it.genres || []), it.customGenres || ''].filter(Boolean).join(', ');
-    const antiTags = [...(session.tinder?.dislikedTags || []), it.hardBans || ''].filter(Boolean).join(', ');
-    const antiNotes = (session.tinder?.dislikedNotes || []).filter(Boolean).join('; ');
+    const antiTags = [...(session?.tinder?.dislikedTags || []), it.hardBans || ''].filter(Boolean).join(', ');
+    const antiNotes = (session?.tinder?.dislikedNotes || []).filter(Boolean).join('; ');
     const ratingMap = {
         sfw: 'SFW (Clean / Non-explicit)',
         mature: 'Mature 16+ (Dramatic, gritty, dark or intense themes allowed)',
@@ -594,6 +1003,9 @@ export function summarizeIntakeBlock(session) {
 }
 
 export function stripReasoning(raw) {
+    if (raw && typeof raw === 'object') {
+        return JSON.stringify(raw);
+    }
     return String(raw || '')
         .replace(/<think>[\s\S]*?<\/think>/gi, '')
         .replace(/<thought>[\s\S]*?<\/thought>/gi, '')
@@ -609,26 +1021,108 @@ export function extractTagBlock(text, tag) {
     return m2 ? m2[1].trim() : '';
 }
 
-export function extractJsonLoose(raw) {
+// Balanced JSON block scanner so multiple JSON objects or surrounding text in a single message parse cleanly (fixes NMF-010)
+function scanBalancedJsonCandidates(str) {
+    const out = [];
+    const len = str.length;
+    for (let i = 0; i < len; i++) {
+        const ch = str[i];
+        if (ch !== '{' && ch !== '[') continue;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        const stack = [];
+        for (let j = i; j < len; j++) {
+            const c = str[j];
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c === '\\') {
+                    escaped = true;
+                } else if (c === '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c === '"') {
+                inString = true;
+                continue;
+            }
+            if (c === '{' || c === '[') {
+                stack.push(c === '{' ? '}' : ']');
+                depth++;
+            } else if (c === '}' || c === ']') {
+                const expected = stack.pop();
+                if (c !== expected) break;
+                depth--;
+                if (depth === 0) {
+                    out.push(str.slice(i, j + 1));
+                    i = j;
+                    break;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+export function extractJsonLoose(raw, validatorFn = null) {
+    if (raw && typeof raw === 'object') {
+        if (!validatorFn || validatorFn(raw)) return raw;
+        throw new Error('Ответ модели имеет неверную JSON-структуру для выбранной задачи.');
+    }
+
     const cleaned = stripReasoning(raw)
         .replace(/^```(?:json)?\s*/i, '')
         .replace(/\s*```$/i, '')
         .trim();
-    try {
-        return JSON.parse(cleaned);
-    } catch {
-        const firstBrace = cleaned.indexOf('{');
-        const lastBrace = cleaned.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace > firstBrace) {
-            return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-        }
-        const firstArr = cleaned.indexOf('[');
-        const lastArr = cleaned.lastIndexOf(']');
-        if (firstArr !== -1 && lastArr > firstArr) {
-            return JSON.parse(cleaned.slice(firstArr, lastArr + 1));
-        }
-        throw new Error('Не удалось распознать ответ модели. Если включён «Полный активный пресет», проверьте Промпт коррекции или переключитесь на «Строгую JSON-схему».');
+
+    if (!cleaned) {
+        throw new Error('Модель вернула пустой ответ.');
     }
+
+    try {
+        const direct = JSON.parse(cleaned);
+        if (!validatorFn || validatorFn(direct)) return direct;
+    } catch {
+        // Fall through to balanced candidate extraction
+    }
+
+    const candidates = scanBalancedJsonCandidates(cleaned);
+    const parsedValid = [];
+    const parsedAny = [];
+
+    for (const snippet of candidates) {
+        try {
+            const val = JSON.parse(snippet);
+            parsedAny.push(val);
+            if (!validatorFn || validatorFn(val)) {
+                parsedValid.push(val);
+            }
+        } catch {
+            // Ignore malformed fragment
+        }
+    }
+
+    if (parsedValid.length > 0) {
+        return parsedValid[parsedValid.length - 1];
+    }
+    if (parsedAny.length > 0 && validatorFn) {
+        throw new Error('JSON получен, но в нём отсутствуют обязательные поля или не совпадает тип данных.');
+    }
+
+    throw new Error('Не удалось распознать JSON-ответ модели (ответ обрезан или повреждён). Проверьте Промпт коррекции или лимит токенов ответа.');
+}
+
+function isValidFullCardJsonShape(val) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
+    const d = val.data && typeof val.data === 'object' && !Array.isArray(val.data) ? val.data : val;
+    if (typeof d.name !== 'string' || !d.name.trim()) return false;
+    if (typeof d.description !== 'string' && typeof d.first_mes !== 'string') return false;
+    if (d.alternate_greetings !== undefined && !Array.isArray(d.alternate_greetings) && typeof d.alternate_greetings !== 'string') {
+        return false;
+    }
+    return true;
 }
 
 export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_user_msg') {
@@ -667,6 +1161,7 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
         return {
             system: shieldMacrosForPrompt(coreRules) + `\nOutput ONLY valid JSON matching this exact object structure:\n{"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1","tag2"],"image_prompt":""}`,
             user: `${intakeSummary}\n\n[USER CONCEPT / EXTRA DATA]\n${safeBrief || 'Create an unforgettable card matching all intake parameters above.'}`,
+            jsonSchema: FULL_CARD_JSON_SCHEMA,
         };
     }
 
@@ -690,19 +1185,20 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
             `[[NMF_FIRST_MES]]Opening scene (~${greetWords} words)[[/NMF_FIRST_MES]]`,
             `[[NMF_ALT_GREETING]]One alternative opening scene hook[[/NMF_ALT_GREETING]]`,
             `[[NMF_MES_EXAMPLE]]<START>\n{ {user} }: ...\n{ {char} }: ...[[/NMF_MES_EXAMPLE]]`,
-            `[[NMF_SYS_PROMPT]]${worldMode ? 'System prompt for GM/Narrator role' : ''}[ [/NMF_SYS_PROMPT]]`.replace('[ [/NMF_SYS_PROMPT]]', '[[/NMF_SYS_PROMPT]]'),
+            `[[NMF_SYS_PROMPT]]${worldMode ? 'System prompt for GM/Narrator role' : ''}[[/NMF_SYS_PROMPT]]`,
             `[[NMF_POST_HISTORY]]${worldMode ? 'Post-history anti-drift / HUD reminder' : ''}[[/NMF_POST_HISTORY]]`,
             `[[NMF_CREATOR_NOTES]]Brief creator notes & play tips for the user[[/NMF_CREATOR_NOTES]]`,
             `[[NMF_TAGS]]comma-separated tags[[/NMF_TAGS]]`,
             `[[NMF_IMG_PROMPT]]Detailed English visual prompt[[/NMF_IMG_PROMPT]]`,
         ].join('\n')),
+        jsonSchema: null,
     };
 }
 
 export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerNameMode = 'macro') {
     const text = stripReasoning(raw);
     let res;
-    if (text.includes('[[NMF_NAME]]') || text.includes('[[NMF_DESC]]')) {
+    if (typeof raw === 'string' && (text.includes('[[NMF_NAME]]') || text.includes('[[NMF_DESC]]'))) {
         const alt = extractTagBlock(text, 'NMF_ALT_GREETING');
         res = {
             name: extractTagBlock(text, 'NMF_NAME'),
@@ -718,21 +1214,34 @@ export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerName
             tags: extractTagBlock(text, 'NMF_TAGS'),
             imagePrompt: extractTagBlock(text, 'NMF_IMG_PROMPT'),
         };
+        if (!res.name || (!res.description && !res.first_mes)) {
+            throw new Error('Ответ модели не содержит обязательных секций имени и описания.');
+        }
     } else {
-        const obj = extractJsonLoose(text);
+        const rawObj = extractJsonLoose(raw, isValidFullCardJsonShape);
+        const obj = rawObj.data && typeof rawObj.data === 'object' ? rawObj.data : rawObj;
+        const altList = Array.isArray(obj.alternate_greetings)
+            ? obj.alternate_greetings.filter((x) => typeof x === 'string' || typeof x === 'number').map(String).filter(Boolean)
+            : (typeof obj.alternate_greetings === 'string' && obj.alternate_greetings.trim() ? [obj.alternate_greetings.trim()] : []);
+        const tagsText = Array.isArray(obj.tags)
+            ? obj.tags.map((t) => String(t).trim()).filter(Boolean).join(', ')
+            : String(obj.tags ?? '').trim();
+
         res = {
             name: String(obj.name || '').trim(),
-            description: String(obj.description || '').trim(),
-            personality: String(obj.personality || '').trim(),
-            scenario: String(obj.scenario || '').trim(),
-            first_mes: String(obj.first_mes || '').trim(),
-            alternate_greetings: Array.isArray(obj.alternate_greetings) ? obj.alternate_greetings.map(String).filter(Boolean) : [],
-            mes_example: String(obj.mes_example || '').trim(),
-            system_prompt: String(obj.system_prompt || '').trim(),
-            post_history_instructions: String(obj.post_history_instructions || '').trim(),
-            creator_notes: String(obj.creator_notes || '').trim(),
-            tags: Array.isArray(obj.tags) ? obj.tags.join(', ') : String(obj.tags || '').trim(),
-            imagePrompt: String(obj.image_prompt || obj.imagePrompt || '').trim(),
+            description: typeof obj.description === 'string' ? obj.description.trim() : '',
+            personality: typeof obj.personality === 'string' ? obj.personality.trim() : '',
+            scenario: typeof obj.scenario === 'string' ? obj.scenario.trim() : '',
+            first_mes: typeof obj.first_mes === 'string' ? obj.first_mes.trim() : '',
+            alternate_greetings: altList,
+            mes_example: typeof obj.mes_example === 'string' ? obj.mes_example.trim() : '',
+            system_prompt: typeof obj.system_prompt === 'string' ? obj.system_prompt.trim() : '',
+            post_history_instructions: typeof obj.post_history_instructions === 'string' ? obj.post_history_instructions.trim() : '',
+            creator_notes: typeof obj.creator_notes === 'string' ? obj.creator_notes.trim() : '',
+            tags: tagsText,
+            imagePrompt: typeof (obj.image_prompt ?? obj.imagePrompt) === 'string'
+                ? String(obj.image_prompt ?? obj.imagePrompt).trim()
+                : '',
         };
     }
 
@@ -767,6 +1276,7 @@ export function buildTinderPreviewRequest(session, count = 1, mode = 'prefill_us
         return {
             system: shieldMacrosForPrompt(`You are NexusMatch Swipe Generator. Generate ${count} ${entityDesc}. Target Language: ${langSpec.directive}. Respect all disliked/banned tags strictly.\n${macroRule}\nOutput ONLY valid JSON: {"candidates":[{"name":"","compatibility":92,"archetype":"","pitch":"","appearance":"","quote":"","tags":["t1","t2","t3","t4"],"image_prompt":""}]}`),
             user: intakeSummary + hint,
+            jsonSchema: TINDER_PREVIEW_JSON_SCHEMA,
         };
     }
 
@@ -793,33 +1303,44 @@ export function buildTinderPreviewRequest(session, count = 1, mode = 'prefill_us
             `[[NMF_C_IMG]]${worldMode ? 'English scenic concept-art prompt (environment, architecture, mood, lighting, no text)' : 'English character portrait prompt (appearance, outfit, framing, lighting, no text)'}[[/NMF_C_IMG]]`,
             `[[/NMF_CANDIDATE]]`,
         ].join('\n')),
+        jsonSchema: null,
     };
+}
+
+function isValidSwipeCandidatesShape(val) {
+    const arr = Array.isArray(val) ? val : (val && typeof val === 'object' ? val.candidates : null);
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+    return arr.every((c) => c && typeof c === 'object' && !Array.isArray(c) && typeof c.name === 'string' && c.name.trim());
 }
 
 export function parseTinderPreviewResponse(raw, playerNameMode = 'macro') {
     const text = stripReasoning(raw);
-    const blocks = [...text.matchAll(/\[\[NMF_CANDIDATE\]\]([\s\S]*?)\[\[\/NMF_CANDIDATE\]\]/gi)];
-    if (blocks.length > 0) {
-        return blocks.map((m) => {
-            const b = m[1];
-            const name = extractTagBlock(b, 'NMF_C_NAME') || 'Таинственный профиль';
-            const matchNum = parseInt(extractTagBlock(b, 'NMF_C_MATCH'), 10);
-            const tagsStr = extractTagBlock(b, 'NMF_C_TAGS');
-            return {
-                id: 'cand_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-                name,
-                compatibility: Number.isFinite(matchNum) ? Math.min(99, Math.max(65, matchNum)) : (84 + Math.floor(Math.random() * 15)),
-                archetype: normalizeCardMacros(extractTagBlock(b, 'NMF_C_ARCHETYPE'), name, playerNameMode),
-                pitch: normalizeCardMacros(extractTagBlock(b, 'NMF_C_PITCH'), name, playerNameMode),
-                appearance: normalizeCardMacros(extractTagBlock(b, 'NMF_C_LOOKS'), name, playerNameMode),
-                quote: normalizeCardMacros(extractTagBlock(b, 'NMF_C_QUOTE'), name, playerNameMode),
-                tags: tagsStr.split(',').map((s) => s.trim()).filter(Boolean),
-                imagePrompt: extractTagBlock(b, 'NMF_C_IMG'),
-                avatarDataUrl: '',
-            };
-        });
+    if (typeof raw === 'string') {
+        const blocks = [...text.matchAll(/\[\[NMF_CANDIDATE\]\]([\s\S]*?)\[\[\/NMF_CANDIDATE\]\]/gi)];
+        if (blocks.length > 0) {
+            return blocks.map((m) => {
+                const b = m[1];
+                const name = extractTagBlock(b, 'NMF_C_NAME') || 'Таинственный профиль';
+                const matchNum = parseInt(extractTagBlock(b, 'NMF_C_MATCH'), 10);
+                const tagsStr = extractTagBlock(b, 'NMF_C_TAGS');
+                return {
+                    id: 'cand_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+                    name,
+                    compatibility: Number.isFinite(matchNum) ? Math.min(99, Math.max(65, matchNum)) : (84 + Math.floor(Math.random() * 15)),
+                    archetype: normalizeCardMacros(extractTagBlock(b, 'NMF_C_ARCHETYPE'), name, playerNameMode),
+                    pitch: normalizeCardMacros(extractTagBlock(b, 'NMF_C_PITCH'), name, playerNameMode),
+                    appearance: normalizeCardMacros(extractTagBlock(b, 'NMF_C_LOOKS'), name, playerNameMode),
+                    quote: normalizeCardMacros(extractTagBlock(b, 'NMF_C_QUOTE'), name, playerNameMode),
+                    tags: tagsStr.split(',').map((s) => s.trim()).filter(Boolean),
+                    imagePrompt: extractTagBlock(b, 'NMF_C_IMG'),
+                    avatarId: '',
+                    avatarDataUrl: '',
+                };
+            });
+        }
     }
-    const obj = extractJsonLoose(text);
+
+    const obj = extractJsonLoose(raw, isValidSwipeCandidatesShape);
     const arr = Array.isArray(obj) ? obj : (obj.candidates || []);
     return arr.map((c) => {
         const baseName = String(c.name || 'Кандидат').trim();
@@ -827,13 +1348,16 @@ export function parseTinderPreviewResponse(raw, playerNameMode = 'macro') {
         return {
             id: 'cand_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
             name: fullLabel,
-            compatibility: Number(c.compatibility) || (85 + Math.floor(Math.random() * 14)),
+            compatibility: Number.isFinite(Number(c.compatibility))
+                ? Math.min(99, Math.max(60, Number(c.compatibility)))
+                : (85 + Math.floor(Math.random() * 14)),
             archetype: normalizeCardMacros(String(c.archetype || '').trim(), baseName, playerNameMode),
             pitch: normalizeCardMacros(String(c.pitch || '').trim(), baseName, playerNameMode),
             appearance: normalizeCardMacros(String(c.appearance || '').trim(), baseName, playerNameMode),
             quote: normalizeCardMacros(String(c.quote || '').trim(), baseName, playerNameMode),
             tags: Array.isArray(c.tags) ? c.tags.map(String) : String(c.tags || '').split(',').map((s) => s.trim()).filter(Boolean),
             imagePrompt: String(c.image_prompt || c.imagePrompt || '').trim(),
+            avatarId: '',
             avatarDataUrl: '',
         };
     });
@@ -857,6 +1381,7 @@ export function buildBlitzQuestionsRequest(session, singleIndexToReplace = -1, m
         return {
             system: shieldMacrosForPrompt(`Generate ${count} sharp, engaging quiz question(s) in ${langSpec.shortLabel} for the user's topic. ${withChoices ? 'Include 3 short clickable option suggestions per question.' : 'Keep options empty [].'}\n${macroRule}\nOutput ONLY valid JSON: {"questions":[{"question":"","options":[]}]}`),
             user: `Topic: ${topic}\n${intakeSummary}${existingList}`,
+            jsonSchema: BLITZ_QUESTIONS_JSON_SCHEMA,
         };
     }
 
@@ -879,31 +1404,41 @@ export function buildBlitzQuestionsRequest(session, singleIndexToReplace = -1, m
             withChoices ? `[[NMF_Q_OPTS]]Option 1 | Option 2 | Option 3[[/NMF_Q_OPTS]]` : ``,
             `[[/NMF_Q]]`,
         ].filter(Boolean).join('\n')),
+        jsonSchema: null,
     };
+}
+
+function isValidBlitzQuestionsShape(val) {
+    const arr = Array.isArray(val) ? val : (val && typeof val === 'object' ? val.questions : null);
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+    return arr.every((q) => (typeof q === 'string' && q.trim()) || (q && typeof q === 'object' && typeof q.question === 'string' && q.question.trim()));
 }
 
 export function parseBlitzQuestionsResponse(raw) {
     const text = stripReasoning(raw);
-    const blocks = [...text.matchAll(/\[\[NMF_Q\]\]([\s\S]*?)\[\[\/NMF_Q\]\]/gi)];
-    if (blocks.length > 0) {
-        return blocks.map((m) => {
-            const b = m[1];
-            const optsRaw = extractTagBlock(b, 'NMF_Q_OPTS');
-            return {
-                id: 'q_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-                question: normalizeCardMacros(extractTagBlock(b, 'NMF_Q_TEXT') || b.trim()),
-                options: optsRaw ? optsRaw.split('|').map((s) => normalizeCardMacros(s.trim())).filter(Boolean) : [],
-                answer: '',
-                skipped: false,
-            };
-        });
+    if (typeof raw === 'string') {
+        const blocks = [...text.matchAll(/\[\[NMF_Q\]\]([\s\S]*?)\[\[\/NMF_Q\]\]/gi)];
+        if (blocks.length > 0) {
+            return blocks.map((m) => {
+                const b = m[1];
+                const optsRaw = extractTagBlock(b, 'NMF_Q_OPTS');
+                return {
+                    id: 'q_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+                    question: normalizeCardMacros(extractTagBlock(b, 'NMF_Q_TEXT') || b.trim()),
+                    options: optsRaw ? optsRaw.split('|').map((s) => normalizeCardMacros(s.trim())).filter(Boolean) : [],
+                    answer: '',
+                    skipped: false,
+                };
+            });
+        }
     }
-    const obj = extractJsonLoose(text);
+
+    const obj = extractJsonLoose(raw, isValidBlitzQuestionsShape);
     const arr = Array.isArray(obj) ? obj : (obj.questions || []);
     return arr.map((q) => ({
         id: 'q_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-        question: normalizeCardMacros(String(q.question || q).trim()),
-        options: Array.isArray(q.options) ? q.options.map((o) => normalizeCardMacros(String(o))).filter(Boolean) : [],
+        question: normalizeCardMacros(String(typeof q === 'object' ? q.question : q).trim()),
+        options: Array.isArray(q?.options) ? q.options.map((o) => normalizeCardMacros(String(o))).filter(Boolean) : [],
         answer: '',
         skipped: false,
     }));
@@ -945,6 +1480,7 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
         return {
             system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\n${macroRule}\n${greetStyleBlock}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
             user: `${intakeSummary}\n\n${srcDump}`,
+            jsonSchema: FULL_CARD_JSON_SCHEMA,
         };
     }
 
@@ -975,5 +1511,6 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
             `[[NMF_TAGS]]comma-separated tags[[/NMF_TAGS]]`,
             `[[NMF_IMG_PROMPT]]English visual prompt in the new setting/era[[/NMF_IMG_PROMPT]]`,
         ].join('\n')),
+        jsonSchema: null,
     };
 }
