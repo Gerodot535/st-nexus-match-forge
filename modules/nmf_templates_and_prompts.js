@@ -1195,13 +1195,14 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
     };
 }
 
-export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerNameMode = 'macro') {
+export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerNameMode = 'macro', { fallbackName = '' } = {}) {
     const text = stripReasoning(raw);
+    const cleanFallbackName = String(fallbackName || '').trim();
     let res;
     if (typeof raw === 'string' && (text.includes('[[NMF_NAME]]') || text.includes('[[NMF_DESC]]'))) {
         const alt = extractTagBlock(text, 'NMF_ALT_GREETING');
         res = {
-            name: extractTagBlock(text, 'NMF_NAME'),
+            name: extractTagBlock(text, 'NMF_NAME') || cleanFallbackName,
             description: extractTagBlock(text, 'NMF_DESC'),
             personality: extractTagBlock(text, 'NMF_PERSONALITY'),
             scenario: extractTagBlock(text, 'NMF_SCENARIO'),
@@ -1218,7 +1219,19 @@ export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerName
             throw new Error('Ответ модели не содержит обязательных секций имени и описания.');
         }
     } else {
-        const rawObj = extractJsonLoose(raw, isValidFullCardJsonShape);
+        const validator = cleanFallbackName
+            ? (val) => {
+                if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
+                const d = val.data && typeof val.data === 'object' && !Array.isArray(val.data) ? val.data : val;
+                if (d.name !== undefined && typeof d.name !== 'string') return false;
+                if (typeof d.description !== 'string' && typeof d.first_mes !== 'string') return false;
+                if (d.alternate_greetings !== undefined && !Array.isArray(d.alternate_greetings) && typeof d.alternate_greetings !== 'string') {
+                    return false;
+                }
+                return true;
+            }
+            : isValidFullCardJsonShape;
+        const rawObj = extractJsonLoose(raw, validator);
         const obj = rawObj.data && typeof rawObj.data === 'object' ? rawObj.data : rawObj;
         const altList = Array.isArray(obj.alternate_greetings)
             ? obj.alternate_greetings.filter((x) => typeof x === 'string' || typeof x === 'number').map(String).filter(Boolean)
@@ -1228,7 +1241,7 @@ export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerName
             : String(obj.tags ?? '').trim();
 
         res = {
-            name: String(obj.name || '').trim(),
+            name: String(obj.name || '').trim() || cleanFallbackName,
             description: typeof obj.description === 'string' ? obj.description.trim() : '',
             personality: typeof obj.personality === 'string' ? obj.personality.trim() : '',
             scenario: typeof obj.scenario === 'string' ? obj.scenario.trim() : '',

@@ -1,8 +1,8 @@
 <div align="center">
 
-# NexusMatch Forge `[BETA v1.4.0]`
+# NexusMatch Forge `[BETA v1.4.1]`
 
-**An Interactive Swipe-Deck, Blitz Quiz, AU Multiverse Adapter, and Safe Character / World / RPG Card V2 Studio for SillyTavern — designed for both Mobile and Desktop.**
+**An Interactive Swipe-Deck, Blitz Quiz, AU Multiverse Adapter, and Safe Character / World / RPG Card V2 Studio for SillyTavern — designed for both Android Mobile and Desktop.**
 
 [**English Documentation**](README.md) · [**Русская документация (RU)**](README.ru.md) · [**Changelog**](CHANGELOG.md) · [**MIT License**](LICENSE)
 
@@ -10,9 +10,9 @@
 
 ---
 
-> **[BETA STATUS & SUPPORTED SILLYTAVERN VERSIONS]**
+> **[BETA STATUS & TARGET SILLYTAVERN PLATFORMS]**
 > - **Minimum Supported SillyTavern Version:** `1.19.0` (**`1.19.1`** or newer strongly recommended).
-> - **Verified Matrix:** `SillyTavern 1.19.0` and `SillyTavern 1.19.1` (Desktop Chrome/Firefox + Mobile Android Chrome / iOS Safari).
+> - **Target & Verified Platforms:** Desktop (Windows / Linux / macOS) and **Android (Termux + Mobile Chromium / WebView, verified on Android 16)**. SillyTavern is officially built for Desktop and Android (Termux); physical iOS Safari client testing has not been performed.
 
 ---
 

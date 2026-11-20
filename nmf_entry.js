@@ -34,6 +34,8 @@ import {
     markCardFieldDirty,
     createCardStateFromTavernChar,
     createCardStateFromImportedJson,
+    createCardStateFromGeneratedDraft,
+    applyReworkResultToTavernBase,
     computeCardDiff,
     buildV2CardObject,
     buildCardPngBlob,
@@ -42,6 +44,7 @@ import {
     importCardIntoTavern,
     fetchFullTavernCharacter,
     updateExistingCardInTavern,
+    restoreCardFromBackupVault,
     fetchTavernRosterAndWorlds,
     urlToDataUrl,
     detectPocketCodex,
@@ -56,10 +59,12 @@ import {
 } from './modules/nmf_card_io_and_art.js';
 import {
     base64ToBytes,
+    isMediaDurablyPersisted,
     resolveEntityAvatarUrl,
     saveMediaDataUrl,
     hydrateSessionsMedia,
     migrateInlineSessionMediaToVault,
+    waitForActiveMediaMigration,
     pruneOrphanedMedia,
     listCardBackups,
     getCardBackupById,
@@ -80,7 +85,8 @@ export const state = {
     swipeControlsOpen: false,
     manualBanDraft: '',
     editingCandRef: null, // { pool: 'queue'|'liked'|'passed', idx: number }
-    overwriteConfirmInfo: null, // { targetAvatar, diff, allowExternalOverride }
+    overwriteConfirmInfo: null, // { targetAvatar, diff, externalWarning }
+    lastOverwriteAlert: null, // { code, message, backupId, targetAvatar }
     recentBackups: [],
     busy: false,
     busyMinimized: false,
@@ -114,6 +120,18 @@ export function esc(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+export function safeImgSrc(url) {
+    const clean = String(url ?? '').trim();
+    if (!clean) return '';
+    if (/^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(clean)) {
+        return clean;
+    }
+    if (/^blob:/i.test(clean)) {
+        return clean;
+    }
+    return '';
 }
 
 function parseCleanQuote(q) {
@@ -151,9 +169,10 @@ export function getSettings() {
         if (recoveredFromCorruption) {
             notifyToast('Часть старых настроек сессии была повреждена и безопасно восстановлена.', true);
         }
-        // Asynchronously move any legacy inline Base64 images out of extensionSettings into IndexedDB
-        migrateInlineSessionMediaToVault(settings.sessions).then((moved) => {
-            if ((migrated || moved) && typeof ctx?.saveSettingsDebounced === 'function') {
+        // Asynchronously move any legacy inline Base64 images out of extensionSettings into IndexedDB (fixes NMF-013 & P2-E)
+        migrateInlineSessionMediaToVault(settings.sessions).then((res) => {
+            if ((migrated || res?.changed) && typeof ctx?.saveSettingsDebounced === 'function') {
+                stripResidualInlineImagesSync(settings);
                 ctx.saveSettingsDebounced();
             }
         }).catch(() => {});
@@ -161,24 +180,34 @@ export function getSettings() {
     return ctx.extensionSettings[EXT_KEY];
 }
 
+// Strips inline avatarDataUrl ONLY when its mediaId is confirmed durably persisted in IndexedDB (fixes P2-E race & IDB quota loss)
 function stripResidualInlineImagesSync(cfg) {
     if (!cfg || !Array.isArray(cfg.sessions)) return;
+    const stripIfDurable = (ent) => {
+        if (!ent || typeof ent !== 'object' || !ent.avatarDataUrl) return;
+        const raw = String(ent.avatarDataUrl).trim();
+        if (!raw.startsWith('data:')) {
+            ent.avatarDataUrl = '';
+            return;
+        }
+        if (ent.avatarId && isMediaDurablyPersisted(ent.avatarId)) {
+            ent.avatarDataUrl = '';
+        }
+    };
     for (const s of cfg.sessions) {
-        if (s?.card?.avatarDataUrl) s.card.avatarDataUrl = '';
+        stripIfDurable(s?.card);
         for (const pool of ['queue', 'liked', 'passed']) {
             const arr = s?.tinder?.[pool];
             if (!Array.isArray(arr)) continue;
             for (const c of arr) {
-                if (c?.avatarDataUrl) c.avatarDataUrl = '';
+                stripIfDurable(c);
             }
         }
-        if (s?.tinder?.lastDislikedCandidate?.avatarDataUrl) {
-            s.tinder.lastDislikedCandidate.avatarDataUrl = '';
-        }
+        stripIfDurable(s?.tinder?.lastDislikedCandidate);
     }
 }
 
-function saveSettings() {
+export function saveSettings() {
     const cfg = getSettings();
     stripResidualInlineImagesSync(cfg);
     const ctx = getTavernContext();
@@ -200,10 +229,18 @@ function getThemeColor() {
 
 function notifyToast(msg, isError = false) {
     if (typeof globalThis.window === 'undefined') return;
+    const safeMsg = String(msg ?? '');
     if (isError) {
-        if (window.toastr?.error) window.toastr.error(msg, 'NexusMatch');
+        if (window.toastr?.error) window.toastr.error(safeMsg, 'NexusMatch', { escapeHtml: true });
     } else if (window.toastr?.info) {
-        window.toastr.info(msg, 'NexusMatch', { timeOut: 2200 });
+        window.toastr.info(safeMsg, 'NexusMatch', { timeOut: 2200, escapeHtml: true });
+    }
+}
+
+function notifySuccessToast(msg) {
+    if (typeof globalThis.window === 'undefined') return;
+    if (window.toastr?.success) {
+        window.toastr.success(String(msg ?? ''), 'NexusMatch', { escapeHtml: true });
     }
 }
 
@@ -298,6 +335,7 @@ export async function openForgeDialog(initialTab = '') {
     const dlg = ensureDialogMounted();
     if (initialTab) state.activeTab = initialTab;
     const cfg = getSettings();
+    await waitForActiveMediaMigration().catch(() => {});
     await Promise.all([
         refreshRosterData(),
         hydrateSessionsMedia(cfg.sessions),
@@ -805,8 +843,8 @@ function renderSwipeTab(sess) {
             <div class="nmf-stamp nmf-stamp-like" id="nmf-stamp-like">LIKE</div>
             <div class="nmf-stamp nmf-stamp-nope" id="nmf-stamp-nope">PASS</div>
 
-            <div class="nmf-hero-visual ${(currentAvatarUrl || isArtLoading) ? 'nmf-has-photo' : ''}">
-                ${currentAvatarUrl ? `<img class="nmf-hero-photo" src="${esc(currentAvatarUrl)}" alt="Profile"/>` : ''}
+            <div class="nmf-hero-visual ${(safeImgSrc(currentAvatarUrl) || isArtLoading) ? 'nmf-has-photo' : ''}">
+                ${safeImgSrc(currentAvatarUrl) ? `<img class="nmf-hero-photo" src="${esc(safeImgSrc(currentAvatarUrl))}" alt="Profile"/>` : ''}
                 ${isArtLoading ? `
                 <div class="nmf-photo-loading" style="${currentAvatarUrl ? 'background:rgba(8,11,18,0.72);backdrop-filter:blur(3px)' : ''}">
                     <div class="nmf-art-status-hud">
@@ -912,7 +950,7 @@ function renderMatchesTab(sess) {
     </div>` : `
     <div class="nmf-matches-grid">
         ${items.map((c, idx) => {
-            const thumbUrl = resolveEntityAvatarUrl(c);
+            const thumbUrl = safeImgSrc(resolveEntityAvatarUrl(c));
             return `
         <div class="nmf-match-tile">
             <div>
@@ -1093,8 +1131,8 @@ function renderEditorTab(sess) {
         <div class="nmf-panel">
             <div style="display:grid;grid-template-columns:104px minmax(0,1fr);gap:11px;align-items:start">
                 <div style="position:relative;aspect-ratio:${cssRatio};border:1px solid var(--nmf-border-active);background:var(--nmf-bg);overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--nmf-text-muted);text-align:center">
-                    ${cardAvatarUrl
-                        ? `<img src="${esc(cardAvatarUrl)}" style="width:100%;height:100%;object-fit:var(--nmf-art-fit,cover);object-position:var(--nmf-art-pos,center 18%)" alt="Avatar"/>`
+                    ${safeImgSrc(cardAvatarUrl)
+                        ? `<img src="${esc(safeImgSrc(cardAvatarUrl))}" style="width:100%;height:100%;object-fit:var(--nmf-art-fit,cover);object-position:var(--nmf-art-pos,center 18%)" alt="Avatar"/>`
                         : ''}
                     ${state.editorArtLoading
                         ? `<div class="nmf-photo-loading" style="padding:6px;gap:5px;${cardAvatarUrl ? 'background:rgba(8,11,18,0.75)' : ''}"><div class="nmf-photo-spinner"></div><span id="nmf-editor-art-badge" style="font-family:var(--nmf-font-mono);font-size:9.5px;color:var(--nmf-accent)">${esc(`${edStat?.attempt || 1}/${edStat?.maxAttempts || 3} · ${edStat?.elapsedSec || 0}с`)}</span></div>`
@@ -1232,6 +1270,25 @@ function renderEditorTab(sess) {
     </div>
 
     ${subBody}
+
+    ${state.lastOverwriteAlert ? `
+    <div class="nmf-warn-box" style="border-color:#ff5c77;flex-direction:column;align-items:stretch;gap:7px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+            <span><strong>[${esc(state.lastOverwriteAlert.code || 'SAVE_ERROR')}]</strong> ${esc(state.lastOverwriteAlert.message)}</span>
+            <button type="button" class="nmf-chip" data-act="dismiss-overwrite-alert">Скрыть</button>
+        </div>
+        <div class="nmf-btn-row">
+            ${state.lastOverwriteAlert.backupId ? `
+            <button type="button" class="nmf-btn-primary" style="height:28px;font-size:11px" data-act="restore-card-backup" data-bid="${esc(state.lastOverwriteAlert.backupId)}" ${state.busy ? 'disabled' : ''}>
+                Восстановить из бэкапа
+            </button>
+            <button type="button" class="nmf-btn-secondary" style="height:28px;font-size:11px" data-act="download-card-backup" data-bid="${esc(state.lastOverwriteAlert.backupId)}">
+                ${NMF_ICONS.download} Скачать бэкап PNG
+            </button>` : ''}
+            <button type="button" class="nmf-btn-secondary" style="height:28px;font-size:11px" data-act="export-png">${NMF_ICONS.download} Скачать черновик PNG</button>
+            <button type="button" class="nmf-btn-secondary" style="height:28px;font-size:11px" data-act="export-json">Черновик JSON</button>
+        </div>
+    </div>` : ''}
 
     <div class="nmf-panel nmf-panel-sub">
         <div class="nmf-btn-row">
@@ -1464,7 +1521,7 @@ export function renderWindow() {
         <div class="nmf-sessions-bar">
             <button type="button" class="nmf-sess-tab" data-act="new-session">${NMF_ICONS.plus} Новая</button>
             ${cfg.sessions.map((s) => `
-                <button type="button" class="nmf-sess-tab ${s.id === sess.id ? 'nmf-active' : ''} ${s.frozen ? 'nmf-frozen' : ''}" data-act="switch-session" data-sid="${s.id}">
+                <button type="button" class="nmf-sess-tab ${s.id === sess.id ? 'nmf-active' : ''} ${s.frozen ? 'nmf-frozen' : ''}" data-act="switch-session" data-sid="${esc(s.id)}">
                     <span>${esc(s.title)}</span>
                     ${s.frozen ? `<span class="nmf-sess-state">ПАУЗА</span>` : ''}
                 </button>
@@ -1748,46 +1805,6 @@ function saveEditedCandidateFields(sess) {
     return cand;
 }
 
-function applyGeneratedToSessionCard(sess, parsed, extra = {}) {
-    const isLinkedTavernCard = Boolean(extra.sourceAvatarId && extra.sourceLoadedFromTavern);
-    sess.card = {
-        ...sess.card,
-        name: parsed.name || sess.card.name || 'Новая Карточка',
-        description: parsed.description || '',
-        personality: parsed.personality || '',
-        scenario: parsed.scenario || '',
-        first_mes: parsed.first_mes || '',
-        alternate_greetings: Array.isArray(parsed.alternate_greetings) ? parsed.alternate_greetings : [],
-        mes_example: parsed.mes_example || '',
-        system_prompt: parsed.system_prompt || (isLinkedTavernCard ? sess.card.system_prompt : '') || '',
-        post_history_instructions: parsed.post_history_instructions || (isLinkedTavernCard ? sess.card.post_history_instructions : '') || '',
-        creator_notes: parsed.creator_notes || '',
-        tags: parsed.tags || '',
-        imagePrompt: parsed.imagePrompt || '',
-        avatarDataUrl: '',
-        sourceAvatarId: '',
-        sourceLoadedFromTavern: false,
-        sourceSnapshotHash: '',
-        originalCardData: null,
-        avatarDirty: false,
-        dirtyFields: [
-            'name',
-            'description',
-            'personality',
-            'scenario',
-            'first_mes',
-            'alternate_greetings',
-            'mes_example',
-            'system_prompt',
-            'post_history_instructions',
-            'creator_notes',
-            'tags',
-            'imagePrompt',
-        ],
-        ...extra,
-    };
-}
-
 // Local-only cancellation handler — never invokes global chat generation stop (fixes NMF-005 & NMF-006)
 export function requestCancelBusyTask() {
     if (!state.busy) return false;
@@ -1890,12 +1907,13 @@ async function executeOverwriteFlow(sess, cfg, allowExternalOverride = false) {
                 allowExternalChangeOverride: allowExternalOverride,
             });
             state.overwriteConfirmInfo = null;
+            state.lastOverwriteAlert = null;
             saveSettings();
             await Promise.all([refreshRosterData(), refreshBackupsList()]);
             if (result.noop) {
                 notifyToast('Нет изменённых полей для записи.');
-            } else if (globalThis.window?.toastr?.success) {
-                window.toastr.success(`Карточка «${sess.card.name}» обновлена (бэкап сохранён)!`, 'NexusMatch');
+            } else {
+                notifySuccessToast(`Карточка «${sess.card.name}» обновлена (бэкап проверен и сохранён)!`);
             }
         } catch (err) {
             if (err?.code === 'EXTERNAL_CARD_MODIFIED' && !allowExternalOverride) {
@@ -1907,6 +1925,14 @@ async function executeOverwriteFlow(sess, cfg, allowExternalOverride = false) {
                 };
                 return;
             }
+            state.overwriteConfirmInfo = null;
+            await refreshBackupsList().catch(() => {});
+            state.lastOverwriteAlert = {
+                code: String(err?.code || 'SAVE_ERROR'),
+                message: String(err?.message || err),
+                backupId: String(err?.backupId || ''),
+                targetAvatar,
+            };
             throw err;
         }
     }, { taskType: 'save', cancellable: false });
@@ -2068,6 +2094,7 @@ function bindWindowDelegation(win) {
                 const obj = JSON.parse(txt);
                 // Strictly resets sourceAvatarId, previous avatar, and previous imagePrompt! (fixes NMF-004 & NMF-003)
                 sess.card = createCardStateFromImportedJson(obj);
+                state.lastOverwriteAlert = null;
                 await pruneOrphanedMedia(cfg.sessions);
                 saveSettings();
                 notifyToast('JSON-карточка загружена как независимый черновик.');
@@ -2120,6 +2147,31 @@ function bindWindowDelegation(win) {
         if (act === 'confirm-overwrite-execute') {
             const allowOverride = Boolean(state.overwriteConfirmInfo?.externalWarning);
             await executeOverwriteFlow(sess, cfg, allowOverride);
+            return;
+        }
+        if (act === 'dismiss-overwrite-alert') {
+            state.lastOverwriteAlert = null;
+            return renderWindow();
+        }
+        if (act === 'restore-card-backup') {
+            const bid = btn.dataset.bid;
+            if (!bid) return;
+            await withBusy('Восстанавливаем карточку из страховочного бэкапа', async () => {
+                const res = await restoreCardFromBackupVault(bid, { allowExternalChangeOverride: true });
+                const restoredState = createCardStateFromTavernChar(res.restoredChar, { avatarId: '' });
+                try {
+                    const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(res.fileName)}`);
+                    restoredState.avatarId = await saveMediaDataUrl(srcDataUrl);
+                } catch {
+                    restoredState.avatarId = '';
+                }
+                sess.card = restoredState;
+                state.lastOverwriteAlert = null;
+                await pruneOrphanedMedia(cfg.sessions);
+                saveSettings();
+                await Promise.all([refreshRosterData(), refreshBackupsList()]);
+                notifySuccessToast(`Оригинал «${sess.card.name}» полностью восстановлен из бэкапа!`);
+            }, { taskType: 'save', cancellable: false });
             return;
         }
         if (act === 'download-card-backup') {
@@ -2504,11 +2556,8 @@ function bindWindowDelegation(win) {
                     signal,
                 });
                 const parsed = parseFullCardResponse(raw, cfg.transportMode, sess.intake.playerNameMode || 'macro');
-                applyGeneratedToSessionCard(sess, parsed, {
-                    avatarId: '',
-                    sourceAvatarId: '',
-                    sourceLoadedFromTavern: false,
-                });
+                sess.card = createCardStateFromGeneratedDraft(parsed);
+                state.lastOverwriteAlert = null;
                 await pruneOrphanedMedia(cfg.sessions);
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
@@ -2517,7 +2566,7 @@ function bindWindowDelegation(win) {
             return;
         }
 
-        // CREATE / AU REWORK ACTIONS (with FULL unshallowed character loading — fixes NMF-002!)
+        // CREATE / AU REWORK ACTIONS (with FULL unshallowed character loading & strict A/B base isolation — fixes NMF-002 & P1-A!)
         if (act === 'build-from-architect') {
             await withBusy('Собираем карточку по вашей задумке', async (signal) => {
                 const req = buildFullCardRequest(sess, sess.architect.freeConcept, cfg.transportMode);
@@ -2528,11 +2577,8 @@ function bindWindowDelegation(win) {
                     signal,
                 });
                 const parsed = parseFullCardResponse(raw, cfg.transportMode, sess.intake.playerNameMode || 'macro');
-                applyGeneratedToSessionCard(sess, parsed, {
-                    avatarId: '',
-                    sourceAvatarId: '',
-                    sourceLoadedFromTavern: false,
-                });
+                sess.card = createCardStateFromGeneratedDraft(parsed);
+                state.lastOverwriteAlert = null;
                 await pruneOrphanedMedia(cfg.sessions);
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
@@ -2554,11 +2600,12 @@ function bindWindowDelegation(win) {
                     let previewAvatarId = '';
                     try {
                         const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(chosenAvatar)}`, signal);
-                        previewAvatarId = await saveMediaDataUrl(srcDataUrl, sess.card.avatarId || '');
+                        previewAvatarId = await saveMediaDataUrl(srcDataUrl);
                     } catch {
                         previewAvatarId = '';
                     }
                     sess.card = createCardStateFromTavernChar(fullChar, { avatarId: previewAvatarId });
+                    state.lastOverwriteAlert = null;
                     await pruneOrphanedMedia(cfg.sessions);
                     state.activeTab = 'editor';
                     state.editorSubTab = 'main';
@@ -2573,9 +2620,9 @@ function bindWindowDelegation(win) {
                 let previewAvatarId = '';
                 try {
                     const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(chosenAvatar)}`, signal);
-                    previewAvatarId = await saveMediaDataUrl(srcDataUrl, sess.card.avatarId || '');
+                    previewAvatarId = await saveMediaDataUrl(srcDataUrl);
                 } catch {
-                    previewAvatarId = sess.card.avatarId || '';
+                    previewAvatarId = '';
                 }
 
                 const req = buildReworkCardRequest(sess, {
@@ -2593,18 +2640,20 @@ function bindWindowDelegation(win) {
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     signal,
                 });
-                const parsed = parseFullCardResponse(raw, cfg.transportMode, sess.intake.playerNameMode || 'macro');
-                applyGeneratedToSessionCard(sess, parsed, {
+                const parsed = parseFullCardResponse(
+                    raw,
+                    cfg.transportMode,
+                    sess.intake.playerNameMode || 'macro',
+                    { fallbackName: baseState.name }
+                );
+                // Strictly applies parsed result onto baseState of chosen character A — NEVER reads previous sess.card B! (fixes P1-A)
+                sess.card = applyReworkResultToTavernBase(baseState, parsed, {
                     avatarId: previewAvatarId,
-                    avatarDirty: false,
                     sourceAvatarId: chosenAvatar,
-                    sourceLoadedFromTavern: true,
-                    sourceSnapshotHash: snapshotHash,
-                    originalCardData: structuredClone(rawCardObject),
-                    world: baseState.world,
-                    creator: baseState.creator,
-                    character_version: baseState.character_version,
+                    snapshotHash,
+                    rawCardObject,
                 });
+                state.lastOverwriteAlert = null;
                 await pruneOrphanedMedia(cfg.sessions);
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
@@ -2733,9 +2782,7 @@ function bindWindowDelegation(win) {
                     cropFocus: cfg.imageCropFocus || 'top',
                 });
                 await refreshRosterData();
-                if (globalThis.window?.toastr?.success) {
-                    window.toastr.success(`«${sess.card.name}» добавлена как новая карточка в Таверну!`, 'NexusMatch');
-                }
+                notifySuccessToast(`«${sess.card.name}» добавлена как новая карточка в Таверну!`);
             }, { taskType: 'save', cancellable: false });
             return;
         }
@@ -2779,13 +2826,13 @@ async function expandCandidateIntoFullCard(sess, cand, transportMode) {
         const parsed = parseFullCardResponse(raw, transportMode, sess.intake.playerNameMode || 'macro');
         const candMediaUrl = resolveEntityAvatarUrl(cand);
         const newCardAvatarId = candMediaUrl ? await saveMediaDataUrl(candMediaUrl) : '';
-        applyGeneratedToSessionCard(sess, parsed, {
+        sess.card = createCardStateFromGeneratedDraft(parsed, {
             avatarId: newCardAvatarId,
-            avatarDirty: Boolean(newCardAvatarId),
-            imagePrompt: parsed.imagePrompt || cand.imagePrompt || '',
-            sourceAvatarId: '',
-            sourceLoadedFromTavern: false,
+            fallbackName: cand.name,
+            fallbackImagePrompt: cand.imagePrompt || '',
         });
+        state.lastOverwriteAlert = null;
+        await pruneOrphanedMedia(cfg.sessions);
         state.activeTab = 'editor';
         state.editorSubTab = 'main';
         saveSettings();

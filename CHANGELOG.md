@@ -2,6 +2,17 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.4.1-beta] - 2026-11-20
+
+### Follow-Up Security & Data-Safety Hardening
+- **P1-A (AU Rework Base Isolation)**: Replaced the shared `applyGeneratedToSessionCard()` helper with two strictly isolated constructors (`createCardStateFromGeneratedDraft()` for standalone cards and `applyReworkResultToTavernBase()` for AU Rework). AU Rework now layers parsed LLM results exclusively onto the target original character `A` (`baseState`) and computes `dirtyFields` by actual value comparison against `A`, eliminating any possibility of inheriting `system_prompt`, `post_history_instructions`, `name`, or `avatarId` from a previously edited card `B`.
+- **P1-B (Fail-Closed Durable PNG Backup)**: Hardened `saveCardBackup(..., { requireDurable: true })` and `updateExistingCardInTavern()` with structural PNG chunk validation (`isValidNonEmptyPngBytes`: magic bytes, `IHDR` dimensions, intact chunk stream, `IEND`), mandatory `IndexedDB` transaction commit (`onabort`/`onerror` handling including `QuotaExceededError`), and immediate `IndexedDB` readback verification before issuing a single write `POST`. RAM-only fallback is never accepted as a pre-overwrite backup.
+- **P1-C (Full Post-Save Invariant Verification)**: Added `verifyPostSaveIntegrity()` after overwrite to verify `fav`, `chat`, `create_date`, `talkativeness`, `depth_prompt`, embedded `character_book`, third-party `data.extensions`, unknown V2 fields, and every requested `dirtyField`. Any mismatch rejects with `INTEGRITY_CHECK_FAILED` while keeping `dirtyFields`, `sourceSnapshotHash`, and the verified Backup Vault intact for one-click recovery.
+- **P1/P2-D (Partial-Save Detection, Guarded Auto-Rollback & 1-Click Vault Restore)**: Added explicit `PARTIAL_SAVE` handling across `/api/characters/edit-avatar` and `/api/characters/merge-attributes` with snapshot-guarded automatic rollback to the verified backup if step 2 fails, plus `restoreCardFromBackupVault()` and an in-editor Recovery Banner.
+- **P2-E (Race-Free Base64 -> IndexedDB Migration)**: `migrateInlineSessionMediaToVault()` now captures an immutable upfront snapshot synchronously before the first `await` and clears `avatarDataUrl` only after confirmed `IndexedDB` write + readback (`isMediaDurablyPersisted`). Concurrent `saveSettings()` calls and mid-batch `QuotaExceededError` preserve un-migrated inline `Base64` images across browser reloads without data loss.
+- **P2-F (Exact Fallback Status Codes)**: Aligned `/api/characters/merge-attributes` -> `/api/characters/edit` compatibility fallback strictly to `HTTP 404 / 405 / 501` (never falling back on `500` or indeterminate errors).
+- **P2-G (DOM XSS Sink Hardening & Platform Matrix)**: Added `safeImgSrc()` whitelist (`data:image/png|jpeg|webp|gif;base64` and `blob:` only), escaped session `data-sid` attributes, enabled `{ escapeHtml: true }` on `toastr` notifications, expanded `tests/nmf_audit_suite.test.mjs` to 17 suites covering negative/fault-injection regressions and full `renderWindow()` `innerHTML` DOM sink checks, and clarified target platform support (Desktop + Android / Termux).
+
 ## [1.4.0-beta] - 2026-11-20
 
 ### Security & Card Data Integrity (Phase A)

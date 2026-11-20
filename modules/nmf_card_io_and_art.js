@@ -1,4 +1,9 @@
-import { saveCardBackup } from './nmf_media_vault.js';
+import {
+    saveCardBackup,
+    getCardBackupById,
+    base64ToBytes,
+    isValidNonEmptyPngBytes,
+} from './nmf_media_vault.js';
 
 // CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {
@@ -228,6 +233,142 @@ export function createCardStateFromImportedJson(rawObj) {
     };
 }
 
+function readComparableFieldFromState(stateObj, field) {
+    switch (field) {
+        case 'name':
+            return String(stateObj?.name ?? '').trim();
+        case 'alternate_greetings':
+            return parseAltGreetingsArray(stateObj?.alternate_greetings).map((s) => s.trim()).filter(Boolean);
+        case 'tags':
+            return parseTagsArray(stateObj?.tags);
+        case 'world':
+            return String(stateObj?.world ?? '').trim();
+        case 'imagePrompt':
+            return String(stateObj?.imagePrompt ?? '').trim();
+        case 'character_version':
+            return String(stateObj?.character_version ?? '1.0');
+        default:
+            return String(stateObj?.[field] ?? '');
+    }
+}
+
+export function computeChangedFieldKeysAgainstBase(nextState, baseState) {
+    const changed = [];
+    for (const field of ALL_EDITABLE_CARD_FIELDS) {
+        const a = readComparableFieldFromState(nextState, field);
+        const b = readComparableFieldFromState(baseState, field);
+        if (stableStringify(a) !== stableStringify(b)) {
+            changed.push(field);
+        }
+    }
+    return changed;
+}
+
+// Pure standalone card builder for Blitz / Architect / Swipe Expansion — NEVER inherits fields from any previous sess.card! (fixes P1-A)
+export function createCardStateFromGeneratedDraft(
+    parsed = {},
+    { avatarId = '', fallbackName = 'Новая Карточка', fallbackImagePrompt = '' } = {}
+) {
+    const cleanName = String(parsed?.name ?? '').trim() || String(fallbackName || 'Новая Карточка').trim() || 'Новая Карточка';
+    const cleanImgPrompt = String(parsed?.imagePrompt ?? '').trim() || String(fallbackImagePrompt || '').trim();
+    const cleanAvatarId = String(avatarId || '').trim();
+
+    return {
+        name: cleanName,
+        description: String(parsed?.description ?? ''),
+        personality: String(parsed?.personality ?? ''),
+        scenario: String(parsed?.scenario ?? ''),
+        first_mes: String(parsed?.first_mes ?? ''),
+        alternate_greetings: Array.isArray(parsed?.alternate_greetings) ? parsed.alternate_greetings.map(String) : [],
+        mes_example: String(parsed?.mes_example ?? ''),
+        creator_notes: String(parsed?.creator_notes ?? ''),
+        system_prompt: String(parsed?.system_prompt ?? ''),
+        post_history_instructions: String(parsed?.post_history_instructions ?? ''),
+        tags: Array.isArray(parsed?.tags) ? parsed.tags.join(', ') : String(parsed?.tags ?? ''),
+        creator: 'NexusMatch Forge',
+        character_version: '1.0',
+        world: '',
+        imagePrompt: cleanImgPrompt,
+        avatarId: cleanAvatarId,
+        avatarDataUrl: '',
+        avatarDirty: Boolean(cleanAvatarId),
+        sourceAvatarId: '',
+        sourceLoadedFromTavern: false,
+        sourceSnapshotHash: '',
+        originalCardData: null,
+        dirtyFields: [
+            'name',
+            'description',
+            'personality',
+            'scenario',
+            'first_mes',
+            'alternate_greetings',
+            'mes_example',
+            'system_prompt',
+            'post_history_instructions',
+            'creator_notes',
+            'tags',
+            'imagePrompt',
+        ],
+    };
+}
+
+// Pure AU Rework applier strictly layered over target Tavern character A (baseState) — NEVER touches previous sess.card B! (fixes P1-A)
+export function applyReworkResultToTavernBase(
+    baseState,
+    parsed = {},
+    { avatarId = '', sourceAvatarId = '', snapshotHash = '', rawCardObject = null } = {}
+) {
+    if (!baseState || typeof baseState !== 'object') {
+        throw new Error('Не загружена исходная карточка оригинала для AU Rework.');
+    }
+
+    const pickNonEmptyOrBase = (genVal, baseVal) => {
+        if (genVal !== undefined && genVal !== null && String(genVal).trim() !== '') {
+            return String(genVal);
+        }
+        return String(baseVal ?? '');
+    };
+
+    const parsedAlts = Array.isArray(parsed?.alternate_greetings)
+        ? parsed.alternate_greetings.map(String).filter((s) => s.trim().length > 0)
+        : [];
+    const baseAlts = Array.isArray(baseState.alternate_greetings) ? [...baseState.alternate_greetings] : [];
+
+    const parsedTagsStr = Array.isArray(parsed?.tags) ? parsed.tags.join(', ') : String(parsed?.tags ?? '');
+
+    const nextCard = {
+        name: pickNonEmptyOrBase(parsed?.name, baseState.name).trim() || String(baseState.name || 'Unnamed'),
+        description: pickNonEmptyOrBase(parsed?.description, baseState.description),
+        personality: pickNonEmptyOrBase(parsed?.personality, baseState.personality),
+        scenario: pickNonEmptyOrBase(parsed?.scenario, baseState.scenario),
+        first_mes: pickNonEmptyOrBase(parsed?.first_mes, baseState.first_mes),
+        alternate_greetings: parsedAlts.length > 0 ? parsedAlts : baseAlts,
+        mes_example: pickNonEmptyOrBase(parsed?.mes_example, baseState.mes_example),
+        creator_notes: pickNonEmptyOrBase(parsed?.creator_notes, baseState.creator_notes),
+        system_prompt: pickNonEmptyOrBase(parsed?.system_prompt, baseState.system_prompt),
+        post_history_instructions: pickNonEmptyOrBase(parsed?.post_history_instructions, baseState.post_history_instructions),
+        tags: pickNonEmptyOrBase(parsedTagsStr, baseState.tags),
+        creator: String(baseState.creator ?? ''),
+        character_version: String(baseState.character_version ?? '1.0') || '1.0',
+        world: String(baseState.world ?? ''),
+        imagePrompt: pickNonEmptyOrBase(parsed?.imagePrompt, baseState.imagePrompt).trim(),
+        avatarId: String(avatarId || baseState.avatarId || ''),
+        avatarDataUrl: '',
+        avatarDirty: false,
+        sourceAvatarId: String(sourceAvatarId || baseState.sourceAvatarId || ''),
+        sourceLoadedFromTavern: Boolean(sourceAvatarId || baseState.sourceAvatarId),
+        sourceSnapshotHash: String(snapshotHash || baseState.sourceSnapshotHash || ''),
+        originalCardData: rawCardObject
+            ? structuredClone(rawCardObject)
+            : (baseState.originalCardData ? structuredClone(baseState.originalCardData) : null),
+        dirtyFields: [],
+    };
+
+    nextCard.dirtyFields = computeChangedFieldKeysAgainstBase(nextCard, baseState);
+    return nextCard;
+}
+
 function applySingleFieldToCardObject(target, field, card) {
     if (!target.data || typeof target.data !== 'object') {
         target.data = {};
@@ -314,7 +455,7 @@ function applySingleFieldToCardObject(target, field, card) {
             if (cleanImgPrompt || target.data.extensions.nexus_match_forge) {
                 target.data.extensions.nexus_match_forge = {
                     ...(target.data.extensions.nexus_match_forge || {}),
-                    version: '1.4.0-beta',
+                    version: '1.4.1-beta',
                     image_prompt: cleanImgPrompt,
                 };
             }
@@ -376,7 +517,7 @@ export function buildV2CardObject(card) {
     };
     if (cleanImgPrompt) {
         extensions.nexus_match_forge = {
-            version: '1.4.0-beta',
+            version: '1.4.1-beta',
             image_prompt: cleanImgPrompt,
         };
     }
@@ -485,7 +626,7 @@ export function buildSurgicalMergePayload(avatarFileName, card) {
                 break;
             case 'imagePrompt':
                 extPatch.nexus_match_forge = {
-                    version: '1.4.0-beta',
+                    version: '1.4.1-beta',
                     image_prompt: String(card.imagePrompt ?? '').trim(),
                 };
                 break;
@@ -876,7 +1017,338 @@ export async function fetchFullTavernCharacter(avatarUrl, { signal = null } = {}
     };
 }
 
-// Safe existing character update via /api/characters/edit-avatar + /api/characters/merge-attributes with Backup & Verification (fixes NMF-001 & NMF-003)
+const MISSING_MERGE_ROUTE_STATUSES = new Set([404, 405, 501]);
+
+const STANDARD_V2_DATA_KEYS = new Set([
+    'name',
+    'description',
+    'personality',
+    'scenario',
+    'first_mes',
+    'mes_example',
+    'creator_notes',
+    'system_prompt',
+    'post_history_instructions',
+    'alternate_greetings',
+    'tags',
+    'creator',
+    'character_version',
+    'character_book',
+    'extensions',
+]);
+
+const KNOWN_TOP_LEVEL_KEYS = new Set([
+    'name',
+    'description',
+    'personality',
+    'scenario',
+    'first_mes',
+    'mes_example',
+    'creatorcomment',
+    'avatar',
+    'chat',
+    'create_date',
+    'talkativeness',
+    'fav',
+    'tags',
+    'spec',
+    'spec_version',
+    'data',
+    'json_data',
+    'shallow',
+]);
+
+function extractEffectiveFav(raw) {
+    if (raw?.data?.extensions?.fav !== undefined) return Boolean(raw.data.extensions.fav);
+    return Boolean(raw?.fav);
+}
+
+function extractEffectiveTalkativeness(raw) {
+    const val = raw?.data?.extensions?.talkativeness !== undefined
+        ? raw.data.extensions.talkativeness
+        : (raw?.talkativeness !== undefined ? raw.talkativeness : 0.5);
+    const num = Number(val);
+    return Number.isFinite(num) ? String(num) : String(val);
+}
+
+function extractEffectiveDepthPrompt(raw) {
+    const dp = raw?.data?.extensions?.depth_prompt;
+    if (!dp || typeof dp !== 'object') return null;
+    return {
+        prompt: String(dp.prompt ?? ''),
+        depth: Number(dp.depth ?? 4),
+        role: String(dp.role ?? 'system'),
+    };
+}
+
+function readActualFieldFromRawCard(raw, field) {
+    const d = (raw?.data && typeof raw.data === 'object') ? raw.data : (raw || {});
+    switch (field) {
+        case 'name':
+            return String(d.name ?? raw?.name ?? '').trim();
+        case 'description':
+            return String(d.description ?? raw?.description ?? '');
+        case 'personality':
+            return String(d.personality ?? raw?.personality ?? '');
+        case 'scenario':
+            return String(d.scenario ?? raw?.scenario ?? '');
+        case 'first_mes':
+            return String(d.first_mes ?? raw?.first_mes ?? '');
+        case 'mes_example':
+            return String(d.mes_example ?? raw?.mes_example ?? '');
+        case 'creator_notes':
+            return String(d.creator_notes ?? raw?.creatorcomment ?? '');
+        case 'system_prompt':
+            return String(d.system_prompt ?? '');
+        case 'post_history_instructions':
+            return String(d.post_history_instructions ?? '');
+        case 'alternate_greetings':
+            return parseAltGreetingsArray(d.alternate_greetings).map((s) => s.trim()).filter(Boolean);
+        case 'tags':
+            return parseTagsArray(d.tags !== undefined ? d.tags : raw?.tags);
+        case 'creator':
+            return String(d.creator ?? '');
+        case 'character_version':
+            return String(d.character_version ?? '1.0');
+        case 'world':
+            return String(d?.extensions?.world ?? '').trim();
+        case 'imagePrompt':
+            return String(d?.extensions?.nexus_match_forge?.image_prompt ?? '').trim();
+        default:
+            return '';
+    }
+}
+
+// Strict post-save invariant & requested-diff verifier (fixes P1-C)
+export function verifyPostSaveIntegrity({ beforeRaw, afterRaw, card, dirtyFields = [] }) {
+    const mismatches = [];
+    if (!afterRaw || typeof afterRaw !== 'object') {
+        return { ok: false, mismatches: ['Сервер вернул пустой объект карточки при контрольном чтении.'] };
+    }
+
+    const dirtySet = new Set(Array.isArray(dirtyFields) ? dirtyFields : []);
+
+    // 1. Protected SillyTavern state invariants
+    if (extractEffectiveFav(afterRaw) !== extractEffectiveFav(beforeRaw)) {
+        mismatches.push(`Статус fav изменился (${extractEffectiveFav(beforeRaw)} -> ${extractEffectiveFav(afterRaw)})`);
+    }
+    if (beforeRaw?.chat !== undefined && String(afterRaw?.chat ?? '') !== String(beforeRaw.chat)) {
+        mismatches.push(`Привязка chat изменилась (${beforeRaw.chat} -> ${afterRaw?.chat})`);
+    }
+    if (beforeRaw?.create_date !== undefined && String(afterRaw?.create_date ?? '') !== String(beforeRaw.create_date)) {
+        mismatches.push(`Поле create_date изменилось (${beforeRaw.create_date} -> ${afterRaw?.create_date})`);
+    }
+    if (extractEffectiveTalkativeness(afterRaw) !== extractEffectiveTalkativeness(beforeRaw)) {
+        mismatches.push(`Поле talkativeness изменилось (${extractEffectiveTalkativeness(beforeRaw)} -> ${extractEffectiveTalkativeness(afterRaw)})`);
+    }
+    if (stableStringify(extractEffectiveDepthPrompt(afterRaw)) !== stableStringify(extractEffectiveDepthPrompt(beforeRaw))) {
+        mismatches.push('Встроенный depth_prompt изменился или был сброшен');
+    }
+    if (stableStringify(afterRaw?.data?.character_book ?? null) !== stableStringify(beforeRaw?.data?.character_book ?? null)) {
+        mismatches.push('Встроенный character_book изменился или был потерян');
+    }
+
+    // 2. Third-party data.extensions preservation
+    const beforeExt = beforeRaw?.data?.extensions || {};
+    const afterExt = afterRaw?.data?.extensions || {};
+    const reservedExt = new Set(['talkativeness', 'fav', 'depth_prompt', 'nexus_match_forge']);
+    if (dirtySet.has('world')) reservedExt.add('world');
+
+    for (const extKey of Object.keys(beforeExt)) {
+        if (reservedExt.has(extKey)) continue;
+        if (stableStringify(afterExt[extKey]) !== stableStringify(beforeExt[extKey])) {
+            mismatches.push(`Потеряно или изменено поле расширения data.extensions.${extKey}`);
+        }
+    }
+
+    // 3. Unknown V2 fields preservation (both inside data.* and custom top-level properties)
+    const beforeData = beforeRaw?.data || {};
+    const afterData = afterRaw?.data || {};
+    for (const k of Object.keys(beforeData)) {
+        if (STANDARD_V2_DATA_KEYS.has(k)) continue;
+        if (stableStringify(afterData[k]) !== stableStringify(beforeData[k])) {
+            mismatches.push(`Потеряно или изменено пользовательское поле data.${k}`);
+        }
+    }
+    for (const k of Object.keys(beforeRaw || {})) {
+        if (KNOWN_TOP_LEVEL_KEYS.has(k)) continue;
+        if (stableStringify(afterRaw?.[k]) !== stableStringify(beforeRaw[k])) {
+            mismatches.push(`Потеряно или изменено поле верхнего уровня ${k}`);
+        }
+    }
+
+    // 4. Unmodified standard V2 fields must stay identical, and modified dirtyFields must match requested values
+    for (const field of ALL_EDITABLE_CARD_FIELDS) {
+        const afterVal = readActualFieldFromRawCard(afterRaw, field);
+        if (dirtySet.has(field)) {
+            const expectedVal = readComparableFieldFromState(card, field);
+            if (stableStringify(afterVal) !== stableStringify(expectedVal)) {
+                mismatches.push(`Изменённое поле «${field}» не применилось корректно на сервере`);
+            }
+        } else {
+            const beforeVal = readActualFieldFromRawCard(beforeRaw, field);
+            if (stableStringify(afterVal) !== stableStringify(beforeVal)) {
+                mismatches.push(`Неизменяемое поле «${field}» изменилось без запроса пользователя`);
+            }
+        }
+    }
+
+    return {
+        ok: mismatches.length === 0,
+        mismatches,
+    };
+}
+
+async function uploadAvatarPngBytesToTavern(targetAvatar, pngBytes) {
+    const imgFile = new File([new Blob([pngBytes], { type: 'image/png' })], targetAvatar, { type: 'image/png' });
+    const fd = new FormData();
+    fd.append('avatar', imgFile);
+    fd.append('avatar_url', targetAvatar);
+
+    return fetch('/api/characters/edit-avatar', {
+        method: 'POST',
+        headers: getTavernHeaders({ omitContentType: true }),
+        body: fd,
+        cache: 'no-cache',
+    });
+}
+
+function buildEditFormDataFromMergedCard(targetAvatar, mergedFull, referenceRawCard) {
+    const origD = referenceRawCard?.data || {};
+    const origExt = origD.extensions || {};
+    const editFd = new FormData();
+    editFd.append('avatar_url', targetAvatar);
+    editFd.append('ch_name', mergedFull.data?.name || mergedFull.name || 'Unnamed');
+    editFd.append('description', mergedFull.data?.description ?? mergedFull.description ?? '');
+    editFd.append('personality', mergedFull.data?.personality ?? mergedFull.personality ?? '');
+    editFd.append('scenario', mergedFull.data?.scenario ?? mergedFull.scenario ?? '');
+    editFd.append('first_mes', mergedFull.data?.first_mes ?? mergedFull.first_mes ?? '');
+    editFd.append('mes_example', mergedFull.data?.mes_example ?? mergedFull.mes_example ?? '');
+    editFd.append('creator_notes', mergedFull.data?.creator_notes ?? mergedFull.creatorcomment ?? '');
+    editFd.append('system_prompt', mergedFull.data?.system_prompt ?? '');
+    editFd.append('post_history_instructions', mergedFull.data?.post_history_instructions ?? '');
+    editFd.append('creator', mergedFull.data?.creator ?? '');
+    editFd.append('character_version', mergedFull.data?.character_version ?? '1.0');
+    for (const alt of (mergedFull.data?.alternate_greetings || [])) {
+        editFd.append('alternate_greetings', alt);
+    }
+    editFd.append('tags', (mergedFull.data?.tags || []).join(', '));
+    editFd.append('fav', String(extractEffectiveFav(referenceRawCard)));
+    editFd.append('talkativeness', String(referenceRawCard?.talkativeness ?? origExt.talkativeness ?? 0.5));
+    editFd.append('world', String(mergedFull.data?.extensions?.world ?? origExt.world ?? ''));
+    editFd.append('depth_prompt_prompt', String(origExt.depth_prompt?.prompt ?? ''));
+    editFd.append('depth_prompt_depth', String(origExt.depth_prompt?.depth ?? 4));
+    editFd.append('depth_prompt_role', String(origExt.depth_prompt?.role ?? 'system'));
+    if (referenceRawCard?.chat !== undefined) {
+        editFd.append('chat', String(referenceRawCard.chat));
+    }
+    if (referenceRawCard?.create_date !== undefined) {
+        editFd.append('create_date', String(referenceRawCard.create_date));
+    }
+    editFd.append('extensions', JSON.stringify(mergedFull.data?.extensions || {}));
+    editFd.append('json_data', JSON.stringify(mergedFull));
+    return editFd;
+}
+
+async function applyTextFieldsUpdateToTavern(targetAvatar, card, dirtyFields, baseRawObject) {
+    const mergePayload = buildSurgicalMergePayload(targetAvatar, card);
+    const mergeRes = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getTavernHeaders(),
+        body: JSON.stringify(mergePayload),
+        cache: 'no-cache',
+    });
+
+    // Fallback to /api/characters/edit ONLY when /merge-attributes route is explicitly unsupported (404/405/501 — fixes P2-F)
+    if (MISSING_MERGE_ROUTE_STATUSES.has(mergeRes.status)) {
+        const mergedFull = buildV2CardObject({
+            ...card,
+            originalCardData: baseRawObject,
+            dirtyFields,
+        });
+        const editFd = buildEditFormDataFromMergedCard(targetAvatar, mergedFull, baseRawObject);
+        const fallbackRes = await fetch('/api/characters/edit', {
+            method: 'POST',
+            headers: getTavernHeaders({ omitContentType: true }),
+            body: editFd,
+            cache: 'no-cache',
+        });
+        if (!fallbackRes.ok) {
+            const fbTxt = await fallbackRes.text().catch(() => '');
+            throw new Error(`Ошибка сохранения полей карточки через /edit (HTTP ${fallbackRes.status}): ${fbTxt.slice(0, 160)}`);
+        }
+        return;
+    }
+
+    if (!mergeRes.ok) {
+        const errTxt = await mergeRes.text().catch(() => '');
+        throw new Error(`Ошибка слияния полей карточки (HTTP ${mergeRes.status}): ${errTxt.slice(0, 180)}`);
+    }
+}
+
+// Guarded restore from durable Backup Vault with concurrent-modification protection (fixes P1/P2-D recovery)
+export async function restoreCardFromBackupVault(
+    backupId,
+    { allowExternalChangeOverride = false, expectedSnapshotHash = '' } = {}
+) {
+    const bak = await getCardBackupById(backupId);
+    if (!bak || !bak.avatarFileName || !bak.pngBase64 || !bak.cardJson) {
+        const err = new Error('Резервная копия не найдена или не содержит полного снимка PNG + JSON.');
+        err.code = 'BACKUP_NOT_FOUND';
+        throw err;
+    }
+
+    const pngBytes = base64ToBytes(bak.pngBase64);
+    if (!isValidNonEmptyPngBytes(pngBytes)) {
+        const err = new Error('Байты PNG в резервной копии повреждены.');
+        err.code = 'BACKUP_INVALID_PNG';
+        throw err;
+    }
+
+    const liveCurrent = await fetchFullTavernCharacter(bak.avatarFileName);
+    if (expectedSnapshotHash && liveCurrent.snapshotHash && liveCurrent.snapshotHash !== expectedSnapshotHash && !allowExternalChangeOverride) {
+        const err = new Error('Карточка была изменена другим процессом — автоматический откат остановлен для защиты чужих правок.');
+        err.code = 'EXTERNAL_CARD_MODIFIED';
+        throw err;
+    }
+
+    const avRes = await uploadAvatarPngBytesToTavern(bak.avatarFileName, pngBytes);
+    if (!avRes.ok) {
+        throw new Error(`Не удалось восстановить исходный PNG из бэкапа (HTTP ${avRes.status}).`);
+    }
+
+    const restoredFull = structuredClone(bak.cardJson);
+    delete restoredFull.json_data;
+    const editFd = buildEditFormDataFromMergedCard(bak.avatarFileName, restoredFull, restoredFull);
+    const editRes = await fetch('/api/characters/edit', {
+        method: 'POST',
+        headers: getTavernHeaders({ omitContentType: true }),
+        body: editFd,
+        cache: 'no-cache',
+    });
+    if (!editRes.ok) {
+        throw new Error(`Не удалось восстановить поля JSON из бэкапа (HTTP ${editRes.status}).`);
+    }
+
+    const afterRestore = await fetchFullTavernCharacter(bak.avatarFileName);
+    const ctx = getTavernContext();
+    if (typeof ctx?.getOneCharacter === 'function') {
+        await ctx.getOneCharacter(bak.avatarFileName);
+    } else if (typeof ctx?.getCharacters === 'function') {
+        await ctx.getCharacters();
+    }
+
+    return {
+        fileName: bak.avatarFileName,
+        backupId: bak.id,
+        restoredChar: afterRestore.fullChar,
+        snapshotHash: afterRestore.snapshotHash,
+        rawCardObject: afterRestore.rawCardObject,
+    };
+}
+
+// Safe existing character update with fail-closed PNG backup (P1-B), PARTIAL_SAVE handling & rollback (P1/P2-D),
+// exact 404/405/501 fallback (P2-F), and strict post-save invariant readback (P1-C)
 export async function updateExistingCardInTavern(card, {
     avatarFileName = '',
     avatarDataUrl = '',
@@ -884,6 +1356,7 @@ export async function updateExistingCardInTavern(card, {
     aspectRatio = '1:1',
     cropFocus = 'top',
     allowExternalChangeOverride = false,
+    writeOrder = 'avatar-first',
 } = {}) {
     const targetAvatar = String(avatarFileName || card?.sourceAvatarId || '').trim();
     if (!targetAvatar) {
@@ -912,116 +1385,172 @@ export async function updateExistingCardInTavern(card, {
         };
     }
 
-    // 2. Fetch raw original PNG bytes for complete pre-overwrite backup
+    // 2. Fail-closed Backup (P1-B): require valid source PNG bytes + durable IndexedDB commit + readback BEFORE any mutation
     let origPngBytes = null;
+    let imgStatus = 0;
     try {
         const imgRes = await fetch(`/characters/${encodeURIComponent(targetAvatar)}`, { cache: 'no-cache' });
+        imgStatus = imgRes.status;
         if (imgRes.ok) {
             origPngBytes = new Uint8Array(await imgRes.arrayBuffer());
         }
-    } catch {
-        origPngBytes = null;
+    } catch (fetchErr) {
+        const err = new Error('Не удалось скачать исходный PNG карточки для страховочного бэкапа. Перезапись заблокирована — сохраните как новую карточку или скачайте PNG.');
+        err.code = 'BACKUP_SOURCE_PNG_UNREADABLE';
+        err.cause = fetchErr;
+        throw err;
     }
 
-    const backup = await saveCardBackup({
-        avatarFileName: targetAvatar,
-        characterName: liveBefore.fullChar?.name || card.name,
-        pngBytes: origPngBytes,
-        cardJson: liveBefore.rawCardObject,
+    if (!origPngBytes || !isValidNonEmptyPngBytes(origPngBytes)) {
+        const err = new Error(
+            `Сервер не вернул валидный PNG оригинала (HTTP ${imgStatus || 'ошибка'}). Перезапись оригинала заблокирована — сохраните как новую карточку или скачайте PNG/JSON.`
+        );
+        err.code = 'BACKUP_SOURCE_PNG_UNREADABLE';
+        throw err;
+    }
+
+    const backup = await saveCardBackup(
+        {
+            avatarFileName: targetAvatar,
+            characterName: liveBefore.fullChar?.name || card.name,
+            pngBytes: origPngBytes,
+            cardJson: liveBefore.rawCardObject,
+        },
+        { requireDurable: true }
+    );
+
+    const dirtyFields = Array.isArray(card.dirtyFields) ? [...card.dirtyFields] : [];
+    const wantAvatarWrite = Boolean(card.avatarDirty && avatarDataUrl);
+    const wantFieldsWrite = dirtyFields.length > 0;
+
+    let newPngBytes = null;
+    if (wantAvatarWrite) {
+        newPngBytes = await ensurePngBytes(avatarDataUrl, card.name, accentHex, { aspectRatio, cropFocus });
+        if (!isValidNonEmptyPngBytes(newPngBytes)) {
+            const err = new Error('Сформированный новый PNG не прошёл проверку целостности. Запись отменена.');
+            err.code = 'INVALID_NEW_AVATAR_PNG';
+            throw err;
+        }
+    }
+
+    // 3 & 4. Controlled execution with PARTIAL_SAVE detection and guarded rollback if second step fails (fixes P1/P2-D)
+    let avatarApplied = false;
+    let fieldsApplied = false;
+
+    const runAvatarStep = async () => {
+        if (!wantAvatarWrite) return;
+        const avRes = await uploadAvatarPngBytesToTavern(targetAvatar, newPngBytes);
+        if (!avRes.ok) {
+            throw new Error(`Ошибка обновления изображения персонажа (HTTP ${avRes.status}).`);
+        }
+        avatarApplied = true;
+    };
+
+    const runFieldsStep = async () => {
+        if (!wantFieldsWrite) return;
+        await applyTextFieldsUpdateToTavern(targetAvatar, card, dirtyFields, liveBefore.rawCardObject);
+        fieldsApplied = true;
+    };
+
+    try {
+        if (writeOrder === 'fields-first') {
+            await runFieldsStep();
+            await runAvatarStep();
+        } else {
+            await runAvatarStep();
+            await runFieldsStep();
+        }
+    } catch (stepErr) {
+        if (avatarApplied || fieldsApplied) {
+            let rolledBack = false;
+            let rollbackError = '';
+            try {
+                const midState = await fetchFullTavernCharacter(targetAvatar);
+                if (avatarApplied && !fieldsApplied) {
+                    // Only pixels changed; JSON snapshot must still match liveBefore before safe auto-rollback
+                    if (midState.snapshotHash === liveBefore.snapshotHash) {
+                        const rbRes = await uploadAvatarPngBytesToTavern(targetAvatar, origPngBytes);
+                        if (rbRes.ok) {
+                            rolledBack = true;
+                            avatarApplied = false;
+                        } else {
+                            rollbackError = `HTTP ${rbRes.status}`;
+                        }
+                    } else {
+                        rollbackError = 'обнаружено параллельное изменение карточки';
+                    }
+                } else if (fieldsApplied && !avatarApplied) {
+                    // Fields were merged, avatar failed — restore exact original V2 JSON from backup if no third-party edit intervened
+                    const expectedMidObj = buildV2CardObject({
+                        ...card,
+                        originalCardData: liveBefore.rawCardObject,
+                        dirtyFields,
+                    });
+                    const expectedMidCheck = verifyPostSaveIntegrity({
+                        beforeRaw: liveBefore.rawCardObject,
+                        afterRaw: midState.rawCardObject,
+                        card,
+                        dirtyFields,
+                    });
+                    if (expectedMidCheck.ok || computeCardSnapshotHash(midState.rawCardObject) === computeCardSnapshotHash(expectedMidObj)) {
+                        const restoreFd = buildEditFormDataFromMergedCard(targetAvatar, liveBefore.rawCardObject, liveBefore.rawCardObject);
+                        const rbEdit = await fetch('/api/characters/edit', {
+                            method: 'POST',
+                            headers: getTavernHeaders({ omitContentType: true }),
+                            body: restoreFd,
+                            cache: 'no-cache',
+                        });
+                        if (rbEdit.ok) {
+                            rolledBack = true;
+                            fieldsApplied = false;
+                        } else {
+                            rollbackError = `HTTP ${rbEdit.status}`;
+                        }
+                    } else {
+                        rollbackError = 'обнаружено параллельное изменение карточки';
+                    }
+                }
+            } catch (rbErr) {
+                rollbackError = rbErr?.message || 'ошибка сети при откате';
+            }
+
+            const partialErr = new Error(
+                rolledBack
+                    ? `Второй шаг сохранения завершился ошибкой (${stepErr.message}). Первичное изменение автоматически откачено к страховочному бэкапу (${backup.id}); несохранённые правки оставлены в редакторе.`
+                    : `Частичное сохранение (PARTIAL_SAVE): ${stepErr.message}. Автооткат не выполнен (${rollbackError || 'ошибка сервера'}). Используйте кнопку «Восстановить из бэкапа» (${backup.id}) или скачайте резервный PNG.`
+            );
+            partialErr.code = 'PARTIAL_SAVE';
+            partialErr.backupId = backup.id;
+            partialErr.rolledBack = rolledBack;
+            partialErr.avatarApplied = avatarApplied;
+            partialErr.fieldsApplied = fieldsApplied;
+            partialErr.cause = stepErr;
+            throw partialErr;
+        }
+        stepErr.backupId = backup.id;
+        throw stepErr;
+    }
+
+    // 5. Strict post-save readback & full invariant verification (fixes P1-C)
+    const liveAfter = await fetchFullTavernCharacter(targetAvatar);
+    const integrity = verifyPostSaveIntegrity({
+        beforeRaw: liveBefore.rawCardObject,
+        afterRaw: liveAfter.rawCardObject,
+        card,
+        dirtyFields,
     });
 
-    // 3. If image was explicitly modified, replace ONLY PNG image pixels via /api/characters/edit-avatar (preserves 100% of embedded JSON!)
-    if (card.avatarDirty && avatarDataUrl) {
-        const rawPngBytes = await ensurePngBytes(avatarDataUrl, card.name, accentHex, { aspectRatio, cropFocus });
-        const imgFile = new File([new Blob([rawPngBytes], { type: 'image/png' })], targetAvatar, { type: 'image/png' });
-        const fd = new FormData();
-        fd.append('avatar', imgFile);
-        fd.append('avatar_url', targetAvatar);
-
-        const avRes = await fetch('/api/characters/edit-avatar', {
-            method: 'POST',
-            headers: getTavernHeaders({ omitContentType: true }),
-            body: fd,
-            cache: 'no-cache',
-        });
-        if (!avRes.ok) {
-            throw new Error(`Ошибка обновления изображения персонажа (HTTP ${avRes.status}). Исходный бэкап сохранён.`);
-        }
+    if (!integrity.ok) {
+        const intErr = new Error(
+            `Проверка целостности карточки после сохранения не пройдена: ${integrity.mismatches.join('; ')}. Правки и страховочный бэкап (${backup.id}) сохранены — вы можете восстановить оригинал в один клик.`
+        );
+        intErr.code = 'INTEGRITY_CHECK_FAILED';
+        intErr.mismatches = integrity.mismatches;
+        intErr.backupId = backup.id;
+        throw intErr;
     }
 
-    // 4. Surgical field merge via /api/characters/merge-attributes (or full /api/characters/edit fallback if /merge-attributes is missing)
-    const dirtyFields = Array.isArray(card.dirtyFields) ? card.dirtyFields : [];
-    if (dirtyFields.length > 0) {
-        const mergePayload = buildSurgicalMergePayload(targetAvatar, card);
-        const mergeRes = await fetch('/api/characters/merge-attributes', {
-            method: 'POST',
-            headers: getTavernHeaders(),
-            body: JSON.stringify(mergePayload),
-            cache: 'no-cache',
-        });
-
-        if (mergeRes.status === 404) {
-            // Compatibility fallback for older ST builds lacking /merge-attributes: preserve chat, create_date, fav, talkativeness, depth_prompt, character_book & extensions via json_data!
-            const mergedFull = buildV2CardObject({
-                ...card,
-                originalCardData: liveBefore.rawCardObject,
-                dirtyFields,
-            });
-            const origD = liveBefore.rawCardObject?.data || {};
-            const origExt = origD.extensions || {};
-            const editFd = new FormData();
-            editFd.append('avatar_url', targetAvatar);
-            editFd.append('ch_name', mergedFull.data?.name || mergedFull.name || card.name);
-            editFd.append('description', mergedFull.data?.description ?? mergedFull.description ?? '');
-            editFd.append('personality', mergedFull.data?.personality ?? mergedFull.personality ?? '');
-            editFd.append('scenario', mergedFull.data?.scenario ?? mergedFull.scenario ?? '');
-            editFd.append('first_mes', mergedFull.data?.first_mes ?? mergedFull.first_mes ?? '');
-            editFd.append('mes_example', mergedFull.data?.mes_example ?? mergedFull.mes_example ?? '');
-            editFd.append('creator_notes', mergedFull.data?.creator_notes ?? mergedFull.creatorcomment ?? '');
-            editFd.append('system_prompt', mergedFull.data?.system_prompt ?? '');
-            editFd.append('post_history_instructions', mergedFull.data?.post_history_instructions ?? '');
-            editFd.append('creator', mergedFull.data?.creator ?? '');
-            editFd.append('character_version', mergedFull.data?.character_version ?? '1.0');
-            for (const alt of (mergedFull.data?.alternate_greetings || [])) {
-                editFd.append('alternate_greetings', alt);
-            }
-            editFd.append('tags', (mergedFull.data?.tags || []).join(', '));
-            editFd.append('fav', String(Boolean(liveBefore.rawCardObject?.fav ?? origExt.fav)));
-            editFd.append('talkativeness', String(liveBefore.rawCardObject?.talkativeness ?? origExt.talkativeness ?? 0.5));
-            editFd.append('world', String(mergedFull.data?.extensions?.world ?? origExt.world ?? ''));
-            editFd.append('depth_prompt_prompt', String(origExt.depth_prompt?.prompt ?? ''));
-            editFd.append('depth_prompt_depth', String(origExt.depth_prompt?.depth ?? 4));
-            editFd.append('depth_prompt_role', String(origExt.depth_prompt?.role ?? 'system'));
-            if (liveBefore.rawCardObject?.chat !== undefined) {
-                editFd.append('chat', String(liveBefore.rawCardObject.chat));
-            }
-            if (liveBefore.rawCardObject?.create_date !== undefined) {
-                editFd.append('create_date', String(liveBefore.rawCardObject.create_date));
-            }
-            editFd.append('extensions', JSON.stringify(mergedFull.data?.extensions || {}));
-            editFd.append('json_data', JSON.stringify(mergedFull));
-
-            const fallbackRes = await fetch('/api/characters/edit', {
-                method: 'POST',
-                headers: getTavernHeaders({ omitContentType: true }),
-                body: editFd,
-                cache: 'no-cache',
-            });
-            if (!fallbackRes.ok) {
-                throw new Error(`Ошибка сохранения полей карточки (HTTP ${fallbackRes.status}).`);
-            }
-        } else if (!mergeRes.ok) {
-            const errTxt = await mergeRes.text().catch(() => '');
-            throw new Error(`Ошибка слияния полей карточки (HTTP ${mergeRes.status}): ${errTxt.slice(0, 180)}`);
-        }
-    }
-
-    // 5. Post-save readback & verification
-    const liveAfter = await fetchFullTavernCharacter(targetAvatar);
-    if (liveBefore.rawCardObject?.chat && liveAfter.rawCardObject?.chat !== liveBefore.rawCardObject.chat) {
-        console.warn('[NexusMatch Forge] Unexpected chat binding mismatch detected during post-save verification.');
-    }
-
+    // Commit clean state ONLY after 100% verified readback
     card.originalCardData = structuredClone(liveAfter.rawCardObject);
     card.sourceSnapshotHash = liveAfter.snapshotHash;
     card.dirtyFields = [];
