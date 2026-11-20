@@ -1,6 +1,6 @@
 <div align="center">
 
-# NexusMatch Forge `[BETA v1.4.1]`
+# NexusMatch Forge `[BETA v1.4.2]`
 
 **Интерактивная студия создания карточек Персонажей, Миров и РПГ (Character Card V2) для SillyTavern со свайпами в духе дейтинг-приложений, Блиц-анкетой, AU-переносом и безопасным редактором.**
 

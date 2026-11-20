@@ -62,6 +62,8 @@ import {
     isMediaDurablyPersisted,
     resolveEntityAvatarUrl,
     saveMediaDataUrl,
+    assignEntityMediaWithFallback,
+    enforceEmergencyInlineBudget,
     hydrateSessionsMedia,
     migrateInlineSessionMediaToVault,
     waitForActiveMediaMigration,
@@ -180,31 +182,10 @@ export function getSettings() {
     return ctx.extensionSettings[EXT_KEY];
 }
 
-// Strips inline avatarDataUrl ONLY when its mediaId is confirmed durably persisted in IndexedDB (fixes P2-E race & IDB quota loss)
+// Strips inline avatarDataUrl when durably persisted in IndexedDB, while enforcing a strict cap on emergency inline fallbacks (harmonizes NMF-013, P2-E & P1-02)
 function stripResidualInlineImagesSync(cfg) {
     if (!cfg || !Array.isArray(cfg.sessions)) return;
-    const stripIfDurable = (ent) => {
-        if (!ent || typeof ent !== 'object' || !ent.avatarDataUrl) return;
-        const raw = String(ent.avatarDataUrl).trim();
-        if (!raw.startsWith('data:')) {
-            ent.avatarDataUrl = '';
-            return;
-        }
-        if (ent.avatarId && isMediaDurablyPersisted(ent.avatarId)) {
-            ent.avatarDataUrl = '';
-        }
-    };
-    for (const s of cfg.sessions) {
-        stripIfDurable(s?.card);
-        for (const pool of ['queue', 'liked', 'passed']) {
-            const arr = s?.tinder?.[pool];
-            if (!Array.isArray(arr)) continue;
-            for (const c of arr) {
-                stripIfDurable(c);
-            }
-        }
-        stripIfDurable(s?.tinder?.lastDislikedCandidate);
-    }
+    enforceEmergencyInlineBudget(cfg.sessions, cfg.activeSessionId || '');
 }
 
 export function saveSettings() {
@@ -1278,10 +1259,14 @@ function renderEditorTab(sess) {
             <button type="button" class="nmf-chip" data-act="dismiss-overwrite-alert">Скрыть</button>
         </div>
         <div class="nmf-btn-row">
-            ${state.lastOverwriteAlert.backupId ? `
-            <button type="button" class="nmf-btn-primary" style="height:28px;font-size:11px" data-act="restore-card-backup" data-bid="${esc(state.lastOverwriteAlert.backupId)}" ${state.busy ? 'disabled' : ''}>
+            ${state.lastOverwriteAlert.backupId ? (state.lastOverwriteAlert.restoreConflictWarning ? `
+            <button type="button" class="nmf-btn-primary nmf-btn-danger" style="height:28px;font-size:11px" data-act="force-restore-card-backup" data-bid="${esc(state.lastOverwriteAlert.backupId)}" ${state.busy ? 'disabled' : ''}>
+                Принудительно восстановить и затереть новые изменения
+            </button>` : `
+            <button type="button" class="nmf-btn-primary" style="height:28px;font-size:11px" data-act="restore-card-backup" data-bid="${esc(state.lastOverwriteAlert.backupId)}" data-ehash="${esc(state.lastOverwriteAlert.observedSnapshotHash || '')}" ${state.busy ? 'disabled' : ''}>
                 Восстановить из бэкапа
-            </button>
+            </button>`) : ''}
+            ${state.lastOverwriteAlert.backupId ? `
             <button type="button" class="nmf-btn-secondary" style="height:28px;font-size:11px" data-act="download-card-backup" data-bid="${esc(state.lastOverwriteAlert.backupId)}">
                 ${NMF_ICONS.download} Скачать бэкап PNG
             </button>` : ''}
@@ -1307,9 +1292,12 @@ function renderEditorTab(sess) {
             </label>
         </div>
         ${latestBackupForCard ? `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--nmf-border);font-size:11px;color:var(--nmf-text-muted)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--nmf-border);font-size:11px;color:var(--nmf-text-muted)">
             <span>Резервная копия в сейфе: <strong>${esc(latestBackupForCard.characterName || latestBackupForCard.avatarFileName)}</strong></span>
-            <button type="button" class="nmf-chip" data-act="download-card-backup" data-bid="${esc(latestBackupForCard.id)}">${NMF_ICONS.download} Скачать бэкап PNG</button>
+            <div style="display:flex;gap:5px">
+                <button type="button" class="nmf-chip" data-act="restore-card-backup" data-bid="${esc(latestBackupForCard.id)}" data-ehash="${esc(c.sourceSnapshotHash || '')}">Откатить</button>
+                <button type="button" class="nmf-chip" data-act="download-card-backup" data-bid="${esc(latestBackupForCard.id)}">${NMF_ICONS.download} Скачать бэкап PNG</button>
+            </div>
         </div>` : ''}
     </div>`;
 }
@@ -1657,10 +1645,12 @@ async function triggerCandidateArtInBackground(cand, isManual = false) {
                 syncCandArtStatusDom(cand.id);
             },
         });
-        cand.avatarId = await saveMediaDataUrl(dataUrl, cand.avatarId || '');
-        cand.avatarDataUrl = '';
+        const mediaRes = await assignEntityMediaWithFallback(cand, dataUrl, cand.avatarId || '');
         state.artErrors.delete(cand.id);
         saveSettings();
+        if (!mediaRes.durable) {
+            notifyToast('IndexedDB недоступна: портрет сохранён во временном буфере настроек — рекомендуем экспортировать PNG.', true);
+        }
     } catch (err) {
         const msg = ctl.signal.aborted ? 'Загрузка фото остановлена вами.' : (err?.message || String(err));
         state.artErrors.set(cand.id, msg);
@@ -1931,6 +1921,8 @@ async function executeOverwriteFlow(sess, cfg, allowExternalOverride = false) {
                 code: String(err?.code || 'SAVE_ERROR'),
                 message: String(err?.message || err),
                 backupId: String(err?.backupId || ''),
+                observedSnapshotHash: String(err?.observedSnapshotHash || sess.card.sourceSnapshotHash || ''),
+                restoreConflictWarning: false,
                 targetAvatar,
             };
             throw err;
@@ -2075,11 +2067,14 @@ function bindWindowDelegation(win) {
         if (el.id === 'nmf-avatar-upload' && el.files?.[0] && sess) {
             try {
                 const compressed = await compressImageFileToDataUrl(el.files[0], 896);
-                sess.card.avatarId = await saveMediaDataUrl(compressed, sess.card.avatarId || '');
-                sess.card.avatarDataUrl = '';
+                const mediaRes = await assignEntityMediaWithFallback(sess.card, compressed, sess.card.avatarId || '');
                 sess.card.avatarDirty = true;
                 saveSettings();
-                notifyToast('Изображение прикреплено.');
+                if (!mediaRes.durable) {
+                    notifyToast('IndexedDB недоступна: фото удержано в резервном буфере — рекомендуем экспортировать PNG.', true);
+                } else {
+                    notifyToast('Изображение прикреплено.');
+                }
                 renderWindow();
             } catch (err) {
                 notifyToast('Не удалось прочитать файл: ' + err.message, true);
@@ -2153,24 +2148,55 @@ function bindWindowDelegation(win) {
             state.lastOverwriteAlert = null;
             return renderWindow();
         }
-        if (act === 'restore-card-backup') {
+        if (act === 'restore-card-backup' || act === 'force-restore-card-backup') {
             const bid = btn.dataset.bid;
             if (!bid) return;
+            const isForced = act === 'force-restore-card-backup';
+            const expectedHash = isForced
+                ? ''
+                : String(btn.dataset.ehash || state.lastOverwriteAlert?.observedSnapshotHash || sess.card.sourceSnapshotHash || '');
+
             await withBusy('Восстанавливаем карточку из страховочного бэкапа', async () => {
-                const res = await restoreCardFromBackupVault(bid, { allowExternalChangeOverride: true });
-                const restoredState = createCardStateFromTavernChar(res.restoredChar, { avatarId: '' });
                 try {
-                    const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(res.fileName)}`);
-                    restoredState.avatarId = await saveMediaDataUrl(srcDataUrl);
-                } catch {
-                    restoredState.avatarId = '';
+                    const res = await restoreCardFromBackupVault(bid, {
+                        allowExternalChangeOverride: isForced,
+                        expectedSnapshotHash: expectedHash,
+                    });
+                    const restoredState = createCardStateFromTavernChar(res.restoredChar, { avatarId: '' });
+                    try {
+                        const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(res.fileName)}`);
+                        await assignEntityMediaWithFallback(restoredState, srcDataUrl);
+                    } catch {
+                        restoredState.avatarId = '';
+                    }
+                    sess.card = restoredState;
+                    state.lastOverwriteAlert = null;
+                    await pruneOrphanedMedia(cfg.sessions);
+                    saveSettings();
+                    await Promise.all([refreshRosterData(), refreshBackupsList()]);
+                    notifySuccessToast(`Оригинал «${sess.card.name}» полностью восстановлен из бэкапа!`);
+                } catch (err) {
+                    if (err?.code === 'EXTERNAL_CARD_MODIFIED' && !isForced) {
+                        state.lastOverwriteAlert = {
+                            code: 'RESTORE_CONFLICT',
+                            message: err.message,
+                            backupId: bid,
+                            observedSnapshotHash: String(err.currentSnapshotHash || ''),
+                            restoreConflictWarning: true,
+                            targetAvatar: sess.card.sourceAvatarId || '',
+                        };
+                        return;
+                    }
+                    state.lastOverwriteAlert = {
+                        code: String(err?.code || 'RESTORE_ERROR'),
+                        message: String(err?.message || err),
+                        backupId: bid,
+                        observedSnapshotHash: expectedHash,
+                        restoreConflictWarning: false,
+                        targetAvatar: sess.card.sourceAvatarId || '',
+                    };
+                    throw err;
                 }
-                sess.card = restoredState;
-                state.lastOverwriteAlert = null;
-                await pruneOrphanedMedia(cfg.sessions);
-                saveSettings();
-                await Promise.all([refreshRosterData(), refreshBackupsList()]);
-                notifySuccessToast(`Оригинал «${sess.card.name}» полностью восстановлен из бэкапа!`);
             }, { taskType: 'save', cancellable: false });
             return;
         }
@@ -2666,6 +2692,7 @@ function bindWindowDelegation(win) {
         if (act === 'clear-avatar') {
             sess.card.avatarId = '';
             sess.card.avatarDataUrl = '';
+            delete sess.card._nmfEmergencyInlineTs;
             sess.card.avatarDirty = true;
             state.editorArtError = '';
             await pruneOrphanedMedia(cfg.sessions);
@@ -2720,12 +2747,14 @@ function bindWindowDelegation(win) {
                         syncEditorArtStatusDom();
                     },
                 });
-                sess.card.avatarId = await saveMediaDataUrl(dataUrl, sess.card.avatarId || '');
-                sess.card.avatarDataUrl = '';
+                const mediaRes = await assignEntityMediaWithFallback(sess.card, dataUrl, sess.card.avatarId || '');
                 sess.card.avatarDirty = true;
                 markCardFieldDirty(sess.card, 'imagePrompt');
                 state.editorArtError = '';
                 saveSettings();
+                if (!mediaRes.durable) {
+                    notifyToast('IndexedDB недоступна: арт удержан в резервном буфере настроек — рекомендуем скачать PNG.', true);
+                }
             } catch (err) {
                 const msg = ctl.signal.aborted ? 'Генерация арта остановлена вами.' : (err?.message || String(err));
                 state.editorArtError = msg;
@@ -2825,12 +2854,15 @@ async function expandCandidateIntoFullCard(sess, cand, transportMode) {
         });
         const parsed = parseFullCardResponse(raw, transportMode, sess.intake.playerNameMode || 'macro');
         const candMediaUrl = resolveEntityAvatarUrl(cand);
-        const newCardAvatarId = candMediaUrl ? await saveMediaDataUrl(candMediaUrl) : '';
         sess.card = createCardStateFromGeneratedDraft(parsed, {
-            avatarId: newCardAvatarId,
+            avatarId: '',
             fallbackName: cand.name,
             fallbackImagePrompt: cand.imagePrompt || '',
         });
+        if (candMediaUrl) {
+            await assignEntityMediaWithFallback(sess.card, candMediaUrl);
+            sess.card.avatarDirty = true;
+        }
         state.lastOverwriteAlert = null;
         await pruneOrphanedMedia(cfg.sessions);
         state.activeTab = 'editor';

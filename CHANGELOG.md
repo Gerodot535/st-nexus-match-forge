@@ -2,6 +2,14 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.4.2-beta] - 2026-11-20
+
+### Targeted Recovery & Media Resilience Patch (Audit #3)
+- **P1-01 (Conflict-Guarded Backup Restore)**: `restoreCardFromBackupVault()` now enforces snapshot conflict verification by default (`allowExternalChangeOverride = false`, comparing against `expectedSnapshotHash || computeCardSnapshotHash(backup.cardJson)`). If another process or tab modified the card after the snapshot, restoration stops with `EXTERNAL_CARD_MODIFIED` (`0` write requests) and presents a dedicated explicit force-override action in the Editor (`force-restore-card-backup`).
+- **P1-02 (Bounded Emergency Inline Fallback on IndexedDB Failure)**: Added `assignEntityMediaWithFallback()` and `enforceEmergencyInlineBudget()` (`MAX_EMERGENCY_INLINE_ITEMS = 8`). In normal operation (`IndexedDB` healthy), `extensionSettings` stores `0` bytes of Base64. Only when `IndexedDB` fails (`open` denied or `QuotaExceededError`) are newly uploaded/generated portraits retained inline with an explicit warning toast and a strict item/byte ceiling so `settings.json` remains protected from bloat (`NMF-013`).
+- **P1-03 (Lossless `character_book` Restore & `PARTIAL_RESTORE` + Server-Mutation Readback)**: Switched `restoreCardFromBackupVault()` JSON restoration to `POST /api/characters/merge-attributes` with `'__@@UNSET@@__'` deletion sentinels (avoiding `charaFormatData`'s `world -> character_book` overwrite), guarded `/edit` fallback when an embedded `character_book` exists, added `PARTIAL_RESTORE` and `INTEGRITY_RESTORE_FAILED` post-restore verification, and added pre-classification disk readback in `updateExistingCardInTavern()` to catch hidden server writes followed by `HTTP 500`.
+- **P2-01 (Verified `clear-avatar` Placeholder Write)**: Clicking `clear-avatar` on an existing character now deterministically writes a clean monogram placeholder PNG via `/api/characters/edit-avatar` and verifies updated visual PNG chunk bytes (`stripPngCharaChunkBytes`) before clearing `avatarDirty`.
+
 ## [1.4.1-beta] - 2026-11-20
 
 ### Follow-Up Security & Data-Safety Hardening

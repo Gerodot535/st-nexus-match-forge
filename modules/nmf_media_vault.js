@@ -268,6 +268,9 @@ export function resolveEntityAvatarUrl(entity) {
     return '';
 }
 
+export const MAX_EMERGENCY_INLINE_ITEMS = 8;
+export const MAX_EMERGENCY_INLINE_TOTAL_CHARS = 6_000_000;
+
 export async function saveMediaDataUrl(dataUrl, existingId = '') {
     const clean = String(dataUrl || '').trim();
     if (!clean) {
@@ -294,6 +297,108 @@ export async function saveMediaDataUrl(dataUrl, existingId = '') {
         }
     }
     return id;
+}
+
+// Assigns new/uploaded portrait to a card or candidate:
+// - Normal path (IndexedDB healthy): stores in IndexedDB + clears avatarDataUrl = '' (0 bytes in settings.json!)
+// - Emergency path (IndexedDB unavailable / QuotaExceededError — P1-02): retains avatarDataUrl inline subject to strict cap
+export async function assignEntityMediaWithFallback(entity, dataUrl, existingId = '') {
+    if (!entity || typeof entity !== 'object') {
+        return { id: '', durable: true, keptInlineFallback: false };
+    }
+    const clean = String(dataUrl || '').trim();
+    if (!clean) {
+        if (existingId || entity.avatarId) {
+            await deleteMediaById(existingId || entity.avatarId);
+        }
+        entity.avatarId = '';
+        entity.avatarDataUrl = '';
+        return { id: '', durable: true, keptInlineFallback: false };
+    }
+
+    const id = await saveMediaDataUrl(clean, existingId || entity.avatarId || '');
+    const durable = Boolean(id && isMediaDurablyPersisted(id));
+    entity.avatarId = id;
+
+    if (durable) {
+        entity.avatarDataUrl = '';
+        delete entity._nmfEmergencyInlineTs;
+        return { id, durable: true, keptInlineFallback: false };
+    }
+
+    entity.avatarDataUrl = clean;
+    entity._nmfEmergencyInlineTs = Date.now();
+    return { id, durable: false, keptInlineFallback: true };
+}
+
+// Protects extensionSettings / settings.json from unbounded Base64 bloat when IndexedDB is broken on new generations,
+// while never dropping pre-existing legacy inline session data awaiting migration (harmonizes NMF-013, P2-E, and P1-02)
+export function enforceEmergencyInlineBudget(
+    sessions = [],
+    activeSessionId = '',
+    { maxItems = MAX_EMERGENCY_INLINE_ITEMS, maxTotalChars = MAX_EMERGENCY_INLINE_TOTAL_CHARS } = {}
+) {
+    if (!Array.isArray(sessions)) return { keptCount: 0, evictedCount: 0, totalChars: 0 };
+
+    const emergencyEntities = [];
+    const activeSess = sessions.find((s) => s?.id === activeSessionId) || sessions[0] || null;
+
+    const visitEntity = (ent) => {
+        if (!ent || typeof ent !== 'object' || !ent.avatarDataUrl) return;
+        const raw = String(ent.avatarDataUrl).trim();
+        if (!raw.startsWith('data:')) {
+            ent.avatarDataUrl = '';
+            delete ent._nmfEmergencyInlineTs;
+            return;
+        }
+        if (ent.avatarId && isMediaDurablyPersisted(ent.avatarId)) {
+            ent.avatarDataUrl = '';
+            delete ent._nmfEmergencyInlineTs;
+            return;
+        }
+        // Only cap newly added emergency inline fallbacks; pre-existing un-migrated data is preserved intact for P2-E
+        if (ent._nmfEmergencyInlineTs && !emergencyEntities.includes(ent)) {
+            emergencyEntities.push(ent);
+        }
+    };
+
+    if (activeSess) {
+        visitEntity(activeSess.card);
+        if (Array.isArray(activeSess.tinder?.queue) && activeSess.tinder.queue[0]) {
+            visitEntity(activeSess.tinder.queue[0]);
+        }
+    }
+    for (const s of sessions) {
+        visitEntity(s?.card);
+    }
+    for (const pool of ['queue', 'liked', 'passed']) {
+        for (const s of sessions) {
+            const arr = s?.tinder?.[pool];
+            if (!Array.isArray(arr)) continue;
+            for (const c of arr) visitEntity(c);
+        }
+    }
+    for (const s of sessions) {
+        visitEntity(s?.tinder?.lastDislikedCandidate);
+    }
+
+    let keptCount = 0;
+    let totalChars = 0;
+    let evictedCount = 0;
+
+    for (const ent of emergencyEntities) {
+        const len = String(ent.avatarDataUrl || '').length;
+        if (keptCount < maxItems && totalChars + len <= maxTotalChars) {
+            keptCount += 1;
+            totalChars += len;
+        } else {
+            ent.avatarDataUrl = '';
+            delete ent._nmfEmergencyInlineTs;
+            evictedCount += 1;
+        }
+    }
+
+    return { keptCount, evictedCount, totalChars };
 }
 
 export async function loadMediaDataUrl(mediaId) {
@@ -418,6 +523,7 @@ export function migrateInlineSessionMediaToVault(sessions = []) {
             if (id && isMediaDurablyPersisted(id)) {
                 ent.avatarId = id;
                 ent.avatarDataUrl = '';
+                delete ent._nmfEmergencyInlineTs;
                 migratedCount += 1;
             } else {
                 // Durable IDB write/readback did NOT succeed — preserve inline Base64 so reload never loses user art!

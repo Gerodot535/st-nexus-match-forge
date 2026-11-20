@@ -455,7 +455,7 @@ function applySingleFieldToCardObject(target, field, card) {
             if (cleanImgPrompt || target.data.extensions.nexus_match_forge) {
                 target.data.extensions.nexus_match_forge = {
                     ...(target.data.extensions.nexus_match_forge || {}),
-                    version: '1.4.1-beta',
+                    version: '1.4.2-beta',
                     image_prompt: cleanImgPrompt,
                 };
             }
@@ -517,7 +517,7 @@ export function buildV2CardObject(card) {
     };
     if (cleanImgPrompt) {
         extensions.nexus_match_forge = {
-            version: '1.4.1-beta',
+            version: '1.4.2-beta',
             image_prompt: cleanImgPrompt,
         };
     }
@@ -626,7 +626,7 @@ export function buildSurgicalMergePayload(avatarFileName, card) {
                 break;
             case 'imagePrompt':
                 extPatch.nexus_match_forge = {
-                    version: '1.4.1-beta',
+                    version: '1.4.2-beta',
                     image_prompt: String(card.imagePrompt ?? '').trim(),
                 };
                 break;
@@ -696,6 +696,36 @@ const MINIMAL_1X1_PNG_BYTES = new Uint8Array([
     0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ]);
 
+function buildHeadlessPlaceholderPng(charName = 'NMF', accentHex = '#1de9b6') {
+    const labelBytes = new TextEncoder().encode(`Title\0${String(charName || 'NMF').slice(0, 32)}:${String(accentHex || '')}`);
+    const typeBytes = new Uint8Array([0x74, 0x45, 0x58, 0x74]); // tEXt
+    const crcInput = new Uint8Array(4 + labelBytes.length);
+    crcInput.set(typeBytes, 0);
+    crcInput.set(labelBytes, 4);
+    const crcVal = crc32(crcInput);
+
+    const chunk = new Uint8Array(12 + labelBytes.length);
+    const len = labelBytes.length;
+    chunk[0] = (len >>> 24) & 0xff;
+    chunk[1] = (len >>> 16) & 0xff;
+    chunk[2] = (len >>> 8) & 0xff;
+    chunk[3] = len & 0xff;
+    chunk.set(typeBytes, 4);
+    chunk.set(labelBytes, 8);
+    const crcOff = 8 + len;
+    chunk[crcOff] = (crcVal >>> 24) & 0xff;
+    chunk[crcOff + 1] = (crcVal >>> 16) & 0xff;
+    chunk[crcOff + 2] = (crcVal >>> 8) & 0xff;
+    chunk[crcOff + 3] = crcVal & 0xff;
+
+    const iendOffset = MINIMAL_1X1_PNG_BYTES.length - 12;
+    const out = new Uint8Array(MINIMAL_1X1_PNG_BYTES.length + chunk.length);
+    out.set(MINIMAL_1X1_PNG_BYTES.subarray(0, iendOffset), 0);
+    out.set(chunk, iendOffset);
+    out.set(MINIMAL_1X1_PNG_BYTES.subarray(iendOffset), iendOffset + chunk.length);
+    return out;
+}
+
 export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex = '#1de9b6', { aspectRatio = '1:1', cropFocus = 'top' } = {}) {
     if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
         if (typeof avatarDataUrl === 'string' && avatarDataUrl.startsWith('data:image/png;base64,')) {
@@ -705,7 +735,7 @@ export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex 
             for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i) & 0xff;
             return arr;
         }
-        return new Uint8Array(MINIMAL_1X1_PNG_BYTES);
+        return buildHeadlessPlaceholderPng(charName, accentHex);
     }
 
     const dims = getTargetCanvasDimensions(aspectRatio === 'native' ? '1:1' : aspectRatio);
@@ -1213,9 +1243,71 @@ async function uploadAvatarPngBytesToTavern(targetAvatar, pngBytes) {
     });
 }
 
+const UNSET_SENTINEL = '__@@UNSET@@__';
+
+// Extracts non-'chara' visual PNG chunks so pixel updates / rollbacks can be verified deterministically (fixes P2-01 & P1-03)
+export function stripPngCharaChunkBytes(pngBytes) {
+    if (!(pngBytes instanceof Uint8Array) || pngBytes.length < 33) return new Uint8Array(0);
+    const chunks = [pngBytes.subarray(0, 8)];
+    let offset = 8;
+    let total = 8;
+
+    while (offset + 12 <= pngBytes.length) {
+        const len = (
+            ((pngBytes[offset] << 24) >>> 0) +
+            ((pngBytes[offset + 1] << 16) >>> 0) +
+            ((pngBytes[offset + 2] << 8) >>> 0) +
+            (pngBytes[offset + 3] >>> 0)
+        ) >>> 0;
+        const type = String.fromCharCode(
+            pngBytes[offset + 4],
+            pngBytes[offset + 5],
+            pngBytes[offset + 6],
+            pngBytes[offset + 7]
+        );
+        const end = offset + 12 + len;
+        if (end > pngBytes.length) break;
+
+        let isCharaText = false;
+        if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt') {
+            const dataStart = offset + 8;
+            if (len >= 6) {
+                const kw = String.fromCharCode(...pngBytes.subarray(dataStart, Math.min(dataStart + 6, end)));
+                if (kw === 'chara\0') isCharaText = true;
+            }
+        }
+
+        if (!isCharaText) {
+            const slice = pngBytes.subarray(offset, end);
+            chunks.push(slice);
+            total += slice.length;
+        }
+        offset = end;
+        if (type === 'IEND') break;
+    }
+
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const c of chunks) {
+        out.set(c, pos);
+        pos += c.length;
+    }
+    return out;
+}
+
+function areByteArraysEqual(a, b) {
+    if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
+}
+
 function buildEditFormDataFromMergedCard(targetAvatar, mergedFull, referenceRawCard) {
     const origD = referenceRawCard?.data || {};
     const origExt = origD.extensions || {};
+    const hasEmbeddedBook = Boolean(mergedFull?.data?.character_book && typeof mergedFull.data.character_book === 'object');
     const editFd = new FormData();
     editFd.append('avatar_url', targetAvatar);
     editFd.append('ch_name', mergedFull.data?.name || mergedFull.name || 'Unnamed');
@@ -1235,7 +1327,9 @@ function buildEditFormDataFromMergedCard(targetAvatar, mergedFull, referenceRawC
     editFd.append('tags', (mergedFull.data?.tags || []).join(', '));
     editFd.append('fav', String(extractEffectiveFav(referenceRawCard)));
     editFd.append('talkativeness', String(referenceRawCard?.talkativeness ?? origExt.talkativeness ?? 0.5));
-    editFd.append('world', String(mergedFull.data?.extensions?.world ?? origExt.world ?? ''));
+    // Important (fixes P1-03): in SillyTavern charaFormatData, non-empty form 'world' overwrites json_data.data.character_book!
+    // When an embedded character_book exists, pass '' in form 'world' while preserving extensions.world inside 'extensions' JSON.
+    editFd.append('world', hasEmbeddedBook ? '' : String(mergedFull.data?.extensions?.world ?? origExt.world ?? ''));
     editFd.append('depth_prompt_prompt', String(origExt.depth_prompt?.prompt ?? ''));
     editFd.append('depth_prompt_depth', String(origExt.depth_prompt?.depth ?? 4));
     editFd.append('depth_prompt_role', String(origExt.depth_prompt?.role ?? 'system'));
@@ -1248,6 +1342,95 @@ function buildEditFormDataFromMergedCard(targetAvatar, mergedFull, referenceRawC
     editFd.append('extensions', JSON.stringify(mergedFull.data?.extensions || {}));
     editFd.append('json_data', JSON.stringify(mergedFull));
     return editFd;
+}
+
+function buildObjectRestorePatchWithSentinels(targetObj, currentObj) {
+    const isPlain = (v) => Boolean(v && typeof v === 'object' && !Array.isArray(v));
+    if (!isPlain(targetObj)) {
+        return targetObj === undefined ? UNSET_SENTINEL : structuredClone(targetObj);
+    }
+    const patch = {};
+    const cur = isPlain(currentObj) ? currentObj : {};
+    const allKeys = new Set([...Object.keys(targetObj), ...Object.keys(cur)]);
+    for (const k of allKeys) {
+        if (k === 'json_data' || k === 'shallow') continue;
+        if (!(k in targetObj) || targetObj[k] === undefined) {
+            patch[k] = UNSET_SENTINEL;
+        } else if (isPlain(targetObj[k]) && isPlain(cur[k])) {
+            patch[k] = buildObjectRestorePatchWithSentinels(targetObj[k], cur[k]);
+        } else {
+            patch[k] = structuredClone(targetObj[k]);
+        }
+    }
+    return patch;
+}
+
+export function summarizeExternalDivergence(expectedRaw, liveRaw) {
+    const diffs = [];
+    if (!expectedRaw || !liveRaw) return diffs;
+    if (String(expectedRaw.chat ?? '') !== String(liveRaw.chat ?? '')) diffs.push('chat');
+    if (extractEffectiveFav(expectedRaw) !== extractEffectiveFav(liveRaw)) diffs.push('fav');
+    for (const f of ALL_EDITABLE_CARD_FIELDS) {
+        if (stableStringify(readActualFieldFromRawCard(expectedRaw, f)) !== stableStringify(readActualFieldFromRawCard(liveRaw, f))) {
+            diffs.push(FIELD_LABELS_RU[f] || f);
+        }
+    }
+    if (stableStringify(expectedRaw?.data?.character_book ?? null) !== stableStringify(liveRaw?.data?.character_book ?? null)) {
+        diffs.push('character_book');
+    }
+    if (stableStringify(expectedRaw?.data?.extensions ?? {}) !== stableStringify(liveRaw?.data?.extensions ?? {})) {
+        diffs.push('data.extensions');
+    }
+    return [...new Set(diffs)];
+}
+
+async function applyFullJsonRestoreToTavern(avatarFileName, targetRawJson, currentLiveRawJson) {
+    const cleanTarget = structuredClone(targetRawJson);
+    delete cleanTarget.json_data;
+    delete cleanTarget.shallow;
+
+    const mergePayload = buildObjectRestorePatchWithSentinels(cleanTarget, currentLiveRawJson || {});
+    mergePayload.avatar = avatarFileName;
+
+    const mergeRes = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getTavernHeaders(),
+        body: JSON.stringify(mergePayload),
+        cache: 'no-cache',
+    });
+
+    if (MISSING_MERGE_ROUTE_STATUSES.has(mergeRes.status)) {
+        const editFd = buildEditFormDataFromMergedCard(avatarFileName, cleanTarget, cleanTarget);
+        const editRes = await fetch('/api/characters/edit', {
+            method: 'POST',
+            headers: getTavernHeaders({ omitContentType: true }),
+            body: editFd,
+            cache: 'no-cache',
+        });
+        if (!editRes.ok) {
+            throw new Error(`Не удалось восстановить поля JSON через /edit (HTTP ${editRes.status}).`);
+        }
+        return;
+    }
+
+    if (!mergeRes.ok) {
+        const txt = await mergeRes.text().catch(() => '');
+        throw new Error(`Не удалось восстановить поля JSON через /merge-attributes (HTTP ${mergeRes.status}): ${txt.slice(0, 160)}`);
+    }
+}
+
+export function verifyRestoredCardExactMatch(backupRawJson, afterRawJson) {
+    const baseState = createCardStateFromTavernChar({
+        ...structuredClone(backupRawJson),
+        avatar: backupRawJson?.avatar || 'restored.png',
+        json_data: JSON.stringify(backupRawJson),
+    });
+    return verifyPostSaveIntegrity({
+        beforeRaw: backupRawJson,
+        afterRaw: afterRawJson,
+        card: baseState,
+        dirtyFields: [],
+    });
 }
 
 async function applyTextFieldsUpdateToTavern(targetAvatar, card, dirtyFields, baseRawObject) {
@@ -1286,7 +1469,7 @@ async function applyTextFieldsUpdateToTavern(targetAvatar, card, dirtyFields, ba
     }
 }
 
-// Guarded restore from durable Backup Vault with concurrent-modification protection (fixes P1/P2-D recovery)
+// Guarded lossless restore from durable Backup Vault with default conflict protection (fixes P1-01 & P1-03)
 export async function restoreCardFromBackupVault(
     backupId,
     { allowExternalChangeOverride = false, expectedSnapshotHash = '' } = {}
@@ -1306,9 +1489,16 @@ export async function restoreCardFromBackupVault(
     }
 
     const liveCurrent = await fetchFullTavernCharacter(bak.avatarFileName);
-    if (expectedSnapshotHash && liveCurrent.snapshotHash && liveCurrent.snapshotHash !== expectedSnapshotHash && !allowExternalChangeOverride) {
-        const err = new Error('Карточка была изменена другим процессом — автоматический откат остановлен для защиты чужих правок.');
+    const baselineHash = String(expectedSnapshotHash || computeCardSnapshotHash(bak.cardJson) || '').trim();
+    if (!allowExternalChangeOverride && baselineHash && liveCurrent.snapshotHash && liveCurrent.snapshotHash !== baselineHash) {
+        const changedFields = summarizeExternalDivergence(bak.cardJson, liveCurrent.rawCardObject);
+        const err = new Error(
+            `После создания снимка карточка была изменена другим процессом (${changedFields.join(', ') || 'обнаружены новые правки'}). Подтвердите принудительное восстановление, если хотите перезаписать новые изменения.`
+        );
         err.code = 'EXTERNAL_CARD_MODIFIED';
+        err.changedFields = changedFields;
+        err.currentSnapshotHash = liveCurrent.snapshotHash;
+        err.backupId = bak.id;
         throw err;
     }
 
@@ -1317,20 +1507,42 @@ export async function restoreCardFromBackupVault(
         throw new Error(`Не удалось восстановить исходный PNG из бэкапа (HTTP ${avRes.status}).`);
     }
 
-    const restoredFull = structuredClone(bak.cardJson);
-    delete restoredFull.json_data;
-    const editFd = buildEditFormDataFromMergedCard(bak.avatarFileName, restoredFull, restoredFull);
-    const editRes = await fetch('/api/characters/edit', {
-        method: 'POST',
-        headers: getTavernHeaders({ omitContentType: true }),
-        body: editFd,
-        cache: 'no-cache',
-    });
-    if (!editRes.ok) {
-        throw new Error(`Не удалось восстановить поля JSON из бэкапа (HTTP ${editRes.status}).`);
+    try {
+        await applyFullJsonRestoreToTavern(bak.avatarFileName, bak.cardJson, liveCurrent.rawCardObject);
+    } catch (jsonErr) {
+        const partialErr = new Error(
+            `Частичное восстановление (PARTIAL_RESTORE): исходный PNG записан, но восстановление JSON завершилось ошибкой (${jsonErr.message}). Повторите восстановление или импортируйте скачанный бэкап PNG.`
+        );
+        partialErr.code = 'PARTIAL_RESTORE';
+        partialErr.backupId = bak.id;
+        partialErr.avatarRestored = true;
+        partialErr.fieldsRestored = false;
+        partialErr.cause = jsonErr;
+        throw partialErr;
     }
 
+    // Strict post-restore verification of BOTH full V2 JSON (including character_book!) AND PNG avatar bytes
     const afterRestore = await fetchFullTavernCharacter(bak.avatarFileName);
+    const jsonCheck = verifyRestoredCardExactMatch(bak.cardJson, afterRestore.rawCardObject);
+    if (!jsonCheck.ok) {
+        const verErr = new Error(
+            `Проверка целостности после восстановления не пройдена: ${jsonCheck.mismatches.join('; ')}`
+        );
+        verErr.code = 'INTEGRITY_RESTORE_FAILED';
+        verErr.mismatches = jsonCheck.mismatches;
+        verErr.backupId = bak.id;
+        throw verErr;
+    }
+
+    const imgCheckRes = await fetch(`/characters/${encodeURIComponent(bak.avatarFileName)}`, { cache: 'no-cache' });
+    const afterPngBytes = imgCheckRes.ok ? new Uint8Array(await imgCheckRes.arrayBuffer()) : null;
+    if (!afterPngBytes || !isValidNonEmptyPngBytes(afterPngBytes)) {
+        const pngErr = new Error('Сервер вернул невалидный PNG после восстановления из бэкапа.');
+        pngErr.code = 'INTEGRITY_RESTORE_FAILED';
+        pngErr.backupId = bak.id;
+        throw pngErr;
+    }
+
     const ctx = getTavernContext();
     if (typeof ctx?.getOneCharacter === 'function') {
         await ctx.getOneCharacter(bak.avatarFileName);
@@ -1420,20 +1632,24 @@ export async function updateExistingCardInTavern(card, {
     );
 
     const dirtyFields = Array.isArray(card.dirtyFields) ? [...card.dirtyFields] : [];
-    const wantAvatarWrite = Boolean(card.avatarDirty && avatarDataUrl);
+    // Fixes P2-01: when card.avatarDirty === true with empty avatarDataUrl (clear-avatar), writes clean monogram placeholder PNG!
+    const wantAvatarWrite = Boolean(card.avatarDirty);
     const wantFieldsWrite = dirtyFields.length > 0;
+    const origVisualBytes = stripPngCharaChunkBytes(origPngBytes);
 
     let newPngBytes = null;
+    let newVisualBytes = null;
     if (wantAvatarWrite) {
-        newPngBytes = await ensurePngBytes(avatarDataUrl, card.name, accentHex, { aspectRatio, cropFocus });
+        newPngBytes = await ensurePngBytes(avatarDataUrl || '', card.name, accentHex, { aspectRatio, cropFocus });
         if (!isValidNonEmptyPngBytes(newPngBytes)) {
             const err = new Error('Сформированный новый PNG не прошёл проверку целостности. Запись отменена.');
             err.code = 'INVALID_NEW_AVATAR_PNG';
             throw err;
         }
+        newVisualBytes = stripPngCharaChunkBytes(newPngBytes);
     }
 
-    // 3 & 4. Controlled execution with PARTIAL_SAVE detection and guarded rollback if second step fails (fixes P1/P2-D)
+    // 3 & 4. Controlled execution with server-mutation readback on ambiguous HTTP 500/drop, PARTIAL_SAVE detection & guarded rollback
     let avatarApplied = false;
     let fieldsApplied = false;
 
@@ -1461,18 +1677,40 @@ export async function updateExistingCardInTavern(card, {
             await runFieldsStep();
         }
     } catch (stepErr) {
+        let midState = null;
+        let observedHashAfterFailure = liveBefore.snapshotHash;
+        try {
+            midState = await fetchFullTavernCharacter(targetAvatar);
+            observedHashAfterFailure = midState.snapshotHash || observedHashAfterFailure;
+            // Detect "server wrote to disk, then returned HTTP 500 / dropped connection" before classifying incident!
+            if (!fieldsApplied && wantFieldsWrite && midState.snapshotHash !== liveBefore.snapshotHash) {
+                fieldsApplied = true;
+            }
+            if (!avatarApplied && wantAvatarWrite) {
+                const probeImg = await fetch(`/characters/${encodeURIComponent(targetAvatar)}`, { cache: 'no-cache' });
+                if (probeImg.ok) {
+                    const probeBytes = new Uint8Array(await probeImg.arrayBuffer());
+                    if (!areByteArraysEqual(stripPngCharaChunkBytes(probeBytes), origVisualBytes)) {
+                        avatarApplied = true;
+                    }
+                }
+            }
+        } catch {
+            midState = null;
+        }
+
         if (avatarApplied || fieldsApplied) {
             let rolledBack = false;
             let rollbackError = '';
             try {
-                const midState = await fetchFullTavernCharacter(targetAvatar);
+                const stateForRollback = midState || await fetchFullTavernCharacter(targetAvatar);
                 if (avatarApplied && !fieldsApplied) {
-                    // Only pixels changed; JSON snapshot must still match liveBefore before safe auto-rollback
-                    if (midState.snapshotHash === liveBefore.snapshotHash) {
+                    if (stateForRollback.snapshotHash === liveBefore.snapshotHash) {
                         const rbRes = await uploadAvatarPngBytesToTavern(targetAvatar, origPngBytes);
                         if (rbRes.ok) {
                             rolledBack = true;
                             avatarApplied = false;
+                            observedHashAfterFailure = liveBefore.snapshotHash;
                         } else {
                             rollbackError = `HTTP ${rbRes.status}`;
                         }
@@ -1480,7 +1718,6 @@ export async function updateExistingCardInTavern(card, {
                         rollbackError = 'обнаружено параллельное изменение карточки';
                     }
                 } else if (fieldsApplied && !avatarApplied) {
-                    // Fields were merged, avatar failed — restore exact original V2 JSON from backup if no third-party edit intervened
                     const expectedMidObj = buildV2CardObject({
                         ...card,
                         originalCardData: liveBefore.rawCardObject,
@@ -1488,24 +1725,16 @@ export async function updateExistingCardInTavern(card, {
                     });
                     const expectedMidCheck = verifyPostSaveIntegrity({
                         beforeRaw: liveBefore.rawCardObject,
-                        afterRaw: midState.rawCardObject,
+                        afterRaw: stateForRollback.rawCardObject,
                         card,
                         dirtyFields,
                     });
-                    if (expectedMidCheck.ok || computeCardSnapshotHash(midState.rawCardObject) === computeCardSnapshotHash(expectedMidObj)) {
-                        const restoreFd = buildEditFormDataFromMergedCard(targetAvatar, liveBefore.rawCardObject, liveBefore.rawCardObject);
-                        const rbEdit = await fetch('/api/characters/edit', {
-                            method: 'POST',
-                            headers: getTavernHeaders({ omitContentType: true }),
-                            body: restoreFd,
-                            cache: 'no-cache',
-                        });
-                        if (rbEdit.ok) {
-                            rolledBack = true;
-                            fieldsApplied = false;
-                        } else {
-                            rollbackError = `HTTP ${rbEdit.status}`;
-                        }
+                    if (expectedMidCheck.ok || computeCardSnapshotHash(stateForRollback.rawCardObject) === computeCardSnapshotHash(expectedMidObj)) {
+                        await applyFullJsonRestoreToTavern(targetAvatar, liveBefore.rawCardObject, stateForRollback.rawCardObject);
+                        const postRb = await fetchFullTavernCharacter(targetAvatar);
+                        observedHashAfterFailure = postRb.snapshotHash;
+                        rolledBack = true;
+                        fieldsApplied = false;
                     } else {
                         rollbackError = 'обнаружено параллельное изменение карточки';
                     }
@@ -1521,6 +1750,7 @@ export async function updateExistingCardInTavern(card, {
             );
             partialErr.code = 'PARTIAL_SAVE';
             partialErr.backupId = backup.id;
+            partialErr.observedSnapshotHash = observedHashAfterFailure;
             partialErr.rolledBack = rolledBack;
             partialErr.avatarApplied = avatarApplied;
             partialErr.fieldsApplied = fieldsApplied;
@@ -1528,10 +1758,11 @@ export async function updateExistingCardInTavern(card, {
             throw partialErr;
         }
         stepErr.backupId = backup.id;
+        stepErr.observedSnapshotHash = observedHashAfterFailure;
         throw stepErr;
     }
 
-    // 5. Strict post-save readback & full invariant verification (fixes P1-C)
+    // 5. Strict post-save readback & full JSON + PNG verification (fixes P1-C & P2-01)
     const liveAfter = await fetchFullTavernCharacter(targetAvatar);
     const integrity = verifyPostSaveIntegrity({
         beforeRaw: liveBefore.rawCardObject,
@@ -1540,6 +1771,27 @@ export async function updateExistingCardInTavern(card, {
         dirtyFields,
     });
 
+    if (wantAvatarWrite) {
+        try {
+            const afterImgRes = await fetch(`/characters/${encodeURIComponent(targetAvatar)}`, { cache: 'no-cache' });
+            const afterPngBytes = afterImgRes.ok ? new Uint8Array(await afterImgRes.arrayBuffer()) : null;
+            if (!afterPngBytes || !isValidNonEmptyPngBytes(afterPngBytes)) {
+                integrity.ok = false;
+                integrity.mismatches.push('После записи портрета сервер вернул повреждённый или пустой PNG');
+            } else if (
+                newVisualBytes &&
+                !areByteArraysEqual(newVisualBytes, origVisualBytes) &&
+                areByteArraysEqual(stripPngCharaChunkBytes(afterPngBytes), origVisualBytes)
+            ) {
+                integrity.ok = false;
+                integrity.mismatches.push('Новый портрет не применился на диске (остались старые байты изображения)');
+            }
+        } catch {
+            integrity.ok = false;
+            integrity.mismatches.push('Не удалось перечитать обновлённый PNG персонажа для верификации портрета');
+        }
+    }
+
     if (!integrity.ok) {
         const intErr = new Error(
             `Проверка целостности карточки после сохранения не пройдена: ${integrity.mismatches.join('; ')}. Правки и страховочный бэкап (${backup.id}) сохранены — вы можете восстановить оригинал в один клик.`
@@ -1547,6 +1799,7 @@ export async function updateExistingCardInTavern(card, {
         intErr.code = 'INTEGRITY_CHECK_FAILED';
         intErr.mismatches = integrity.mismatches;
         intErr.backupId = backup.id;
+        intErr.observedSnapshotHash = liveAfter.snapshotHash;
         throw intErr;
     }
 

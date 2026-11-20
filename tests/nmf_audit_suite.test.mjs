@@ -33,6 +33,7 @@ import {
     ensurePngBytes,
     embedCharaChunkIntoPng,
     extractCharaJsonFromPng,
+    stripPngCharaChunkBytes,
     importCardIntoTavern,
     fetchFullTavernCharacter,
     updateExistingCardInTavern,
@@ -49,6 +50,9 @@ import {
 
 import {
     saveMediaDataUrl,
+    assignEntityMediaWithFallback,
+    enforceEmergencyInlineBudget,
+    MAX_EMERGENCY_INLINE_ITEMS,
     isMediaDurablyPersisted,
     resolveEntityAvatarUrl,
     hydrateSessionsMedia,
@@ -194,6 +198,18 @@ globalThis.indexedDB = createMockIndexedDb();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
+
+function processUnsetSentinelsLikeTavern(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+    for (const k of Object.keys(obj)) {
+        if (obj[k] === '__@@UNSET@@__') {
+            delete obj[k];
+        } else if (obj[k] && typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+            processUnsetSentinelsLikeTavern(obj[k]);
+        }
+    }
+    return obj;
+}
 
 function deepMergeLikeTavern(target, source) {
     const isObj = (x) => x && typeof x === 'object' && !Array.isArray(x);
@@ -359,7 +375,7 @@ async function createMockTavernHarness({ lazyLoadCharacters = false } = {}) {
             if (!existing) return new Response('Not found', { status: 400 });
             const cleanUpdate = structuredClone(update);
             delete cleanUpdate.json_data;
-            const merged = deepMergeLikeTavern(existing.cardJson, cleanUpdate);
+            const merged = processUnsetSentinelsLikeTavern(deepMergeLikeTavern(existing.cardJson, cleanUpdate));
             const mergedPng = embedCharaChunkIntoPng(existing.pngBytes, merged);
             diskCards.set(update.avatar, { pngBytes: mergedPng, cardJson: merged });
             return new Response('OK', { status: 200 });
@@ -397,6 +413,15 @@ async function createMockTavernHarness({ lazyLoadCharacters = false } = {}) {
                 const tk = Number(fd.get('talkativeness'));
                 baseJson.talkativeness = tk;
                 baseJson.data.extensions.talkativeness = tk;
+            }
+            // Reproduces SillyTavern charaFormatData quirk: non-empty form 'world' overwrites data.character_book from external world file!
+            const formWorld = String(fd.get('world') ?? '').trim();
+            if (formWorld) {
+                baseJson.data.extensions.world = formWorld;
+                baseJson.data.character_book = {
+                    name: `${formWorld}_OVERWRITTEN_BY_CHARA_FORMAT_DATA`,
+                    entries: [{ id: 999, keys: ['overwritten'], content: 'External world replaced embedded book!' }],
+                };
             }
             if (fd.get('chat') !== null) baseJson.chat = String(fd.get('chat'));
             if (fd.get('create_date') !== null) baseJson.create_date = String(fd.get('create_date'));
@@ -1646,6 +1671,361 @@ test('Follow-up P2-G Regression: Full renderWindow() innerHTML DOM sink audit ag
         globalThis.document = origDoc;
         globalThis.CSS = origCss;
         globalThis.indexedDB = origIdb;
+        setTestTavernContext(null);
+    }
+});
+
+// ============================================================================
+// AUDIT #3 REGRESSION SUITES (P1-01, P1-02, P1-03, P2-01 + Mutated-Then-500)
+// ============================================================================
+
+test('Audit #3 P1-01 Regression: Restore from Backup Vault enforces snapshot conflict check by default (0 writes on external edit) until explicit force override', async () => {
+    const origFetch = globalThis.fetch;
+    const origIdb = globalThis.indexedDB;
+    globalThis.indexedDB = createMockIndexedDb();
+    clearMemoryVaultForTests({ closeDb: true });
+
+    try {
+        const harness = await createMockTavernHarness();
+        harness.seedRichCard('Seraphina.png');
+        globalThis.fetch = harness.fetchHandler;
+        setTestTavernContext({
+            getRequestHeaders: ({ omitContentType } = {}) => (omitContentType ? {} : { 'Content-Type': 'application/json' }),
+        });
+
+        const { fullChar } = await fetchFullTavernCharacter('Seraphina.png');
+        const card = createCardStateFromTavernChar(fullChar);
+        card.description = 'First saved update creating Backup A.';
+        markCardFieldDirty(card, 'description');
+
+        const saveRes = await updateExistingCardInTavern(card, { avatarFileName: 'Seraphina.png' });
+        const backupId = saveRes.backup.id;
+        const postSaveHash = card.sourceSnapshotHash;
+
+        // External process / second tab modifies chat AND third-party extension AFTER backup A
+        const diskJson = harness.diskCards.get('Seraphina.png').cardJson;
+        diskJson.chat = 'Seraphina - NEW_EXTERNAL_CHAT_2026';
+        diskJson.data.extensions.third_party_tracker = { affection: 99, flags: ['new_external_progress'] };
+
+        harness.requestLog.length = 0;
+
+        // Default restore (even WITHOUT expectedSnapshotHash, or WITH postSaveHash) MUST block with 0 writes!
+        for (const hashArg of [postSaveHash, '']) {
+            await assert.rejects(
+                () => restoreCardFromBackupVault(backupId, { expectedSnapshotHash: hashArg, allowExternalChangeOverride: false }),
+                (err) => {
+                    assert.equal(err.code, 'EXTERNAL_CARD_MODIFIED');
+                    assert.ok(Array.isArray(err.changedFields) && err.changedFields.includes('chat'));
+                    return true;
+                }
+            );
+        }
+
+        const writeAttempts = harness.requestLog.filter((r) =>
+            ['/api/characters/edit-avatar', '/api/characters/merge-attributes', '/api/characters/edit'].includes(r.url)
+        );
+        assert.equal(writeAttempts.length, 0, 'P1-01: ZERO write POSTs before user explicitly resolves conflict');
+        assert.equal(harness.diskCards.get('Seraphina.png').cardJson.chat, 'Seraphina - NEW_EXTERNAL_CHAT_2026');
+
+        // Explicit force restore after user confirmation restores original Backup A cleanly
+        const forced = await restoreCardFromBackupVault(backupId, { allowExternalChangeOverride: true });
+        assert.equal(forced.restoredChar.description, 'Original rich description of Seraphina.');
+        assert.equal(forced.restoredChar.chat, 'Seraphina - 2026-10-11@19h30m00s');
+    } finally {
+        globalThis.fetch = origFetch;
+        globalThis.indexedDB = origIdb;
+        clearMemoryVaultForTests({ closeDb: true });
+        setTestTavernContext(null);
+    }
+});
+
+test('Audit #3 P1-02 Regression: Newly uploaded/generated portraits survive reload when IndexedDB fails (open denied / QuotaExceededError) while enforcing strict emergency cap', async () => {
+    const origIdb = globalThis.indexedDB;
+    try {
+        for (const mode of [
+            { name: 'indexedDB.open denied', opts: { failOpen: true } },
+            { name: 'QuotaExceededError on write', opts: { quotaFailAfterWrites: 0 } },
+        ]) {
+            globalThis.indexedDB = createMockIndexedDb(mode.opts);
+            clearMemoryVaultForTests({ closeDb: true });
+
+            const sess = createDefaultSession(1);
+            const editorPortraitUrl = 'data:image/png;base64,' + Buffer.from(`NEW_EDITOR_ART_${mode.name}`).toString('base64');
+            const candPortraitUrl = 'data:image/png;base64,' + Buffer.from(`NEW_CAND_ART_${mode.name}`).toString('base64');
+
+            sess.tinder.queue.push({ id: 'cand_new_1', name: 'Nova', avatarId: '', avatarDataUrl: '' });
+
+            const edRes = await assignEntityMediaWithFallback(sess.card, editorPortraitUrl);
+            const cdRes = await assignEntityMediaWithFallback(sess.tinder.queue[0], candPortraitUrl);
+
+            assert.equal(edRes.durable, false);
+            assert.equal(edRes.keptInlineFallback, true);
+            assert.equal(cdRes.durable, false);
+            assert.equal(cdRes.keptInlineFallback, true);
+
+            const extStore = {
+                st_nexus_match_forge: {
+                    settingsSchemaVersion: SETTINGS_SCHEMA_VERSION,
+                    theme: 'krakoa',
+                    activeSessionId: sess.id,
+                    sessions: [sess],
+                },
+            };
+            setTestTavernContext({
+                extensionSettings: extStore,
+                saveSettingsDebounced: () => {},
+            });
+
+            saveSettings();
+
+            // Simulate full browser reload (wipe RAM completely, keep only serialized settings.json)
+            const diskJson = JSON.stringify(extStore.st_nexus_match_forge);
+            clearMemoryVaultForTests({ closeDb: true });
+
+            const reloaded = JSON.parse(diskJson);
+            assert.equal(resolveEntityAvatarUrl(reloaded.sessions[0].card), editorPortraitUrl, `${mode.name}: Editor portrait survived reload`);
+            assert.equal(resolveEntityAvatarUrl(reloaded.sessions[0].tinder.queue[0]), candPortraitUrl, `${mode.name}: Candidate portrait survived reload`);
+        }
+
+        // Verify strict emergency cap prevents unbounded settings.json bloat if user generates 15 portraits with broken IDB
+        globalThis.indexedDB = createMockIndexedDb({ failOpen: true });
+        clearMemoryVaultForTests({ closeDb: true });
+        const capSess = createDefaultSession(1);
+        await assignEntityMediaWithFallback(capSess.card, 'data:image/png;base64,MAIN_EDITOR');
+        for (let i = 0; i < 14; i++) {
+            const c = { id: `c_${i}`, name: `C${i}`, avatarId: '', avatarDataUrl: '' };
+            await assignEntityMediaWithFallback(c, `data:image/png;base64,CAND_${i}`);
+            capSess.tinder.liked.push(c);
+        }
+        const budget = enforceEmergencyInlineBudget([capSess], capSess.id);
+        assert.equal(budget.keptCount, MAX_EMERGENCY_INLINE_ITEMS, 'Emergency inline buffer strictly capped');
+        assert.ok(budget.evictedCount >= 7, 'Excess emergency items evicted to protect settings.json');
+        assert.equal(resolveEntityAvatarUrl(capSess.card), 'data:image/png;base64,MAIN_EDITOR', 'Active editor card prioritized first');
+    } finally {
+        globalThis.indexedDB = origIdb;
+        clearMemoryVaultForTests({ closeDb: true });
+        setTestTavernContext(null);
+    }
+});
+
+test('Audit #3 P1-03 & Mutated-Then-500 Regression: Restore preserves embedded character_book distinct from world, removes extra keys, surfaces PARTIAL_RESTORE, and detects hidden server mutation on HTTP 500', async () => {
+    const origFetch = globalThis.fetch;
+    const origIdb = globalThis.indexedDB;
+    globalThis.indexedDB = createMockIndexedDb();
+    clearMemoryVaultForTests({ closeDb: true });
+
+    try {
+        // 1. Embedded character_book distinct from external 'world' on BOTH /merge-attributes AND legacy 404 -> /edit fallback!
+        for (const forceEditFallback of [false, true]) {
+            clearMemoryVaultForTests({ closeDb: false });
+            const harness = await createMockTavernHarness();
+            const seeded = structuredClone(harness.seedRichCard('Seraphina.png'));
+            // Explicitly ensure character_book differs from 'CathedralWorld'
+            harness.diskCards.get('Seraphina.png').cardJson.data.character_book = {
+                name: 'PRIVATE_EMBEDDED_BOOK_DO_NOT_OVERWRITE',
+                entries: [{ id: 42, keys: ['secret'], content: 'Unique embedded lore.' }],
+            };
+            seeded.data.character_book = structuredClone(harness.diskCards.get('Seraphina.png').cardJson.data.character_book);
+
+            globalThis.fetch = async (url, init = {}) => {
+                if (forceEditFallback && String(url) === '/api/characters/merge-attributes') {
+                    return new Response('Missing route', { status: 404 });
+                }
+                return harness.fetchHandler(url, init);
+            };
+            setTestTavernContext({
+                getRequestHeaders: ({ omitContentType } = {}) => (omitContentType ? {} : { 'Content-Type': 'application/json' }),
+            });
+
+            const { fullChar } = await fetchFullTavernCharacter('Seraphina.png');
+            const card = createCardStateFromTavernChar(fullChar);
+            card.description = 'Modified description + temporary extension key';
+            markCardFieldDirty(card, 'description');
+
+            const upd = await updateExistingCardInTavern(card, { avatarFileName: 'Seraphina.png' });
+            // Inject an extra extension key that did NOT exist in backup
+            harness.diskCards.get('Seraphina.png').cardJson.data.extensions.temp_added_plugin = { foo: 'bar' };
+
+            const restored = await restoreCardFromBackupVault(upd.backup.id, { allowExternalChangeOverride: true });
+            assert.deepEqual(
+                restored.rawCardObject.data.character_book,
+                seeded.data.character_book,
+                `character_book must match backup 100% (fallback=${forceEditFallback})`
+            );
+            assert.equal(restored.rawCardObject.data.extensions.world, 'CathedralWorld');
+            if (!forceEditFallback) {
+                assert.equal(
+                    'temp_added_plugin' in restored.rawCardObject.data.extensions,
+                    false,
+                    '__@@UNSET@@__ sentinel removes keys absent from backup'
+                );
+            }
+        }
+
+        // 2. PARTIAL_RESTORE when /edit-avatar -> 200 and JSON restore -> 500
+        {
+            clearMemoryVaultForTests({ closeDb: false });
+            const harness = await createMockTavernHarness();
+            harness.seedRichCard('Seraphina.png');
+            globalThis.fetch = harness.fetchHandler;
+            setTestTavernContext({
+                getRequestHeaders: ({ omitContentType } = {}) => (omitContentType ? {} : { 'Content-Type': 'application/json' }),
+            });
+
+            const { fullChar } = await fetchFullTavernCharacter('Seraphina.png');
+            const card = createCardStateFromTavernChar(fullChar);
+            card.description = 'Trigger backup';
+            markCardFieldDirty(card, 'description');
+            const upd = await updateExistingCardInTavern(card, { avatarFileName: 'Seraphina.png' });
+
+            globalThis.fetch = async (url, init = {}) => {
+                if (String(url) === '/api/characters/merge-attributes') {
+                    return new Response('Server failed during restore merge', { status: 500 });
+                }
+                return harness.fetchHandler(url, init);
+            };
+
+            await assert.rejects(
+                () => restoreCardFromBackupVault(upd.backup.id, { expectedSnapshotHash: card.sourceSnapshotHash }),
+                (err) => {
+                    assert.equal(err.code, 'PARTIAL_RESTORE');
+                    assert.equal(err.avatarRestored, true);
+                    assert.equal(err.fieldsRestored, false);
+                    return true;
+                }
+            );
+        }
+
+        // 3. Fault injection: server mutates disk on step 1, THEN returns HTTP 500 -> readback detects mutation & rolls back!
+        {
+            clearMemoryVaultForTests({ closeDb: false });
+            const harness = await createMockTavernHarness();
+            const origSeeded = structuredClone(harness.seedRichCard('Seraphina.png'));
+            let failOnceAfterMutating = true;
+
+            globalThis.fetch = async (url, init = {}) => {
+                if (String(url) === '/api/characters/merge-attributes' && failOnceAfterMutating) {
+                    failOnceAfterMutating = false;
+                    await harness.fetchHandler(url, init); // Mutate disk first!
+                    return new Response('Connection reset after disk write', { status: 500 });
+                }
+                return harness.fetchHandler(url, init);
+            };
+            setTestTavernContext({
+                getRequestHeaders: ({ omitContentType } = {}) => (omitContentType ? {} : { 'Content-Type': 'application/json' }),
+            });
+
+            const { fullChar } = await fetchFullTavernCharacter('Seraphina.png');
+            const card = createCardStateFromTavernChar(fullChar);
+            card.description = 'Mutated before 500';
+            markCardFieldDirty(card, 'description');
+
+            await assert.rejects(
+                () => updateExistingCardInTavern(card, { avatarFileName: 'Seraphina.png' }),
+                (err) => {
+                    assert.equal(err.code, 'PARTIAL_SAVE');
+                    assert.equal(err.rolledBack, true);
+                    return true;
+                }
+            );
+            assert.equal(harness.diskCards.get('Seraphina.png').cardJson.description, origSeeded.description);
+        }
+    } finally {
+        globalThis.fetch = origFetch;
+        globalThis.indexedDB = origIdb;
+        clearMemoryVaultForTests({ closeDb: true });
+        setTestTavernContext(null);
+    }
+});
+
+test('Audit #3 P2-01 Regression: clear-avatar writes verified monogram placeholder PNG (alone & with description) and detects silent server no-op', async () => {
+    const origFetch = globalThis.fetch;
+    const origIdb = globalThis.indexedDB;
+    globalThis.indexedDB = createMockIndexedDb();
+    clearMemoryVaultForTests({ closeDb: true });
+
+    try {
+        const harness = await createMockTavernHarness();
+        harness.seedRichCard('Seraphina.png');
+        // Seed distinct colorful custom PNG bytes on original card
+        const customPhotoPng = await ensurePngBytes('', 'CUSTOM_OLD_PHOTO', '#ff0055');
+        harness.diskCards.get('Seraphina.png').pngBytes = embedCharaChunkIntoPng(
+            customPhotoPng,
+            harness.diskCards.get('Seraphina.png').cardJson
+        );
+        const origVisual = stripPngCharaChunkBytes(harness.diskCards.get('Seraphina.png').pngBytes);
+
+        globalThis.fetch = harness.fetchHandler;
+        setTestTavernContext({
+            getRequestHeaders: ({ omitContentType } = {}) => (omitContentType ? {} : { 'Content-Type': 'application/json' }),
+        });
+
+        // 1. Standalone clear-avatar ONLY
+        const { fullChar } = await fetchFullTavernCharacter('Seraphina.png');
+        const card = createCardStateFromTavernChar(fullChar, { avatarId: 'nmf_img_old' });
+        card.avatarId = '';
+        card.avatarDataUrl = '';
+        card.avatarDirty = true;
+
+        const resAlone = await updateExistingCardInTavern(card, {
+            avatarFileName: 'Seraphina.png',
+            avatarDataUrl: '',
+            accentHex: '#1de9b6',
+        });
+        assert.equal(resAlone.noop, false);
+        assert.equal(card.avatarDirty, false);
+        const afterVisual1 = stripPngCharaChunkBytes(harness.diskCards.get('Seraphina.png').pngBytes);
+        assert.notDeepEqual(afterVisual1, origVisual, 'clear-avatar alone must replace PNG pixels with clean placeholder');
+
+        // 2. clear-avatar + description together
+        harness.diskCards.get('Seraphina.png').pngBytes = embedCharaChunkIntoPng(
+            customPhotoPng,
+            harness.diskCards.get('Seraphina.png').cardJson
+        );
+        const { fullChar: fc2 } = await fetchFullTavernCharacter('Seraphina.png');
+        const card2 = createCardStateFromTavernChar(fc2, { avatarId: 'nmf_img_old2' });
+        card2.avatarId = '';
+        card2.avatarDataUrl = '';
+        card2.avatarDirty = true;
+        card2.description = 'Cleared avatar + updated bio';
+        markCardFieldDirty(card2, 'description');
+
+        await updateExistingCardInTavern(card2, {
+            avatarFileName: 'Seraphina.png',
+            avatarDataUrl: '',
+            accentHex: '#1de9b6',
+        });
+        const afterVisual2 = stripPngCharaChunkBytes(harness.diskCards.get('Seraphina.png').pngBytes);
+        assert.notDeepEqual(afterVisual2, origVisual, 'clear-avatar + description must update PNG pixels');
+        assert.equal(harness.diskCards.get('Seraphina.png').cardJson.description, 'Cleared avatar + updated bio');
+
+        // 3. Server silently ignores /edit-avatar (returns 200 without updating PNG) -> caught as INTEGRITY_CHECK_FAILED!
+        harness.diskCards.get('Seraphina.png').pngBytes = embedCharaChunkIntoPng(
+            customPhotoPng,
+            harness.diskCards.get('Seraphina.png').cardJson
+        );
+        globalThis.fetch = async (url, init = {}) => {
+            if (String(url) === '/api/characters/edit-avatar') {
+                return new Response('Silent no-op', { status: 200 });
+            }
+            return harness.fetchHandler(url, init);
+        };
+
+        const { fullChar: fc3 } = await fetchFullTavernCharacter('Seraphina.png');
+        const card3 = createCardStateFromTavernChar(fc3);
+        card3.avatarId = '';
+        card3.avatarDataUrl = '';
+        card3.avatarDirty = true;
+
+        await assert.rejects(
+            () => updateExistingCardInTavern(card3, { avatarFileName: 'Seraphina.png', avatarDataUrl: '', accentHex: '#1de9b6' }),
+            (err) => err.code === 'INTEGRITY_CHECK_FAILED'
+        );
+        assert.equal(card3.avatarDirty, true, 'avatarDirty must NOT clear when server failed to apply new PNG');
+    } finally {
+        globalThis.fetch = origFetch;
+        globalThis.indexedDB = origIdb;
+        clearMemoryVaultForTests({ closeDb: true });
         setTestTavernContext(null);
     }
 });
