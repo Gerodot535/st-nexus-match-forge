@@ -1067,33 +1067,36 @@ export function mapGachaTargetToOriginType(targetType = 'oc') {
     return 'oc';
 }
 
-export function createDefaultGachaWishPrefs(fallbackIntake = null) {
-    const validGenders = new Set(TARGET_GENDER_OPTIONS.map((g) => g.id));
-    const validRatings = new Set(RATING_OPTIONS.map((r) => r.id));
+export function createDefaultGachaWishPrefs() {
     return {
         targetType: 'oc',
         fandomOrWorld: '',
-        targetGender: validGenders.has(fallbackIntake?.targetGender) ? fallbackIntake.targetGender : 'any',
-        targetGenderCustom: String(fallbackIntake?.targetGenderCustom ?? ''),
-        rating: validRatings.has(fallbackIntake?.rating) ? fallbackIntake.rating : 'mature',
+        userGender: 'any',
+        userGenderCustom: '',
+        targetGender: 'any',
+        targetGenderCustom: '',
+        rating: 'mature',
         wishesNote: '',
         hardBans: '',
     };
 }
 
-export function normalizeGachaWishPrefs(rawPrefs, fallbackIntake = null) {
-    const base = createDefaultGachaWishPrefs(fallbackIntake);
+export function normalizeGachaWishPrefs(rawPrefs) {
+    const base = createDefaultGachaWishPrefs();
     if (!rawPrefs || typeof rawPrefs !== 'object' || Array.isArray(rawPrefs)) {
         return base;
     }
     const validTargetTypes = new Set(GACHA_TARGET_OPTIONS.map((t) => t.id));
+    const validUserGenders = new Set(USER_GENDER_OPTIONS.map((g) => g.id));
     const validGenders = new Set(TARGET_GENDER_OPTIONS.map((g) => g.id));
     const validRatings = new Set(RATING_OPTIONS.map((r) => r.id));
     return {
         targetType: validTargetTypes.has(rawPrefs.targetType) ? rawPrefs.targetType : 'oc',
         fandomOrWorld: String(rawPrefs.fandomOrWorld ?? ''),
+        userGender: validUserGenders.has(rawPrefs.userGender) ? rawPrefs.userGender : base.userGender,
+        userGenderCustom: String(rawPrefs.userGenderCustom ?? ''),
         targetGender: validGenders.has(rawPrefs.targetGender) ? rawPrefs.targetGender : base.targetGender,
-        targetGenderCustom: String(rawPrefs.targetGenderCustom ?? base.targetGenderCustom),
+        targetGenderCustom: String(rawPrefs.targetGenderCustom ?? ''),
         rating: validRatings.has(rawPrefs.rating) ? rawPrefs.rating : base.rating,
         wishesNote: String(rawPrefs.wishesNote ?? ''),
         hardBans: String(rawPrefs.hardBans ?? ''),
@@ -1519,7 +1522,7 @@ export function normalizeSession(rawSession, index = 1) {
         totalPulls: Number.isFinite(Number(rawGacha.totalPulls)) ? Math.max(0, Math.round(Number(rawGacha.totalPulls))) : 0,
         pitySince4Plus: Number.isFinite(Number(rawGacha.pitySince4Plus)) ? Math.max(0, Math.round(Number(rawGacha.pitySince4Plus))) : 0,
         cooldownEndsAt: Number.isFinite(Number(rawGacha.cooldownEndsAt)) ? Math.max(0, Number(rawGacha.cooldownEndsAt)) : 0,
-        wishPrefs: normalizeGachaWishPrefs(rawGacha.wishPrefs, intake),
+        wishPrefs: normalizeGachaWishPrefs(rawGacha.wishPrefs),
         _legacyResetCharges: Number.isFinite(Number(rawGacha.resetCharges)) ? Number(rawGacha.resetCharges) : 0,
         recentNamesPool: Array.isArray(rawGacha.recentNamesPool)
             ? rawGacha.recentNamesPool.map((n) => String(n).trim()).filter(Boolean).slice(0, 30)
@@ -1744,7 +1747,7 @@ export function resolveGreetingTarget(intake = {}) {
 
 export function summarizeGachaWishPrefsBlock(session) {
     const it = session?.intake || createDefaultSession(1).intake;
-    const wp = normalizeGachaWishPrefs(session?.gacha?.wishPrefs, it);
+    const wp = normalizeGachaWishPrefs(session?.gacha?.wishPrefs);
     const targetModeMap = {
         oc: 'Original Character (OC) forged 100% from scratch around the "+" tag formula (do NOT pull canon characters from unrelated fandoms!)',
         fandom_oc: 'Original Character (OC) native to the specified Gacha Universe below',
@@ -1761,17 +1764,27 @@ export function summarizeGachaWishPrefsBlock(session) {
     const cardLangSpec = resolveCardLanguageSpec(it);
     const userLangSpec = resolveUserLanguageSpec(it);
     const gachaGenderIntake = {
-        userGender: it.userGender,
-        userGenderCustom: it.userGenderCustom,
+        userGender: wp.userGender,
+        userGenderCustom: wp.userGenderCustom,
         targetGender: wp.targetGender,
         targetGenderCustom: wp.targetGenderCustom,
     };
     const { userSpec, targetSpec } = resolveGenderSummary(gachaGenderIntake);
     const worldLike = wp.targetType === 'world_rpg' || wp.targetType === 'artifact';
+    const isLeftBlankForRandom = (
+        wp.targetType === 'oc'
+        && !wp.fandomOrWorld.trim()
+        && !wp.wishesNote.trim()
+        && !wp.hardBans.trim()
+        && (wp.targetGender || 'any') === 'any'
+    );
 
     const rawText = [
-        `[GACHA BANNER WISH PREFERENCES — ISOLATED FROM TINDER INTAKE]`,
+        `[GACHA BANNER WISH PREFERENCES — 100% ISOLATED FROM MAIN STORY QUESTIONNAIRE]`,
         `- Summon Target Mode: ${targetModeMap[wp.targetType] || targetModeMap.oc}`,
+        isLeftBlankForRandom
+            ? `- High-Randomization Mode: Gacha Questionnaire was intentionally left blank — maximize creative surprise, diverse archetypes, and fresh settings guided purely by the "+" tags!`
+            : '',
         userSpec ? `- Player ({ {user} }) Gender / Identity: ${userSpec}` : '',
         targetSpec ? (worldLike
             ? `- Key Cast / Entity Gender Preference: ${targetSpec}`
@@ -1793,8 +1806,14 @@ export function summarizeIntakeBlock(session, { modeContext = 'swipe' } = {}) {
     if (modeContext === 'gacha') {
         return summarizeGachaWishPrefsBlock(session);
     }
-    if (modeContext === 'blitz' && resolveBlitzSeedCandidate(session)?.source === 'gacha') {
-        return summarizeGachaWishPrefsBlock(session);
+    if (modeContext === 'blitz') {
+        const seed = resolveBlitzSeedCandidate(session);
+        if (seed?.source === 'gacha') {
+            return summarizeGachaWishPrefsBlock(session);
+        }
+        if (session?.blitz?.useTinderContext === false && !seed) {
+            return summarizeMinimalDirectIdeaBlock(session);
+        }
     }
     const it = session?.intake || createDefaultSession(1).intake;
     const originMap = {
@@ -1809,13 +1828,8 @@ export function summarizeIntakeBlock(session, { modeContext = 'swipe' } = {}) {
     };
     const genresList = [...(it.genres || []), it.customGenres || ''].filter(Boolean).join(', ');
 
-    // Strict method isolation:
-    // - 'swipe': includes Tinder dislikedTags & dislikedNotes
-    // - 'gacha': isolated from Tinder dislikes (only manual hardBans)
-    // - 'blitz': connects actual chosen Tinder/Gacha candidate card (NEVER dumps Tinder anti-tags!)
-    // - 'architect' / 'rework': 100% isolated from both Tinder & Gacha!
+    // Strict questionnaire isolation: Main Questionnaire NEVER reads Gacha tags or Gacha wishes!
     const includeTinderDislikes = modeContext === 'swipe';
-    const includeGachaMotifs = modeContext === 'blitz' && Boolean(session?.blitz?.useGachaContext) && !resolveBlitzSeedCandidate(session);
 
     const antiTags = [
         ...(includeTinderDislikes ? (session?.tinder?.dislikedTags || []) : []),
@@ -1823,9 +1837,6 @@ export function summarizeIntakeBlock(session, { modeContext = 'swipe' } = {}) {
     ].filter(Boolean).join(', ');
     const antiNotes = includeTinderDislikes
         ? (session?.tinder?.dislikedNotes || []).filter(Boolean).join('; ')
-        : '';
-    const gachaContextLine = includeGachaMotifs && String(session?.gacha?.tagsInput || '').trim()
-        ? `- Active Gacha Formula Motifs (opted-in): ${String(session.gacha.tagsInput).trim()}`
         : '';
 
     const ratingMap = {
@@ -1851,7 +1862,6 @@ export function summarizeIntakeBlock(session, { modeContext = 'swipe' } = {}) {
         it.settingEra ? `- Setting & Era: ${it.settingEra}` : '',
         it.userRoleAndDesire ? `- Player's Role, Premise & Desired Experience: ${it.userRoleAndDesire}` : '',
         it.tropesWanted ? `- Desired Tropes / Mechanics / Elements: ${it.tropesWanted}` : '',
-        gachaContextLine,
         antiTags ? `- STRICTLY AVOID (Banned Tags & Taboos): ${antiTags}` : '',
         antiNotes ? `- Past Rejected Patterns to Avoid: ${antiNotes}` : '',
         `- Content Rating: ${ratingMap[it.rating] || ratingMap.sfw}`,
@@ -2308,11 +2318,14 @@ export function resolveBlitzSeedCandidate(session) {
 }
 
 export function buildBlitzQuestionsRequest(session, singleIndexToReplace = -1, mode = 'prefill_user_msg') {
-    const intakeSummary = summarizeIntakeBlock(session, { modeContext: 'blitz' });
-    const worldMode = isWorldOrRpgMode(session.intake);
-    const langSpec = resolveUserLanguageSpec(session.intake);
     const seedHit = resolveBlitzSeedCandidate(session);
     const seedEntity = seedHit?.entity || null;
+    const effectiveModeContext = seedHit?.source === 'gacha' ? 'gacha' : 'blitz';
+    const intakeSummary = summarizeIntakeBlock(session, { modeContext: effectiveModeContext });
+    const worldMode = effectiveModeContext === 'gacha'
+        ? (session.gacha?.wishPrefs?.targetType === 'world_rpg' || session.gacha?.wishPrefs?.targetType === 'artifact')
+        : isWorldOrRpgMode(session.intake);
+    const langSpec = resolveUserLanguageSpec(session.intake);
 
     const defaultTopic = seedEntity
         ? `Deepening and fleshing out ${seedEntity.name}`

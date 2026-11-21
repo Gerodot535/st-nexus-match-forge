@@ -150,7 +150,7 @@ export const REVEAL_ASSET_URLS = Object.freeze({
 });
 
 export const state = {
-    activeTab: 'swipe', // home | swipe | matches | blitz | create | editor
+    activeTab: 'home', // home | swipe | matches | blitz | create | editor
     discoverSubMode: 'swipe', // swipe | gacha
     matchesSubTab: 'liked', // liked | gacha_collection | vault | passed
     settingsOpenSection: '',
@@ -544,7 +544,7 @@ function ensureDialogMounted() {
 export async function openForgeDialog(initialTab = '') {
     if (typeof document === 'undefined') return;
     const dlg = ensureDialogMounted();
-    if (initialTab) state.activeTab = initialTab;
+    state.activeTab = initialTab || 'home';
     const cfg = getSettings();
     await waitForActiveMediaMigration().catch(() => {});
     await Promise.all([
@@ -1034,39 +1034,90 @@ function renderHomeTab(sess) {
             </div>` : ''}
         </div>
 
-        <!-- ПУНКТ 1: БОЛЬШОЙ АКЦЕНТ НА АНКЕТЕ ЮЗЕРА + ШАБЛОН И РЕЖИМ ИИ -->
+        <!-- ПУНКТ 1: БОЛЬШОЙ АКЦЕНТ НА АНКЕТЕ ЮЗЕРА + АНКЕТА ГАЧИ + ШАБЛОН И РЕЖИМ ИИ -->
         <div style="display:flex;flex-direction:column;gap:7px">
-            <span class="nmf-section-kicker">${esc(tx('Пункт 1. Анкета Юзера и базовая настройка:', 'Point 1. User Questionnaire & Core Setup:'))}</span>
+            <span class="nmf-section-kicker">${esc(tx('Пункт 1. Анкеты сессии и базовая настройка:', 'Point 1. Session Questionnaires & Core Setup:'))}</span>
 
+            ${(() => {
+                const gwp = normalizeGachaWishPrefs(gc.wishPrefs);
+                const hasGachaPrefsFilled = Boolean(
+                    gwp.fandomOrWorld.trim()
+                    || gwp.wishesNote.trim()
+                    || gwp.hardBans.trim()
+                    || gwp.targetType !== 'oc'
+                    || (gwp.userGender && gwp.userGender !== 'any')
+                    || (gwp.targetGender && gwp.targetGender !== 'any'),
+                );
+                return `
             <div class="nmf-intake-spotlight">
+                <!-- MAIN QUESTIONNAIRE (SWIPES, BLITZ, IDEA, AU) -->
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
                     <span style="display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:800;color:var(--nmf-accent)">
-                        ${NMF_ICONS.sliders} ${esc(tx('Сюжетная Анкета Юзера', 'User Story Questionnaire'))}
+                        ${NMF_ICONS.sliders} ${esc(tx('Главная Сюжетная Анкета Юзера', 'Main User Story Questionnaire'))}
                     </span>
                     <span style="font-family:var(--nmf-font-mono);font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--nmf-accent);color:var(--nmf-accent)">
-                        ${esc(hasStoryFilled ? tx('ЗАПОЛНЕНА', 'CONFIGURED') : tx('РЕКОМЕНДУЕТСЯ ЗАПОЛНИТЬ', 'START HERE'))}
+                        ${esc(hasStoryFilled ? tx('ЗАПОЛНЕНА', 'CONFIGURED') : tx('ОСНОВНЫЕ РЕЖИМЫ', 'CORE MODES'))}
                     </span>
                 </div>
-                <div style="font-size:11.5px;line-height:1.42;color:var(--nmf-text-muted)">
-                    ${esc(tx(
-                        'Главный ориентир сессии: укажите свой пол, кого ищем, мир, любимые тропы, стоп-слова и языки — по ней ИИ строит точные попадания!',
-                        'Primary guide for this session: set your gender, target hero, world, tropes, hard bans, and languages so the AI matches your exact taste!',
-                    ))}
+
+                <div style="font-size:11.5px;line-height:1.45;color:var(--nmf-text-muted);display:flex;flex-direction:column;gap:4px">
+                    <div>
+                        <strong style="color:var(--nmf-text)">${esc(tx('Для Свайпов (Тиндера):', 'For Swipes (Tinder):'))}</strong>
+                        ${esc(tx(' рекомендуется начать именно с этой анкеты, чтобы кандидаты сразу попадали в ваш вкус.', ' recommended to start here so candidates immediately match your taste.'))}
+                    </div>
+                    <div>
+                        <strong style="color:var(--nmf-text)">${esc(tx('Для Блиц-опроса и Задумки (Идеи):', 'For Blitz Quiz & Idea Mode:'))}</strong>
+                        ${esc(tx(' заполнять необязательно, но она поможет тоньше настроить вайб, языки и усилит оба режима!', ' optional, but filling it out fine-tunes vibe & languages and boosts both modes!'))}
+                    </div>
                 </div>
+
                 ${intakeTagsSummary.length > 0 ? `
                 <div class="nmf-chip-wrap">
                     ${intakeTagsSummary.map((tg) => `<span class="nmf-mini-tag" style="border-color:var(--nmf-accent);color:var(--nmf-text)">${esc(tg)}</span>`).join('')}
                 </div>` : ''}
+
                 <div class="nmf-btn-row" style="margin-top:2px">
                     <button type="button" class="nmf-btn-primary" style="flex:1;height:38px;font-size:12.5px" data-act="open-intake-sheet">
-                        ${NMF_ICONS.sliders} ${esc(hasStoryFilled ? tx('Проверить / Изменить Анкету Юзера', 'Review / Edit User Questionnaire') : tx('Заполнить Анкету Юзера', 'Fill Out User Questionnaire'))}
+                        ${NMF_ICONS.sliders} ${esc(hasStoryFilled ? tx('Изменить Главную Анкету', 'Edit Main Questionnaire') : tx('Заполнить Главную Анкету', 'Fill Out Main Questionnaire'))}
                     </button>
                     ${hasStoryFilled ? `
-                    <button type="button" class="nmf-btn-secondary nmf-btn-danger" style="height:38px;font-size:11.5px" data-act="clear-session-intake" title="${esc(tx('Очистить анкету', 'Clear questionnaire'))}">
+                    <button type="button" class="nmf-btn-secondary nmf-btn-danger" style="height:38px;font-size:11.5px" data-act="clear-session-intake" title="${esc(tx('Очистить Главную анкету', 'Clear Main Questionnaire'))}">
                         ${NMF_ICONS.trash} ${esc(tx('Очистить', 'Clear'))}
                     </button>` : ''}
                 </div>
-            </div>
+
+                <!-- ADDITIONAL GACHA QUESTIONNAIRE (STRICTLY ISOLATED FOR GACHA ONLY) -->
+                <div style="margin-top:4px;padding-top:10px;border-top:1px dashed var(--nmf-border);display:flex;flex-direction:column;gap:6px">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                        <span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:var(--nmf-text)">
+                            <span style="color:var(--nmf-accent)">${NMF_ICONS.primogem}</span>
+                            <span>${esc(tx('Анкета для режима Гачи', 'Gacha Mode Questionnaire'))}</span>
+                        </span>
+                        <span style="font-family:var(--nmf-font-mono);font-size:9.5px;color:var(--nmf-text-muted)">
+                            ${esc(hasGachaPrefsFilled ? tx('Настроена (только Гача)', 'Custom (Gacha Only)') : tx('Пустая · Макс. рандом', 'Empty · Max Random'))}
+                        </span>
+                    </div>
+                    <div style="font-size:11px;line-height:1.4;color:var(--nmf-accent);font-weight:600">
+                        ${esc(tx('*Если вы хотите поиграть и поколлекционировать карты.', '*If you want to play and collect cards.'))}
+                    </div>
+                    <div style="font-size:11px;line-height:1.4;color:var(--nmf-text-muted)">
+                        ${esc(tx(
+                            'Работает строго только для Гачи (не смешивается с Главной анкетой). Её можно оставить пустой — так в призыве будет больше рандомизации!',
+                            'Applies strictly to Gacha only (never mixes with Main Questionnaire). Leave it blank for maximum randomization!',
+                        ))}
+                    </div>
+                    <div class="nmf-btn-row">
+                        <button type="button" class="nmf-btn-secondary" style="flex:1;height:33px;font-size:11.5px;border-color:var(--nmf-border-active)" data-act="open-gacha-prefs">
+                            ${NMF_ICONS.primogem} ${esc(hasGachaPrefsFilled ? tx('Изменить Анкету Гачи', 'Edit Gacha Questionnaire') : tx('Открыть Анкету Гачи (по желанию)', 'Open Gacha Questionnaire (Optional)'))}
+                        </button>
+                        ${hasGachaPrefsFilled ? `
+                        <button type="button" class="nmf-btn-secondary nmf-btn-danger" style="height:33px;font-size:11px" data-act="clear-gacha-prefs" title="${esc(tx('Очистить Анкету Гачи', 'Clear Gacha Questionnaire'))}">
+                            ${NMF_ICONS.trash}
+                        </button>` : ''}
+                    </div>
+                </div>
+            </div>`;
+            })()}
 
             <button type="button" class="nmf-home-mode-btn ${mandOpen ? 'nmf-active' : ''}" style="width:100%" data-act="toggle-home-card" data-hcard="mandatory">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%">
@@ -1386,7 +1437,7 @@ function renderGachaFilterBanner(sess) {
 function renderGachaPrefsSheetModal(sess) {
     if (!state.gachaPrefsOpen) return '';
     if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
-    if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs(sess.intake);
+    sess.gacha.wishPrefs = normalizeGachaWishPrefs(sess.gacha.wishPrefs);
     const wp = sess.gacha.wishPrefs;
     const ratingObj = RATING_OPTIONS.find((r) => r.id === wp.rating) || RATING_OPTIONS[1];
 
@@ -1395,7 +1446,7 @@ function renderGachaPrefsSheetModal(sess) {
         <div class="nmf-sheet-panel">
             <div class="nmf-sheet-head">
                 <div style="font-family:var(--nmf-font-title);font-size:15px;font-weight:700;color:var(--nmf-accent);display:flex;align-items:center;gap:6px">
-                    ${NMF_ICONS.primogem} <span>Анкета Призыва · Пожелания Гачи</span>
+                    ${NMF_ICONS.primogem} <span>${esc(tx('Анкета Призыва · Только для Гачи', 'Summon Questionnaire · Gacha Only'))}</span>
                 </div>
                 <button type="button" class="nmf-icon-btn nmf-sq" data-act="close-gacha-prefs">${NMF_ICONS.close}</button>
             </div>
@@ -1403,35 +1454,46 @@ function renderGachaPrefsSheetModal(sess) {
                 <div class="nmf-panel">
                     <div class="nmf-warn-box" style="font-size:11.5px">
                         ${NMF_ICONS.primogem}
-                        <span>Эта анкета работает <strong>только для Баннера Гачи</strong> (и не тянет сюжет, фандом или героев из Анкеты Тиндера!). По умолчанию Гача рождает новых оригинальных героев чисто из ваших «+» тегов.</span>
+                        <span>${tx(
+                            'Эта анкета работает <strong>строго только для Гачи</strong> и никогда не смешивается с Главной анкетой. <strong>Совет:</strong> вы можете оставить её пустой для максимальной рандомизации по вашим «+» тегам!',
+                            'This sheet applies <strong>strictly to Gacha only</strong> and never mixes with your Main Questionnaire. <strong>Tip:</strong> leave fields blank for maximum randomization from your "+" tags!',
+                        )}</span>
                     </div>
 
                     <div class="nmf-field">
-                        <label class="nmf-label">Кого призываем в Баннере?</label>
+                        <label class="nmf-label">${esc(tx('Кого призываем в Баннере?', 'Who are we summoning in the Banner?'))}</label>
                         <select class="nmf-select" data-gacha-pref="targetType" ${sess.frozen ? 'disabled' : ''}>
                             ${GACHA_TARGET_OPTIONS.map((opt) => `<option value="${esc(opt.id)}" ${wp.targetType === opt.id ? 'selected' : ''}>${esc(opt.label)}</option>`).join('')}
                         </select>
                     </div>
 
                     <div class="nmf-field">
-                        <label class="nmf-label">Вселенная / Сеттинг для Гачи (необязательно)</label>
-                        <input type="text" class="nmf-input" data-gacha-pref="fandomOrWorld" value="${esc(wp.fandomOrWorld || '')}" placeholder="Пусто = любой мир чисто по вашим «+» тегам..." ${sess.frozen ? 'disabled' : ''}/>
+                        <label class="nmf-label">${esc(tx('Вселенная / Сеттинг для Гачи (необязательно)', 'Universe / Setting for Gacha (Optional)'))}</label>
+                        <input type="text" class="nmf-input" data-gacha-pref="fandomOrWorld" value="${esc(wp.fandomOrWorld || '')}" placeholder="${esc(tx('Пусто = любой мир чисто по вашим «+» тегам...', 'Blank = any setting purely from your "+" tags...'))}" ${sess.frozen ? 'disabled' : ''}/>
                     </div>
 
                     <div class="nmf-grid-2-compact">
                         <div class="nmf-field">
-                            <label class="nmf-label">Пол в Призыве</label>
+                            <label class="nmf-label">${esc(tx('Ваш пол (Игрок)', 'Your Gender (Player)'))}</label>
+                            <select class="nmf-select" data-gacha-pref="userGender" ${sess.frozen ? 'disabled' : ''}>
+                                ${USER_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(wp.userGender || 'any') === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
+                            </select>
+                            ${wp.userGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-gacha-pref="userGenderCustom" value="${esc(wp.userGenderCustom || '')}" placeholder="${esc(tx('Свой вариант...', 'Type custom gender...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
+                        </div>
+                        <div class="nmf-field">
+                            <label class="nmf-label">${esc(tx('Пол в Призыве', 'Summoned Gender'))}</label>
                             <select class="nmf-select" data-gacha-pref="targetGender" ${sess.frozen ? 'disabled' : ''}>
                                 ${TARGET_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(wp.targetGender || 'any') === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
                             </select>
-                            ${wp.targetGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-gacha-pref="targetGenderCustom" value="${esc(wp.targetGenderCustom || '')}" placeholder="Свой вариант..." ${sess.frozen ? 'disabled' : ''}/>` : ''}
+                            ${wp.targetGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-gacha-pref="targetGenderCustom" value="${esc(wp.targetGenderCustom || '')}" placeholder="${esc(tx('Свой вариант...', 'Type custom gender...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
                         </div>
-                        <div class="nmf-field">
-                            <label class="nmf-label">Рейтинг Гачи</label>
-                            <select class="nmf-select" data-gacha-pref="rating" ${sess.frozen ? 'disabled' : ''}>
-                                ${RATING_OPTIONS.map((r) => `<option value="${r.id}" ${wp.rating === r.id ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}
-                            </select>
-                        </div>
+                    </div>
+
+                    <div class="nmf-field">
+                        <label class="nmf-label">${esc(tx('Рейтинг Гачи', 'Gacha Rating'))}</label>
+                        <select class="nmf-select" data-gacha-pref="rating" ${sess.frozen ? 'disabled' : ''}>
+                            ${RATING_OPTIONS.map((r) => `<option value="${r.id}" ${wp.rating === r.id ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}
+                        </select>
                     </div>
 
                     ${ratingObj?.warn ? `
@@ -1441,19 +1503,19 @@ function renderGachaPrefsSheetModal(sess) {
                     </div>` : ''}
 
                     <div class="nmf-field">
-                        <label class="nmf-label">Особые пожелания к призыву (вайб, химия с вами, детали)</label>
-                        <textarea class="nmf-textarea" style="min-height:76px" data-gacha-pref="wishesNote" placeholder="Например: хочу больше мрачной харизмы, собственничества, необычных привычек или интриги при первой встрече..." ${sess.frozen ? 'disabled' : ''}>${esc(wp.wishesNote || '')}</textarea>
+                        <label class="nmf-label">${esc(tx('Особые пожелания к призыву (необязательно)', 'Special Summon Wishes (Optional)'))}</label>
+                        <textarea class="nmf-textarea" style="min-height:72px" data-gacha-pref="wishesNote" placeholder="${esc(tx('Оставьте пустым для большей рандомизации или укажите желаемый вайб...', 'Leave blank for higher randomization or add desired chemistry/vibe...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(wp.wishesNote || '')}</textarea>
                     </div>
 
                     <div class="nmf-field">
-                        <label class="nmf-label">Запреты Баннера (чего точно НЕ должно выпасть)</label>
-                        <input type="text" class="nmf-input" data-gacha-pref="hardBans" value="${esc(wp.hardBans || '')}" placeholder="Через запятую всё, что исключить в Гаче..." ${sess.frozen ? 'disabled' : ''}/>
+                        <label class="nmf-label">${esc(tx('Запреты Баннера (чего точно НЕ должно выпасть)', 'Banner Hard Bans (strictly avoid)'))}</label>
+                        <input type="text" class="nmf-input" data-gacha-pref="hardBans" value="${esc(wp.hardBans || '')}" placeholder="${esc(tx('Через запятую всё, что исключить в Гаче...', 'Comma-separated items to exclude in Gacha...'))}" ${sess.frozen ? 'disabled' : ''}/>
                     </div>
                 </div>
             </div>
             <div class="nmf-sheet-foot" style="justify-content:space-between;gap:8px">
-                <button type="button" class="nmf-btn-secondary" data-act="open-intake-from-gacha" title="Открыть общие настройки языка и слога">Языки и Слог</button>
-                <button type="button" class="nmf-btn-primary" style="flex:1" data-act="close-gacha-prefs">Сохранить пожелания</button>
+                <button type="button" class="nmf-btn-secondary nmf-btn-danger" data-act="clear-gacha-prefs" ${sess.frozen ? 'disabled' : ''}>${esc(tx('Очистить (Макс. рандом)', 'Clear (Max Random)'))}</button>
+                <button type="button" class="nmf-btn-primary" style="flex:1" data-act="close-gacha-prefs">${esc(tx('Сохранить', 'Save'))}</button>
             </div>
         </div>
     </div>`;
@@ -2688,7 +2750,6 @@ function renderSwipeTab(sess) {
     if (state.discoverSubMode === 'gacha') {
         return `
         ${modeSwitchBar}
-        ${renderGachaFilterBanner(sess)}
         ${renderGachaSummonSubScreen(sess)}`;
     }
 
@@ -2706,7 +2767,6 @@ function renderSwipeTab(sess) {
 
     return `
     ${modeSwitchBar}
-    ${renderFilterSummaryBanner(sess)}
 
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
         <input type="text" class="nmf-input" style="flex:1" data-tinder="promptHint" value="${esc(td.promptHint)}" placeholder="${worldMode ? 'Пожелание к миру/РПГ...' : 'Пожелание в ленту (например: постарше, босс)...'}" ${sess.frozen ? 'disabled' : ''}/>
@@ -2830,7 +2890,6 @@ function renderSwipeTab(sess) {
         <div style="color:var(--nmf-accent)">${NMF_ICONS.flame}</div>
         <div style="font-family:var(--nmf-font-title);font-size:17px;font-weight:700">${worldMode ? 'Лента миров и РПГ готова' : 'Лента знакомств готова'}</div>
         <div class="nmf-btn-row" style="justify-content:center;margin-top:4px">
-            <button type="button" class="nmf-btn-secondary" data-act="open-intake-sheet">${NMF_ICONS.sliders} Анкета</button>
             <button type="button" class="nmf-btn-primary" data-act="gen-tinder" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.spark} Запустить подбор</button>
         </div>
     </div>`}`;
@@ -3134,7 +3193,6 @@ function renderBlitzTab(sess) {
     const curSelRef = bz.selectedCandidateRef === '__none__' ? '__none__' : (seedHit?.ref || '__none__');
 
     return `
-    ${renderFilterSummaryBanner(sess)}
     <div class="nmf-panel">
         ${sourceEnabled ? `
         <div class="nmf-field">
@@ -3232,7 +3290,6 @@ function renderCreateTab(sess) {
     const worldMode = isWorldOrRpgMode(sess.intake);
 
     return `
-    ${renderFilterSummaryBanner(sess)}
     <div class="nmf-seg-bar">
         <button type="button" class="nmf-seg-btn ${mode === 'idea' ? 'nmf-active' : ''}" data-act="create-submode" data-sub="idea">
             ${NMF_ICONS.architect} Из задумки
@@ -3254,17 +3311,11 @@ function renderCreateTab(sess) {
                     Только задумка
                 </button>
             </div>
-            ${sess.architect.useIntake !== false ? `
-            <div class="nmf-warn-box" style="margin-top:5px;font-size:11px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-                <span><strong>Проверьте Анкету перед сборкой:</strong> поля Анкеты влияют на вашу задумку!</span>
-                <div style="display:flex;gap:4px">
-                    <button type="button" class="nmf-chip" data-act="open-intake-sheet">${NMF_ICONS.sliders} Проверить</button>
-                    <button type="button" class="nmf-chip nmf-ban" data-act="clear-session-intake" ${sess.frozen ? 'disabled' : ''}>Очистить</button>
-                </div>
-            </div>` : `
             <div style="margin-top:4px;font-size:11px;color:var(--nmf-text-muted)">
-                Чистый лист: ИИ возьмёт 100% сюжета только из текста ниже (без фандомов и тропов Анкеты).
-            </div>`}
+                ${esc(sess.architect.useIntake !== false
+                    ? tx('Усиливается параметрами вашей Главной Анкеты со Стартового экрана (даже если она пустая, сборка сработает чисто).', 'Enhanced by your Main Questionnaire from the Start Screen (works cleanly even if left blank).')
+                    : tx('Чистый лист: ИИ возьмёт 100% сюжета только из текста ниже (без фандомов и тропов Анкеты).', 'Clean slate: AI uses 100% only your text below (ignoring Main Questionnaire).'))}
+            </div>
         </div>
         <div class="nmf-field">
             <label class="nmf-label">Шаблон структуры карточки</label>
@@ -3968,10 +4019,14 @@ async function triggerCandidateArtInBackground(cand, isManual = false, explicitF
     const cfg = getSettings();
     const sess = getActiveSession();
     const prompt = cand.imagePrompt || `${cand.name}, ${cand.appearance || cand.archetype || 'portrait'}`;
+    const isGachaCand = String(cand.id || '').startsWith('gacha_');
+    const worldAnchorForRef = isGachaCand
+        ? (sess?.gacha?.wishPrefs?.fandomOrWorld || '')
+        : (sess?.intake?.fandomName || '');
     const refOpts = buildPortraitRefOptions(
         sess,
         cfg,
-        `${cand.name || ''} ${(cand.tags || []).join(' ')} ${sess?.intake?.fandomName || ''}`,
+        `${cand.name || ''} ${(cand.tags || []).join(' ')} ${worldAnchorForRef}`,
         explicitFusionRefUrls,
     );
     const ctl = new AbortController();
@@ -4613,11 +4668,11 @@ function bindWindowDelegation(win) {
         }
         if (el.dataset.gachaPref && sess) {
             if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
-            if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs(sess.intake);
+            if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs();
             const pk = el.dataset.gachaPref;
             sess.gacha.wishPrefs[pk] = el.value;
             saveSettings();
-            if (['targetType', 'targetGender', 'rating'].includes(pk)) {
+            if (['targetType', 'userGender', 'targetGender', 'rating'].includes(pk)) {
                 renderWindow();
             }
             return;
@@ -5554,10 +5609,12 @@ function bindWindowDelegation(win) {
             saveSettings();
             return renderWindow();
         }
-        if (act === 'open-intake-from-gacha') {
-            state.gachaPrefsOpen = false;
-            state.intakeSheetOpen = true;
-            state.intakeStep = 'style';
+        if (act === 'clear-gacha-prefs') {
+            if (sess.frozen) return;
+            if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
+            sess.gacha.wishPrefs = createDefaultGachaWishPrefs();
+            saveSettings();
+            notifySuccessToast(tx('Анкета Гачи очищена — включена максимальная рандомизация!', 'Gacha Questionnaire cleared — maximum randomization active!'));
             return renderWindow();
         }
         if (act === 'intake-step') {
@@ -6385,7 +6442,8 @@ function bindWindowDelegation(win) {
                 : 'Собираем карточку в слот «Блиц»';
 
             await withBusy(busyLabel, async (signal) => {
-                const req = buildFullCardRequest(sess, brief, cfg.transportMode, { modeContext: 'blitz' });
+                const blitzCtxMode = seedHit?.source === 'gacha' ? 'gacha' : 'blitz';
+                const req = buildFullCardRequest(sess, brief, cfg.transportMode, { modeContext: blitzCtxMode });
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,

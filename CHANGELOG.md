@@ -2,6 +2,15 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.9.2-beta] - 2026-11-21
+
+### Always Launch on Start Screen, Dual Isolated Questionnaires in Point 1 (With Mode Guidance & High-Random Blank Gacha), and Clean Inner Tabs
+- **Start-First Launch (`openForgeDialog`)**: Opening NexusMatch Forge now always greets the user on the **Start / Home Screen (`home`)**, while redundant Questionnaire ribbons and buttons have been removed from inner tabs (`Swipes`, `Gacha`, `Blitz`, `Create`).
+- **Dual Questionnaire Guidance in Point 1 (`renderHomeTab`)**:
+  - **Main User Story Questionnaire**: Clear guidance that starting here is recommended for **Swipes (Tinder)**, while for **Blitz Quiz** and **Idea Mode** it is optional yet fine-tunes and strengthens both modes.
+  - **Additional Gacha Mode Questionnaire**: Added right inside the Point 1 Questionnaire card with `*Если вы хотите поиграть и поколлекционировать карты.` (`*If you want to play and collect cards.`), clarifying that leaving it blank maximizes Gacha randomization.
+- **100% Zero Questionnaire Mixing (`nmf_templates_and_prompts.js` & `nmf_entry.js`)**: Removed `fallbackIntake` inheritance from Gacha Wishes (`userGender`, `targetGender`, `rating`, `fandomOrWorld`, `wishesNote`, `hardBans` are 100% independent), removed `gachaContextLine` from Main Intake, and routed Gacha-seeded Blitz builds/questions and Gacha art reference matching strictly through Gacha Wishes.
+
 ## [1.9.1-beta] - 2026-11-21
 
 ### 4-Point Home Screen Layout (Strong User Questionnaire Spotlight + Point 3 Theme/Gacha Cards + Point 4 Art Spoiler)

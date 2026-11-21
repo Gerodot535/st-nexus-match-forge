@@ -2564,7 +2564,7 @@ test('v1.7.2 Dedicated Gacha Wish Questionnaire Isolation & Cross-Pool Anti-Clon
     const gachaReq = buildGachaSummonRequest(sess, ['кибер-хирург', 'неон', 'шрам'], [4], 'prefill_user_msg');
     assert.equal(gachaReq.user.includes('Вархаммер 40к'), false, 'Tinder fandom must NEVER leak into Gacha');
     assert.equal(gachaReq.user.includes('Империум Нигилус'), false, 'Tinder setting must NEVER leak into Gacha');
-    assert.ok(gachaReq.user.includes('[GACHA BANNER WISH PREFERENCES — ISOLATED FROM TINDER INTAKE]'));
+    assert.ok(gachaReq.user.includes('[GACHA BANNER WISH PREFERENCES — 100% ISOLATED FROM MAIN STORY QUESTIONNAIRE]'));
     assert.ok(gachaReq.user.includes('STRICT ANTI-CLONE & ZERO-DUPLICATE LAW'));
     assert.ok(gachaReq.user.includes('Лион Эль\'Джонсон') && gachaReq.user.includes('Лев Джонсон'));
 
@@ -2750,7 +2750,7 @@ test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vau
     const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js');
 
     // 1. All 4 numbered Points exist on Home Screen & zero "Шаг " labels remain in renderHomeTab
-    assert.ok(entryTxt.includes('Пункт 1. Анкета Юзера и базовая настройка:'));
+    assert.ok(entryTxt.includes('Пункт 1. Анкеты сессии и базовая настройка:'));
     assert.ok(entryTxt.includes('Пункт 2. Выберите режим создания карточки:'));
     assert.ok(entryTxt.includes('Пункт 3. Темы оформления и настройки Гачи:'));
     assert.ok(entryTxt.includes('Пункт 4. Генератор Артов и Обложки:'));
@@ -2772,4 +2772,50 @@ test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vau
     assert.ok(entryTxt.includes('data-act="open-pending-wish-stage"'));
     assert.ok(entryTxt.includes('startWishCometAndFlip'));
     assert.ok(entryTxt.includes('gachaCooldownTickId = setInterval'), 'Gacha cooldown ticker must stay active during RP');
+});
+
+test('v1.9.2 Start-First Launch, Clean Inner Tabs & 100% Zero Mixing Between Main Questionnaire and Gacha Questionnaire', async () => {
+    const { summarizeGachaWishPrefsBlock, summarizeIntakeBlock, buildGachaSummonRequest, buildTinderPreviewRequest } = await import('../modules/nmf_templates_and_prompts.js');
+    const sess = createDefaultSession(1);
+
+    // Populate Main Questionnaire with distinct values
+    sess.intake.fandomName = 'MAIN_ONLY_WITCHER';
+    sess.intake.settingEra = 'MAIN_ERA_1272';
+    sess.intake.tropesWanted = 'MAIN_TROPE_GRUMPY';
+    sess.intake.hardBans = 'MAIN_BAN_LASERS';
+    sess.intake.userGender = 'female';
+    sess.intake.targetGender = 'male';
+    sess.intake.rating = 'sfw';
+
+    // Leave Gacha Questionnaire completely blank -> must activate High-Randomization & zero Main leak!
+    const blankGachaBlock = summarizeGachaWishPrefsBlock(sess);
+    assert.ok(blankGachaBlock.includes('High-Randomization Mode'));
+    assert.equal(blankGachaBlock.includes('MAIN_ONLY_WITCHER'), false);
+    assert.equal(blankGachaBlock.includes('MAIN_ERA_1272'), false);
+    assert.equal(blankGachaBlock.includes('MAIN_TROPE_GRUMPY'), false);
+    assert.equal(blankGachaBlock.includes('MAIN_BAN_LASERS'), false);
+    assert.equal(blankGachaBlock.includes('Female'), false, 'Gacha userGender must not inherit Main userGender');
+    assert.equal(blankGachaBlock.includes('Male'), false, 'Gacha targetGender must not inherit Main targetGender');
+
+    // Populate Gacha Questionnaire with distinct values -> must NEVER leak into Main Questionnaire modes!
+    sess.gacha.tagsInput = 'GACHA_TAG_CYBER + GACHA_TAG_RAIN + GACHA_TAG_BOSS';
+    sess.gacha.wishPrefs.fandomOrWorld = 'GACHA_ONLY_ASTRA';
+    sess.gacha.wishPrefs.wishesNote = 'GACHA_WISH_VILLAIN';
+    sess.gacha.wishPrefs.hardBans = 'GACHA_BAN_MAGIC';
+
+    const gachaReq = buildGachaSummonRequest(sess, ['cyber', 'rain', 'boss'], [5], 'prefill_user_msg');
+    assert.ok(gachaReq.user.includes('GACHA_ONLY_ASTRA'));
+    assert.equal(gachaReq.user.includes('MAIN_ONLY_WITCHER'), false);
+
+    for (const ctxMode of ['swipe', 'blitz', 'architect']) {
+        const mainBlock = summarizeIntakeBlock(sess, { modeContext: ctxMode });
+        assert.ok(mainBlock.includes('MAIN_ONLY_WITCHER'));
+        assert.equal(mainBlock.includes('GACHA_ONLY_ASTRA'), false);
+        assert.equal(mainBlock.includes('GACHA_WISH_VILLAIN'), false);
+        assert.equal(mainBlock.includes('GACHA_BAN_MAGIC'), false);
+        assert.equal(mainBlock.includes('GACHA_TAG_CYBER'), false);
+    }
+    const tinderReq = buildTinderPreviewRequest(sess, 1, 'prefill_user_msg');
+    assert.ok(tinderReq.user.includes('MAIN_ONLY_WITCHER'));
+    assert.equal(tinderReq.user.includes('GACHA_ONLY_ASTRA'), false);
 });
