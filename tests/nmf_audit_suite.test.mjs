@@ -9,8 +9,34 @@ import {
     FULL_CARD_JSON_SCHEMA,
     TINDER_PREVIEW_JSON_SCHEMA,
     BLITZ_QUESTIONS_JSON_SCHEMA,
+    GACHA_CYCLE_LIMIT,
     createDefaultSession,
     normalizeAndMigrateSettings,
+    resolveUserLanguageSpec,
+    resolveCardLanguageSpec,
+    sanitizeCardMetaPollution,
+    parseGachaPlusTags,
+    rollGachaCycleRarities,
+    computeSacrificeResetGain,
+    computeSacrificeWishGain,
+    THEMED_SACRIFICE_WARNINGS,
+    getThemedSacrificeWarning,
+    createDefaultGachaWallet,
+    syncGachaWalletState,
+    spendGachaWalletWishes,
+    collectSessionKnownCharacterNames,
+    buildFlexibleAvatarArtMechanismRule,
+    buildVisualPromptRefinementRequest,
+    parseVisualPromptRefinementResponse,
+    buildCardTranslationRequest,
+    parseCardTranslationResponse,
+    buildGachaSummonRequest,
+    parseGachaSummonResponse,
+    buildGachaFusionRequest,
+    parseGachaFusionResponse,
+    buildCleanBriefFromEntity,
+    listBlitzSelectableCandidates,
+    resolveBlitzSeedCandidate,
     extractJsonLoose,
     buildFullCardRequest,
     parseFullCardResponse,
@@ -18,6 +44,8 @@ import {
     parseTinderPreviewResponse,
     buildBlitzQuestionsRequest,
     parseBlitzQuestionsResponse,
+    buildAuReworkQuestionsRequest,
+    buildReworkCardRequest,
 } from '../modules/nmf_templates_and_prompts.js';
 
 import {
@@ -34,6 +62,8 @@ import {
     embedCharaChunkIntoPng,
     extractCharaJsonFromPng,
     stripPngCharaChunkBytes,
+    triggerDownload,
+    dataUrlToPureBlob,
     importCardIntoTavern,
     fetchFullTavernCharacter,
     updateExistingCardInTavern,
@@ -42,7 +72,11 @@ import {
     resolveIsolatedImageConfig,
     validateResolvedImageConfig,
     listImageExtensionBuckets,
+    listSillyImagesReferenceCatalog,
+    matchSillyImagesReferencesByText,
+    computeLosslessCropGeometry,
     generateCharacterPortrait,
+    stripActiveChatMacrosFromPresetBlock,
     buildPresetAlignedMessages,
     runLlmGeneration,
     detectPocketCodex,
@@ -55,6 +89,7 @@ import {
     MAX_EMERGENCY_INLINE_ITEMS,
     isMediaDurablyPersisted,
     resolveEntityAvatarUrl,
+    resolveEntityDisplayUrl,
     hydrateSessionsMedia,
     migrateInlineSessionMediaToVault,
     pruneOrphanedMedia,
@@ -68,6 +103,7 @@ import {
     safeImgSrc,
     getSettings,
     saveSettings,
+    buildProceduralCoverDataUrl,
     renderWindow,
     withBusy,
     requestCancelBusyTask,
@@ -447,6 +483,7 @@ test('Static Audit Hygiene: no internal /script*.js imports, no stopGeneration()
         'nmf_entry.js',
         'modules/nmf_card_io_and_art.js',
         'modules/nmf_templates_and_prompts.js',
+        'modules/nmf_i18n.js',
         'modules/nmf_themes_and_icons.js',
         'modules/nmf_media_vault.js',
     ];
@@ -2028,4 +2065,711 @@ test('Audit #3 P2-01 Regression: clear-avatar writes verified monogram placehold
         clearMemoryVaultForTests({ closeDb: true });
         setTestTavernContext(null);
     }
+});
+
+test('Lossless 4K Pipeline: Zero image compression, no WebP/896px downscaling in code, and bit-exact 4K PNG pass-through', async () => {
+    const entrySrc = fs.readFileSync(path.join(REPO_ROOT, 'nmf_entry.js'), 'utf8');
+    assert.equal(entrySrc.includes('image/webp'), false, 'Extension must NEVER re-encode user photos to lossy WebP');
+    assert.equal(entrySrc.includes('compressImageFileToDataUrl'), false, 'Legacy 896px downscaler must be completely removed');
+
+    // Construct a structurally valid 3072x4096 (4K portrait, 3:4) PNG header + IDAT + IEND and verify bit-for-bit pass-through
+    const pngBase = await ensurePngBytes('', '4K_PROBE', '#1de9b6');
+    const hiResPng = new Uint8Array(pngBase);
+    // Patch IHDR width = 3072 (0x00000C00), height = 4096 (0x00001000) and recompute IHDR CRC isn't needed by structural check,
+    // verify exact byte equality on both 'native' and matching '3:4' aspect ratio!
+    hiResPng[16] = 0x00; hiResPng[17] = 0x00; hiResPng[18] = 0x0c; hiResPng[19] = 0x00;
+    hiResPng[20] = 0x00; hiResPng[21] = 0x00; hiResPng[22] = 0x10; hiResPng[23] = 0x00;
+    const hiResDataUrl = 'data:image/png;base64,' + Buffer.from(hiResPng).toString('base64');
+
+    const outNative = await ensurePngBytes(hiResDataUrl, 'Hero', '#1de9b6', { aspectRatio: 'native' });
+    const outMatching34 = await ensurePngBytes(hiResDataUrl, 'Hero', '#1de9b6', { aspectRatio: '3:4', cropFocus: 'top' });
+
+    assert.deepEqual(outNative, hiResPng, 'Native mode preserves 100% bit-identical 3072x4096 PNG bytes');
+    assert.deepEqual(outMatching34, hiResPng, 'Matching 3:4 mode bypasses canvas and preserves 100% bit-identical 3072x4096 PNG bytes');
+});
+
+test('v1.5.0 UX Upgrade: Modal-safe triggerDownload inside <dialog>, pure art blob, selectable Blitz count, Zero-Anachronism AU Quiz, and single unified visualizer', async () => {
+    // 1. Selectable Blitz count (e.g. 15 questions instead of hardcoded 10)
+    const sess = createDefaultSession(1);
+    sess.blitz.questionCount = 15;
+    const blitzReq = buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg');
+    assert.ok(blitzReq.user.includes('Generate 15 '), 'Blitz request must honor selected questionCount = 15');
+
+    // 2. AU Adaptation Quiz + Zero-Anachronism Rework prompt with user answers (King -> 1940s Mafia)
+    sess.rework.targetSettingEra = '1940s Chicago Mafia';
+    sess.rework.questionCount = 7;
+    const kingSource = {
+        name: 'King Aldric',
+        description: 'Medieval king surrounded by forest druids and wielding a runed battle-axe.',
+        personality: 'Cold, commanding, loyal to his inner circle.',
+        scenario: 'Throne room war council.',
+    };
+    const auQReq = buildAuReworkQuestionsRequest(sess, kingSource, -1, 'prefill_user_msg');
+    assert.ok(auQReq.user.includes('Generate 7 sharp, concrete AU adaptation question(s)'));
+    assert.ok(auQReq.user.includes('1940s Chicago Mafia'));
+
+    sess.rework.questions = [
+        {
+            id: 'auq_1',
+            question: 'Во что превратим совет друидов и боевой топор?',
+            options: [],
+            answer: 'Друиды — теневые консильери и подкупленные судьи; топор — гравированный Томми-ган в футляре от скрипки.',
+            skipped: false,
+        },
+    ];
+    const rwReq = buildReworkCardRequest(sess, kingSource, 'prefill_user_msg');
+    assert.ok(rwReq.user.includes('ZERO ANACHRONISMS & TOTAL WORLD TRANSLATION LAW'));
+    assert.ok(rwReq.user.includes('Томми-ган в футляре от скрипки'));
+
+    // 3. Pure artwork blob extraction for Lightbox download
+    const samplePng = await ensurePngBytes('', 'ART', '#e62e45');
+    const sampleUrl = 'data:image/png;base64,' + Buffer.from(samplePng).toString('base64');
+    const pure = dataUrlToPureBlob(sampleUrl);
+    assert.equal(pure.ext, 'png');
+    assert.equal(pure.blob.size, samplePng.byteLength);
+
+    // 4. Modal-safe triggerDownload appends inside #nmf-dialog (not inert document.body)
+    const origDoc = globalThis.document;
+    let appendedInsideDialog = false;
+    let clickedAnchor = false;
+    try {
+        const mockDialog = {
+            appendChild: (el) => {
+                appendedInsideDialog = el.download === 'Gojo.png';
+            },
+        };
+        globalThis.document = {
+            getElementById: (id) => (id === 'nmf-dialog' ? mockDialog : null),
+            querySelector: () => mockDialog,
+            body: { appendChild: () => { throw new Error('Must NOT append to inert document.body when #nmf-dialog exists!'); } },
+            createElement: () => ({
+                style: {},
+                click: () => { clickedAnchor = true; },
+                remove: () => {},
+            }),
+        };
+        const ok = triggerDownload(pure.blob, 'Gojo.png');
+        assert.equal(ok, true);
+        assert.equal(appendedInsideDialog, true);
+        assert.equal(clickedAnchor, true);
+    } finally {
+        globalThis.document = origDoc;
+    }
+});
+
+test('v1.7.0 Dual Languages (User Preview/Notes vs AI Card) & Strict Card Meta-Purity', () => {
+    const migrated = normalizeAndMigrateSettings({
+        settingsSchemaVersion: 2,
+        sessions: [
+            {
+                id: 's_legacy',
+                title: 'Legacy',
+                intake: { userLanguage: '{{Русский}}', cardLanguage: '{{English}}' },
+            },
+        ],
+    });
+    const mIntake = migrated.settings.sessions[0].intake;
+    // Accidental braces around plain language names are unwrapped automatically!
+    assert.equal(mIntake.userLanguage, 'Русский');
+    assert.equal(mIntake.cardLanguage, 'English');
+
+    const sess = createDefaultSession(1);
+    sess.intake.userLanguage = 'Русский';
+    sess.intake.cardLanguage = 'English';
+
+    assert.equal(resolveUserLanguageSpec(sess.intake).shortLabel, 'Русский');
+    assert.equal(resolveCardLanguageSpec(sess.intake).shortLabel, 'English');
+
+    const blitzReq = buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg');
+    assert.ok(blitzReq.user.includes('Русский'), 'Blitz questions must use userLanguage');
+
+    // Swipe previews are read by the user -> Русский, while AI card fields -> English, and Creator Notes -> Русский!
+    const swipeReq = buildTinderPreviewRequest(sess, 1, 'prefill_user_msg');
+    assert.ok(swipeReq.user.includes('Preview Display Language (for name, archetype, pitch, looks, quote, tags — read by the user): Русский'));
+
+    const fullReq = buildFullCardRequest(sess, 'Test hero', 'prefill_user_msg');
+    assert.ok(fullReq.user.includes('Target Output Language for AI Card Fields (Description, Personality, Scenario, First Message, Dialogue): English'));
+    assert.ok(fullReq.user.includes('Target Language for Human-Facing Creator Notes & Summaries: Русский'));
+    assert.equal(fullReq.user.includes('[[NMF_DESC]]Full Description[[/NMF_DESC]]'), true);
+    assert.ok(fullReq.user.includes('META-PURITY LAW'));
+
+    const pollutedLlmOutput = [
+        '[[NMF_NAME]]Kaelen Vance [5\u2605 SSR][[/NMF_NAME]]',
+        '[[NMF_DESC]]Ruthless syndicate strategist under neon rain.\n(Word count: 612 words)\nRarity: SSR[[/NMF_DESC]]',
+        '[[NMF_PERSONALITY]]Cold humor, observant (45 words)[[/NMF_PERSONALITY]]',
+        '[[NMF_SCENARIO]]Midnight docks.[[/NMF_SCENARIO]]',
+        '[[NMF_FIRST_MES]]He flips a silver lighter in the rain. [~280 words][[/NMF_FIRST_MES]]',
+        '[[NMF_TAGS]]mafia, scar, 5\u2605, SSR, 600 words, rain[[/NMF_TAGS]]',
+        '[[NMF_IMG_PROMPT]]SCENE: Chest-up three-quarter portrait...[[/NMF_IMG_PROMPT]]',
+    ].join('\n');
+
+    const parsed = parseFullCardResponse(pollutedLlmOutput, 'prefill_user_msg', 'macro');
+    assert.equal(parsed.name, 'Kaelen Vance');
+    assert.equal(parsed.description.includes('Word count'), false);
+    assert.equal(parsed.description.includes('Rarity:'), false);
+    assert.equal(parsed.personality.includes('45 words'), false);
+    assert.equal(parsed.first_mes.includes('280 words'), false);
+    assert.equal(parsed.tags, 'mafia, scar, rain');
+    assert.equal(sanitizeCardMetaPollution('Stars shone in the night sky.'), 'Stars shone in the night sky.');
+});
+
+test('v1.7.0 Honest 1-5 Star External Randomizer (Preserving Role & Looks), Sacrifice & Alchemy Fusion', () => {
+    const tags = parseGachaPlusTags('босс мафии + шрам + холодный юмор + дождь');
+    assert.deepEqual(tags, ['босс мафии', 'шрам', 'холодный юмор', 'дождь']);
+
+    // Honest 1-5 distribution: high rng (0.95) -> 1 star, mid (0.20) -> 3 stars, ultra-low (0.01) -> 5 stars
+    const seq = [0.95, 0.20, 0.01];
+    let i = 0;
+    const roll = rollGachaCycleRarities(3, 0, () => seq[i++], { maxCycleLimit: 10, startPitySince4Plus: 0 });
+    assert.deepEqual(roll.rarities, [1, 3, 5]);
+    assert.equal(roll.nextCycleCount, 3);
+
+    // 10th consecutive pull without 4+ guarantees 4+ star
+    const pityRoll = rollGachaCycleRarities(1, 9, () => 0.99, { maxCycleLimit: 10, startPitySince4Plus: 9 });
+    assert.equal(pityRoll.rarities[0] >= 4, true);
+    assert.equal(pityRoll.hitCycleCap, true);
+
+    // Sacrifice charges: 1 star -> +1 reset, 2 stars -> +2 resets, 5 stars -> +5 resets
+    assert.equal(computeSacrificeResetGain(1), 1);
+    assert.equal(computeSacrificeResetGain(2), 2);
+    assert.equal(computeSacrificeResetGain(5), 5);
+
+    const sess = createDefaultSession(1);
+    const sumReq = buildGachaSummonRequest(sess, tags, [1, 5], 'prefill_user_msg');
+    assert.ok(sumReq.user.includes('NEVER downgrade their appearance or strip their requested title!'));
+    assert.ok(sumReq.user.includes('APEX / HYPER-OP SCALE'));
+
+    const rawDrops = [
+        '[[NMF_DROP]]',
+        '[[NMF_D_NAME]]Рико Веронезе, 26[[/NMF_D_NAME]]',
+        '[[NMF_D_EPITHET]]Босс Тупиковой Аллеи[[/NMF_D_EPITHET]]',
+        '[[NMF_D_ARCHETYPE]]Главарь мелкой уличной банды из 4 человек[[/NMF_D_ARCHETYPE]]',
+        '[[NMF_D_PITCH]]Бедный, но дерзкий босс крошечной шайки с холодным юмором.[[/NMF_D_PITCH]]',
+        '[[NMF_D_LOOKS]]Острый взгляд, шрам на брови и плащ под дождём.[[/NMF_D_LOOKS]]',
+        '[[NMF_D_QUOTE]]В этом переулке главный всё ещё я.[[/NMF_D_QUOTE]]',
+        '[[NMF_D_TAGS]]мафия, шрам, дождь[[/NMF_D_TAGS]]',
+        '[[NMF_D_IMG]]SCENE: Three-quarter portrait...[[/NMF_D_IMG]]',
+        '[[/NMF_DROP]]',
+        '[[NMF_DROP]]',
+        '[[NMF_D_NAME]]Данте Моретти, 36[[/NMF_D_NAME]]',
+        '[[NMF_D_EPITHET]]Император Дождливых Доков[[/NMF_D_EPITHET]]',
+        '[[NMF_D_ARCHETYPE]]Абсолютный владыка международного синдиката[[/NMF_D_ARCHETYPE]]',
+        '[[NMF_D_PITCH]]Вершит судьбы целых городов одним росчерком пера.[[/NMF_D_PITCH]]',
+        '[[NMF_D_LOOKS]]Высокий брюнет со шрамом через бровь.[[/NMF_D_LOOKS]]',
+        '[[NMF_D_QUOTE]]Зонт тебе не поможет.[[/NMF_D_QUOTE]]',
+        '[[NMF_D_TAGS]]синдикат, власть, дождь[[/NMF_D_TAGS]]',
+        '[[NMF_D_IMG]]SCENE: Low-angle waist-up portrait...[[/NMF_D_IMG]]',
+        '[[/NMF_DROP]]',
+    ].join('\n');
+
+    const drops = parseGachaSummonResponse(rawDrops, [1, 5], tags, 'macro');
+    assert.equal(drops[0].stars, 1);
+    assert.equal(drops[1].stars, 5);
+
+    const fused = parseGachaFusionResponse(
+        '[[NMF_DROP]][[NMF_D_NAME]]Юлиан Кроу, 31[[/NMF_D_NAME]][[NMF_D_EPITHET]]Арбитр Полуночи[[/NMF_D_EPITHET]][[NMF_D_ARCHETYPE]]Теневой посредник[[/NMF_D_ARCHETYPE]][[NMF_D_PITCH]]Новая цельная личность.[[/NMF_D_PITCH]][[NMF_D_LOOKS]]Серебристые пряди.[[/NMF_D_LOOKS]][[NMF_D_QUOTE]]Сделка закрыта.[[/NMF_D_QUOTE]][[NMF_D_TAGS]]нуар, арбитр[[/NMF_D_TAGS]][[NMF_D_IMG]]SCENE: Portrait...[[/NMF_D_IMG]][[/NMF_DROP]]',
+        drops,
+        'macro',
+    );
+    assert.equal(fused.stars >= 3, true);
+    assert.deepEqual(fused.fusedFromNames, ['Рико Веронезе', 'Данте Моретти']);
+});
+
+test('v1.6.0 SillyImages v3.0.0-beta.1 Read-Only Appearance References & Gemini 2.5/3.1 + xAI /edits Parity', async () => {
+    const samplePng = await ensurePngBytes('', 'REF', '#1de9b6');
+    const refDataUrl = 'data:image/png;base64,' + Buffer.from(samplePng).toString('base64');
+
+    const siV3Settings = {
+        enabled: true,
+        apiType: 'gemini',
+        endpoint: 'https://generativelanguage.googleapis.com',
+        apiKey: 'gem-key-123',
+        model: 'gemini-2.5-flash-image',
+        aspectRatio: '1:1',
+        imageSize: '2K',
+        refInstructionEnabled: true,
+        sendRefDescriptions: true,
+        lorebooks: [
+            {
+                id: 'lb_canon',
+                name: 'JJK Refs',
+                enabled: true,
+                refs: [
+                    {
+                        id: 'r_gojo',
+                        name: 'Gojo Satoru, Годжо',
+                        description: 'white hair, six eyes, blindfold',
+                        imagePath: refDataUrl,
+                        enabled: true,
+                        priority: 10,
+                    },
+                ],
+            },
+        ],
+        characterReferenceLibrary: {
+            characters: {
+                'avatar:astarion.png': {
+                    displayName: 'Astarion',
+                    primary: { enabled: true, imagePath: refDataUrl, description: 'silver curls, crimson eyes' },
+                    appearanceItems: [],
+                },
+            },
+        },
+    };
+    const beforeSnapshot = JSON.stringify(siV3Settings);
+
+    setTestTavernContext({
+        extensionSettings: {
+            inline_image_gen: siV3Settings,
+            disabledExtensions: [],
+        },
+    });
+
+    const catalog = listSillyImagesReferenceCatalog('auto');
+    assert.equal(catalog.length, 2);
+    const matched = matchSillyImagesReferencesByText('auto', 'Portrait of Годжо in 1940s suit');
+    assert.equal(matched.length, 1);
+    assert.equal(matched[0].description, 'white hair, six eyes, blindfold');
+
+    const origFetch = globalThis.fetch;
+    let capturedUrl = '';
+    let capturedBody = null;
+    try {
+        globalThis.fetch = async (url, init) => {
+            capturedUrl = String(url);
+            capturedBody = JSON.parse(init.body);
+            return new Response(JSON.stringify({
+                candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from(samplePng).toString('base64') } }] } }],
+            }), { status: 200 });
+        };
+
+        const out = await generateCharacterPortrait('1940s noir portrait', {
+            imageSource: 'inline_image_gen',
+            aspectRatio: '1:1',
+            refMode: 'auto_lorebook',
+            refMatchContext: 'Годжо',
+        });
+        assert.ok(out.startsWith('data:image/png;base64,'));
+        assert.ok(capturedUrl.includes('gemini-2.5-flash-image:generateContent'));
+        // gemini-2.5-flash-image MUST NOT receive imageSize (v3.0 capability rule!), while receiving inlineData ref!
+        assert.equal(capturedBody.generationConfig.imageConfig.imageSize, undefined);
+        assert.equal(capturedBody.generationConfig.imageConfig.aspectRatio, '1:1');
+        assert.equal(capturedBody.contents[0].parts.some((p) => Boolean(p.inlineData?.data)), true);
+        // Zero mutation of SillyImages settings!
+        assert.equal(JSON.stringify(siV3Settings), beforeSnapshot);
+    } finally {
+        globalThis.fetch = origFetch;
+        setTestTavernContext(null);
+    }
+});
+
+test('v1.7.0 Preset Macro Leak Sanitizer, Flexible <ART_MECHANISM> (Group/Artifact/World), Negatives, Method Isolation & AI Translator', () => {
+    // 1. Custom preset blocks with hardcoded {{description}}, {{personality}}, {{scenario}}, {{worldInfoBefore}} are scrubbed cleanly
+    const dirtyPresetBlock = `You are an elite writer.\n<char_info>{{description}}\n{{personality}}</char_info>\n[Scenario: {{scenario}}]\n{{worldInfoBefore}}\nStay vivid!`;
+    const cleanedBlock = stripActiveChatMacrosFromPresetBlock(dirtyPresetBlock);
+    assert.equal(cleanedBlock.includes('{{description}}'), false);
+    assert.equal(cleanedBlock.includes('{{personality}}'), false);
+    assert.equal(cleanedBlock.includes('{{scenario}}'), false);
+    assert.equal(cleanedBlock.includes('{{worldInfoBefore}}'), false);
+    assert.ok(cleanedBlock.includes('You are an elite writer.'));
+    assert.ok(cleanedBlock.includes('Stay vivid!'));
+
+    // 2. Flexible <ART_MECHANISM> adapts to Duo/Group, Artifact/Object, and World without medium words
+    const groupRule = buildFlexibleAvatarArtMechanismRule({ originType: 'duo_group' });
+    assert.ok(groupRule.includes('FIGURE 1 (NAME):') && groupRule.includes('FIGURE 2 (NAME):') && groupRule.includes('INTERACTION:'));
+
+    const objRule = buildFlexibleAvatarArtMechanismRule({ originType: 'artifact_object' });
+    assert.ok(objRule.includes('CHARACTERS IN THE IMAGE: no.') && objRule.includes('OBJECT (NAME):'));
+
+    // 3. Method Isolation: Architect ignores Tinder dislikes & Gacha tags; Blitz defaults Tinder=ON, Gacha=OFF
+    const sess = createDefaultSession(1);
+    sess.tinder.dislikedTags = ['вампиры'];
+    sess.gacha.tagsInput = 'неон + дождь + катана';
+
+    const archSummary = buildFullCardRequest(sess, 'Cyber detective', 'prefill_user_msg', { modeContext: 'architect' }).user;
+    assert.equal(archSummary.includes('вампиры'), false, 'Architect must be isolated from Tinder dislikes');
+    assert.equal(archSummary.includes('неон + дождь + катана'), false, 'Architect must be isolated from Gacha tags');
+
+    const blitzDefault = buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg').user;
+    assert.equal(blitzDefault.includes('вампиры'), false, 'Blitz never injects Tinder anti-tags');
+    assert.equal(blitzDefault.includes('неон + дождь + катана'), false, 'Blitz excludes Gacha tags by default');
+
+    // 4. AI Card Translator round-trip
+    const trReq = buildCardTranslationRequest({ name: 'Vance', description: 'Cold boss.', first_mes: 'Hello.' }, 'Русский', 'prefill_user_msg');
+    assert.ok(trReq.user.includes('CARD V2 TRANSLATION TASK -> Русский'));
+    const trParsed = parseCardTranslationResponse(
+        '[[NMF_NAME]]Вэнс[[/NMF_NAME]][[NMF_DESC]]Холодный босс.[[/NMF_DESC]][[NMF_FIRST_MES]]Привет.[[/NMF_FIRST_MES]]',
+        { name: 'Vance' },
+        'Русский',
+        'macro',
+    );
+    assert.equal(trParsed.lang, 'Русский');
+    assert.equal(trParsed.name, 'Вэнс');
+    assert.equal(trParsed.description, 'Холодный босс.');
+});
+
+test('v1.7.1 Real Tinder/Gacha -> Blitz Character Selection, Fast Blob Display URLs, Zero Blur & Aspect-Aware Grid', async () => {
+    const sess = createDefaultSession(1);
+    sess.tinder.liked = [
+        {
+            id: 'cand_lev',
+            name: 'Лев Джонсон, 32',
+            archetype: 'Хладнокровный детектив убойного отдела',
+            pitch: 'Скрывает улику старого дела за пачкой дешёвых сигарет.',
+            appearance: 'Высокий, шрам на скуле, серое пальто.',
+            tags: ['детектив', 'нуар'],
+            imagePrompt: 'SCENE: Rainy alley...',
+        },
+    ];
+    sess.gacha.collection = [
+        {
+            id: 'gacha_garran',
+            name: 'Garran, 36',
+            stars: 4,
+            epithet: 'Cinder-Crowned Crucible Warden',
+            pitch: 'Undefeated pit-warden.',
+            appearance: 'Towering scarred bear-warrior.',
+            tags: ['warden'],
+        },
+    ];
+
+    // 1. Default Blitz selects liked Tinder hero ("Лев Джонсон, 32") and excludes Gacha while useGachaContext=false
+    const candsTinderOnly = listBlitzSelectableCandidates(sess);
+    assert.equal(candsTinderOnly.length, 1);
+    assert.equal(candsTinderOnly[0].entity.name, 'Лев Джонсон, 32');
+
+    const seed1 = resolveBlitzSeedCandidate(sess);
+    assert.equal(seed1?.entity.name, 'Лев Джонсон, 32');
+
+    const blitzPromptLev = buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg').user;
+    assert.ok(blitzPromptLev.includes('[SELECTED CHARACTER SEED TO DEEPEN IN THIS BLITZ — MANDATORY SUBJECT]'));
+    assert.ok(blitzPromptLev.includes('Лев Джонсон, 32'));
+    assert.ok(blitzPromptLev.includes('Хладнокровный детектив убойного отдела'));
+
+    // 2. Opting into Gacha exposes Gacha candidates too, and __none__ builds from scratch
+    sess.blitz.useGachaContext = true;
+    const candsBoth = listBlitzSelectableCandidates(sess);
+    assert.equal(candsBoth.length, 2);
+
+    sess.blitz.selectedCandidateRef = 'gacha:gacha_garran';
+    assert.equal(resolveBlitzSeedCandidate(sess)?.entity.name, 'Garran, 36');
+
+    sess.blitz.selectedCandidateRef = '__none__';
+    assert.equal(resolveBlitzSeedCandidate(sess), null);
+
+    // 3. Fast blob: display URL caching for multi-KB/MB images
+    clearMemoryVaultForTests();
+    const sampleB64 = 'data:image/png;base64,' + Buffer.alloc(6000, 65).toString('base64');
+    const mediaId = await saveMediaDataUrl(sampleB64);
+    const entity = { avatarId: mediaId };
+    const disp1 = resolveEntityDisplayUrl(entity);
+    const disp2 = resolveEntityDisplayUrl(entity);
+    assert.ok(disp1.startsWith('blob:') || disp1.startsWith('data:image/png;base64,'));
+    assert.equal(disp1, disp2, 'Display URL must hit cache on repeated clicks');
+    assert.equal(resolveEntityAvatarUrl(entity), sampleB64, 'Lossless raw DataURL remains 100% intact for export');
+
+    // 4. CSS & Entry checks: zero backdrop-filter blur, zero height:92% sheet double-frames, !important width lock, native/wide grid
+    const cssSrc = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../modules/nmf_themes_and_icons.js'), 'utf8');
+    const entrySrc = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
+    assert.equal(cssSrc.includes('backdrop-filter'), false, 'Zero GPU-heavy backdrop-filter blur layers allowed');
+    assert.equal(entrySrc.includes('style="height:92%"'), false, 'Zero stacked 92% modal sheets creating double top frames');
+    assert.ok(cssSrc.includes('nmf-ratio-native') && cssSrc.includes('nmf-ratio-wide'));
+    assert.ok(cssSrc.includes('50% 6%'));
+});
+
+test('v1.7.2 Gacha Prayer Economy (Sacrifice -> +Wishes, Zero Timer Reset), Unresettable Global Cooldown & 13-Theme Rituals', async () => {
+    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js');
+
+    // 1. Every single one of the 13 themes has its own distinct sinister first-sacrifice warning with hero name & zero emojis
+    const seenTitles = new Set();
+    for (const th of NMF_THEMES) {
+        assert.ok(THEMED_SACRIFICE_WARNINGS[th.id], `Missing sacrifice lore for theme ${th.id}`);
+        const warn = getThemedSacrificeWarning(th.id, 'Тархан, 34', 4);
+        assert.ok(warn.body.includes('Тархан, 34'));
+        assert.equal(warn.wishGain, 4);
+        assert.equal(/[\p{Extended_Pictographic}]/u.test(warn.title + warn.body), false);
+        seenTitles.add(warn.title);
+    }
+    assert.equal(seenTitles.size, 13, 'All 13 theme warnings must have unique titles');
+
+    // 2. Spending all 10 base wishes triggers 2h wall-clock cooldown; sacrificing grants +Wishes WITHOUT resetting cooldown!
+    const t0 = 1_800_000_000_000;
+    const wallet = createDefaultGachaWallet();
+    const s1 = syncGachaWalletState(wallet, { maxCap: 10, timerEnabled: true, nowMs: t0 });
+    assert.equal(s1.totalWishes, 10);
+    assert.equal(s1.coolingDown, false);
+
+    const spend10 = spendGachaWalletWishes(wallet, 5, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: t0 });
+    assert.equal(spend10.spentFree, 5);
+    spendGachaWalletWishes(wallet, 5, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: t0 + 1000 });
+
+    const onCd = syncGachaWalletState(wallet, { maxCap: 10, timerEnabled: true, nowMs: t0 + 5000 });
+    assert.equal(onCd.coolingDown, true);
+    assert.equal(onCd.freeWishesLeft, 0);
+    assert.equal(onCd.totalWishes, 0);
+    const savedCooldownEnd = wallet.cooldownEndsAt;
+    assert.equal(savedCooldownEnd, t0 + 1000 + 120 * 60 * 1000);
+
+    // Sacrifice a 4-star card -> +4 bonusWishes; cooldownEndsAt MUST NOT reset!
+    wallet.bonusWishes += computeSacrificeWishGain(4);
+    const afterSac = syncGachaWalletState(wallet, { maxCap: 10, timerEnabled: true, nowMs: t0 + 10_000 });
+    assert.equal(afterSac.coolingDown, true, '2h base cooldown continues ticking honestly');
+    assert.equal(wallet.cooldownEndsAt, savedCooldownEnd, 'Cooldown timestamp never resets on sacrifice');
+    assert.equal(afterSac.bonusWishes, 4);
+    assert.equal(afterSac.totalWishes, 4, 'Player immediately gets +4 playable Wishes');
+
+    // Player can immediately pull x3 using sacrificial bonusWishes during cooldown!
+    const pullDuringCd = spendGachaWalletWishes(wallet, 3, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: t0 + 20_000 });
+    assert.equal(pullDuringCd.spentTotal, 3);
+    assert.equal(pullDuringCd.spentFree, 0);
+    assert.equal(pullDuringCd.spentBonus, 3);
+    assert.equal(wallet.bonusWishes, 1);
+    assert.equal(wallet.cooldownEndsAt, savedCooldownEnd);
+
+    // After 2 hours pass (even with browser closed), 10 base wishes restore AND leftover +1 bonusWish stays!
+    const after2h = syncGachaWalletState(wallet, { maxCap: 10, timerEnabled: true, nowMs: savedCooldownEnd + 1 });
+    assert.equal(after2h.coolingDown, false);
+    assert.equal(after2h.freeWishesLeft, 10);
+    assert.equal(after2h.bonusWishes, 1);
+    assert.equal(after2h.totalWishes, 11);
+
+    // 3. Legacy v1.7.0 migration converts earned sacrifice resetCharges > 1 into real bonusWishes & keeps global cooldown
+    const legacyCfg = {
+        settingsSchemaVersion: 4,
+        activeSessionId: 's3',
+        sessions: [{
+            id: 's3',
+            title: 'Сессия 3',
+            gacha: { cycleCount: 10, cooldownEndsAt: t0 + 999999, resetCharges: 6 },
+        }],
+    };
+    const migrated = normalizeAndMigrateSettings(legacyCfg).settings;
+    assert.equal(migrated.gachaWallet.bonusWishes, 5, '5 earned sacrifice charges convert to +5 real Wishes');
+    assert.equal(migrated.gachaWallet.cooldownEndsAt, t0 + 999999);
+});
+
+test('v1.7.2 Dedicated Gacha Wish Questionnaire Isolation & Cross-Pool Anti-Clone Guard (No Duplicate Lion/Lev Johnson)', () => {
+    const sess = createDefaultSession(3);
+    // Tinder has Canon Warhammer 40k + Lion El'Jonson in Matches
+    sess.intake.originType = 'canon';
+    sess.intake.fandomName = 'Вархаммер 40к';
+    sess.intake.favFandomHero = 'Лион Эль\'Джонсон';
+    sess.intake.settingEra = 'Империум Нигилус 41к';
+    sess.tinder.liked = [
+        { id: 'c1', name: 'Лион Эль\'Джонсон, 10 000+', archetype: 'Примарх' },
+        { id: 'c2', name: 'Лев Джонсон, 32', archetype: 'Детектив' },
+    ];
+
+    // Gacha wish with completely different tags ("кибер-хирург + неон + шрам")
+    const gachaReq = buildGachaSummonRequest(sess, ['кибер-хирург', 'неон', 'шрам'], [4], 'prefill_user_msg');
+    assert.equal(gachaReq.user.includes('Вархаммер 40к'), false, 'Tinder fandom must NEVER leak into Gacha');
+    assert.equal(gachaReq.user.includes('Империум Нигилус'), false, 'Tinder setting must NEVER leak into Gacha');
+    assert.ok(gachaReq.user.includes('[GACHA BANNER WISH PREFERENCES — ISOLATED FROM TINDER INTAKE]'));
+    assert.ok(gachaReq.user.includes('STRICT ANTI-CLONE & ZERO-DUPLICATE LAW'));
+    assert.ok(gachaReq.user.includes('Лион Эль\'Джонсон') && gachaReq.user.includes('Лев Джонсон'));
+
+    // Expanding a Gacha card into full V2 also uses Gacha wishPrefs (NOT Tinder Warhammer 40k!)
+    sess.gacha.wishPrefs.wishesNote = 'Холодная ирония и закрытая клиника';
+    const fullGachaCardReq = buildFullCardRequest(sess, 'Expand Kael, 29', 'prefill_user_msg', { modeContext: 'gacha' });
+    assert.equal(fullGachaCardReq.user.includes('Вархаммер 40к'), false, 'Full card build from Gacha must stay isolated from Tinder');
+    assert.ok(fullGachaCardReq.user.includes('Холодная ирония и закрытая клиника'));
+
+    // Known character collector allows explicit summon if user literally writes name in "+" tags
+    const filteredIfRequested = collectSessionKnownCharacterNames(sess, [], ['Лев Джонсон', 'нуар', 'дождь']);
+    assert.equal(filteredIfRequested.includes('Лев Джонсон'), false);
+    assert.equal(filteredIfRequested.includes('Лион Эль\'Джонсон'), true);
+});
+
+test('v1.7.3 Instant Art/LLM Cancel, Lossless WYSIWYG Cropper Geometry, Big Dossier & Idea+Intake Switcher', async () => {
+    // 1. WYSIWYG Cropper math: vertical 1000x1500 portrait cropped to 1:1 at 1.25x zoom
+    const geom = computeLosslessCropGeometry(1000, 1500, { aspectRatio: '1:1', zoom: 1.25, panX: 50, panY: 10 });
+    assert.equal(geom.outW, 800);
+    assert.equal(geom.outH, 800);
+    assert.equal(Math.round(geom.sx), 100);
+    assert.equal(Math.round(geom.sy), 70);
+    assert.ok(geom.cssWidthPct > 120 && geom.cssHeightPct > 180);
+
+    // 2. Architect "Idea + Intake" vs "Only Idea"
+    const sess = createDefaultSession(1);
+    sess.intake.fandomName = 'Киберпанк Нео-Токио';
+    sess.intake.tropesWanted = 'телохранитель, дождь';
+
+    const withIntakeReq = buildFullCardRequest(sess, 'Хакер по имени Рэй', 'prefill_user_msg', { modeContext: 'architect', useIntake: true });
+    assert.ok(withIntakeReq.user.includes('Киберпанк Нео-Токио') && withIntakeReq.user.includes('телохранитель'));
+
+    const pureIdeaReq = buildFullCardRequest(sess, 'Хакер по имени Рэй', 'prefill_user_msg', { modeContext: 'architect', useIntake: false });
+    assert.equal(pureIdeaReq.user.includes('Киберпанк Нео-Токио'), false, 'Only-Idea mode must exclude Intake fandom');
+    assert.ok(pureIdeaReq.user.includes('[DIRECT FREE-IDEA MODE'));
+
+    // 3. Instant abort inside generateCharacterPortrait during slow provider call (<30ms response!)
+    setTestTavernContext({
+        extensionSettings: {
+            inline_image_gen: {
+                enabled: true,
+                apiType: 'openai',
+                endpoint: 'https://mock-art.local/v1',
+                apiKey: 'sk-test',
+                model: 'gpt-image-1',
+            },
+        },
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (_url, opts) => new Promise((_res, rej) => {
+        opts?.signal?.addEventListener('abort', () => rej(new Error('Aborted socket')), { once: true });
+    });
+    try {
+        const ctl = new AbortController();
+        const tStart = Date.now();
+        const p = generateCharacterPortrait('SCENE: Noir rain', { imageSource: 'inline_image_gen', signal: ctl.signal });
+        setTimeout(() => ctl.abort(), 15);
+        await assert.rejects(p, /остановлена|отменён/i);
+        assert.ok(Date.now() - tStart < 300, 'Art cancel must reject immediately without retrying');
+    } finally {
+        globalThis.fetch = origFetch;
+    }
+});
+
+test('v1.8.0 Session Home, Live Tags (+ & comma), Visual Prompt Refinement & Mosaic Aspect Persistence', () => {
+    // 1. Gacha tags support both '+' and ',' cleanly without leftover '+' chars
+    assert.deepEqual(parseGachaPlusTags('Босс мафии + Фури + Сила'), ['Босс мафии', 'Фури', 'Сила']);
+    assert.deepEqual(parseGachaPlusTags('киберпанк, дождь, шрам'), ['киберпанк', 'дождь', 'шрам']);
+
+    // 2. New session starts on Home screen (homeCompleted = false), existing session with cards marks homeCompleted = true
+    const freshSess = createDefaultSession(1);
+    assert.equal(freshSess.homeCompleted, false);
+    const migratedCfg = normalizeAndMigrateSettings({
+        settingsSchemaVersion: 5,
+        sessions: [{ id: 's1', title: 'S1', tinder: { liked: [{ id: 'c1', name: 'Vesper' }] } }],
+    }).settings;
+    assert.equal(migratedCfg.sessions[0].homeCompleted, true);
+
+    // 3. Visual Prompt Refinement request & parser
+    const refReq = buildVisualPromptRefinementRequest(
+        { name: 'Vesper Valen', appearance: 'Black lynx crime lord', imagePrompt: 'SCENE: Cellar' },
+        'Добавь золотой монокль и бокал вина',
+        freshSess.intake,
+        'prefill_user_msg',
+    );
+    assert.ok(refReq.user.includes('Добавь золотой монокль и бокал вина'));
+    assert.equal(
+        parseVisualPromptRefinementResponse('[[NMF_IMG_PROMPT]]SCENE: Candlelit cellar...[[/NMF_IMG_PROMPT]]'),
+        'SCENE: Candlelit cellar...',
+    );
+});
+
+test('v1.8.1 Guided Home Screen, Procedural Cover Lifecycle, Zero Prefill/4K Labels & Zero-Bar Cropped CSS', () => {
+    const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
+    const tplTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../modules/nmf_templates_and_prompts.js'), 'utf8');
+    const cssTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../modules/nmf_themes_and_icons.js'), 'utf8');
+
+    // 1. Zero "Prefill" or "в 4K" in user-facing Russian UI strings
+    assert.equal(entryTxt.includes('(Prefill)'), false);
+    assert.equal(tplTxt.includes('(Prefill)'), false);
+    assert.equal(entryTxt.includes('в 4K'), false);
+
+    // 2. Procedural SVG cover generates valid safeImgSrc-approved Data URL for both normal and error states
+    const normalCover = buildProceduralCoverDataUrl({ name: 'Vesper Valen, 28', stars: 4 }, { accentHex: '#e62e45', isError: false });
+    const errorCover = buildProceduralCoverDataUrl({ name: 'Vesper Valen, 28', stars: 4 }, { accentHex: '#e62e45', isError: true });
+    assert.ok(safeImgSrc(normalCover).startsWith('data:image/svg+xml;charset=utf-8,'));
+    assert.ok(safeImgSrc(errorCover).startsWith('data:image/svg+xml;charset=utf-8,'));
+    assert.notEqual(normalCover, errorCover);
+
+    // 3. Cropped zero-bar rule exists & native hero-photo never uses object-fit: contain pillarboxing
+    assert.ok(cssTxt.includes('.nmf-hero-visual.nmf-is-cropped'));
+    assert.equal(cssTxt.includes('max-height: 540px !important;\n    object-fit: contain !important;'), false);
+});
+
+test('v1.9.0 Bilingual UI (RU/EN), Dynamic Placeholder Cover Lang, 39 Themed Unpack Labels, Safe Gacha Resolution, Luck Rigging & Sacrifice Failure', async () => {
+    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js');
+    const { setUiLang, getThemeUnpackCopy, getThemedSacrificeFailMessage } = await import('../modules/nmf_i18n.js');
+    const { sanitizeAspectForProvider } = await import('../modules/nmf_card_io_and_art.js');
+    const { rollSacrificeOutcome } = await import('../modules/nmf_templates_and_prompts.js');
+
+    // 1. All 13 themes have distinct Match, Gacha & Art unpack labels in BOTH RU and EN
+    for (const lang of ['ru', 'en']) {
+        setUiLang(lang);
+        const gachaSet = new Set();
+        const matchSet = new Set();
+        const artSet = new Set();
+        for (const t of NMF_THEMES) {
+            const copy = getThemeUnpackCopy(t.id);
+            assert.ok(copy.matchBtn.length > 3);
+            assert.ok(copy.gachaBtn.length > 3);
+            assert.ok(copy.artBtn.length > 3);
+            gachaSet.add(copy.gachaBtn);
+            matchSet.add(copy.matchBtn);
+            artSet.add(copy.artBtn);
+            const failMsg = getThemedSacrificeFailMessage(t.id, 'Vesper');
+            assert.ok(failMsg.includes('Vesper') && failMsg.includes('0'));
+            if (lang === 'en') {
+                assert.equal(/[А-Яа-яЁё]/.test(copy.matchBtn + copy.gachaBtn + copy.artBtn + failMsg), false, `Zero Cyrillic allowed in EN for theme ${t.id}`);
+            }
+        }
+        assert.equal(gachaSet.size, 13, `All 13 Gacha unpack buttons must be unique in ${lang}`);
+        assert.equal(matchSet.size, 13, `All 13 Match unpack buttons must be unique in ${lang}`);
+        assert.equal(artSet.size, 13, `All 13 Art open buttons must be unique in ${lang}`);
+    }
+
+    // 2. Procedural SVG placeholder dynamically adapts to RU vs EN with zero Russian words in EN!
+    setUiLang('en');
+    const enSvg = decodeURIComponent(buildProceduralCoverDataUrl({ name: 'Vesper Valen', stars: 5 }, { isError: false }).split(',')[1]);
+    assert.ok(enSvg.includes('5 STARS') && enSvg.includes('NO AI ART'));
+    assert.equal(/[А-Яа-яЁё]/.test(enSvg), false, 'English placeholder SVG must contain zero Cyrillic');
+
+    setUiLang('ru');
+    const ruSvg = decodeURIComponent(buildProceduralCoverDataUrl({ name: 'Vesper Valen', stars: 5 }, { isError: false }).split(',')[1]);
+    assert.ok(ruSvg.includes('5 ЗВ.') && ruSvg.includes('БЕЗ ИИ-АРТА'));
+
+    // 3. Per-Gacha safe resolution never breaks NovelAI / Naistera or SillyImages defaults
+    assert.equal(sanitizeAspectForProvider('sillyimages_default', 'novelai'), 'native');
+    assert.equal(sanitizeAspectForProvider('3:4', 'novelai'), '2:3');
+    assert.equal(sanitizeAspectForProvider('4:3', 'naistera'), '3:2');
+    assert.equal(sanitizeAspectForProvider('2:3', 'gemini'), '2:3');
+    assert.equal(sanitizeAspectForProvider('16:9', 'xai'), '16:9');
+
+    // 4. Gacha Luck Rigging & Sacrifice Failure Risk
+    const jackpotRoll = rollGachaCycleRarities(3, 0, () => 0.99, { luckMode: 'jackpot' });
+    assert.deepEqual(jackpotRoll.rarities, [5, 5, 5]);
+    const highRoll = rollGachaCycleRarities(3, 0, () => 0.95, { luckMode: 'high' });
+    assert.ok(highRoll.rarities.every((s) => s >= 3));
+
+    assert.equal(rollSacrificeOutcome({ sacrificeFailEnabled: false, sacrificeFailChance: 50, rngFn: () => 0.01 }).failed, false);
+    assert.equal(rollSacrificeOutcome({ sacrificeFailEnabled: true, sacrificeFailChance: 25, rngFn: () => 0.12 }).failed, true);
+    assert.equal(rollSacrificeOutcome({ sacrificeFailEnabled: true, sacrificeFailChance: 25, rngFn: () => 0.60 }).failed, false);
+
+    // 5. Bundled Rikka Art Studio reveal assets exist and Aspect Ratio warning box is gone
+    const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
+    assert.equal(entryTxt.includes('aspectWarnText'), false);
+    assert.ok(entryTxt.includes('* Необязательно, но будет красиво'));
+    assert.ok(fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../assets/reveal_match.webp')));
+    assert.ok(fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../assets/reveal_altar.webp')));
+});
+
+test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vault Media Isolation Across Prune & 4-Point Home Layout', async () => {
+    const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
+    const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js');
+
+    // 1. All 4 numbered Points exist on Home Screen & zero "Шаг " labels remain in renderHomeTab
+    assert.ok(entryTxt.includes('Пункт 1. Анкета Юзера и базовая настройка:'));
+    assert.ok(entryTxt.includes('Пункт 2. Выберите режим создания карточки:'));
+    assert.ok(entryTxt.includes('Пункт 3. Темы оформления и настройки Гачи:'));
+    assert.ok(entryTxt.includes('Пункт 4. Генератор Артов и Обложки:'));
+
+    // 2. Every pruneOrphanedMedia call in nmf_entry.js passes savedVault (zero bare pruneOrphanedMedia(cfg.sessions) calls!)
+    assert.equal(/pruneOrphanedMedia\(\s*cfg\.sessions\s*\)/.test(entryTxt), false, 'All pruneOrphanedMedia calls must pass savedVault');
+
+    // 3. Vault cards keep independent media IDs collected safely
+    const refs = collectReferencedMediaIds(
+        [{ card: { avatarId: 'm_profile_1' }, cardSlots: {}, tinder: {}, gacha: {} }],
+        [],
+        [{ avatarId: 'm_vault_independent_1', originalAvatarId: 'm_vault_orig_1' }],
+    );
+    assert.equal(refs.has('m_profile_1'), true);
+    assert.equal(refs.has('m_vault_independent_1'), true);
+    assert.equal(refs.has('m_vault_orig_1'), true);
+
+    // 4. Minimized Gacha Shade never auto-consumes pendingWishReveal inside renderWindow()
+    assert.ok(entryTxt.includes('data-act="open-pending-wish-stage"'));
+    assert.ok(entryTxt.includes('startWishCometAndFlip'));
+    assert.ok(entryTxt.includes('gachaCooldownTickId = setInterval'), 'Gacha cooldown ticker must stay active during RP');
 });

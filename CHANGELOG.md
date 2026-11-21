@@ -2,6 +2,101 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.9.1-beta] - 2026-11-21
+
+### 4-Point Home Screen Layout (Strong User Questionnaire Spotlight + Point 3 Theme/Gacha Cards + Point 4 Art Spoiler)
+- **4-Point Home Structure (`renderHomeTab`)**: Replaced step labels with clean numbered **Points (`Пункт 1`..`Пункт 4` / `Point 1`..`Point 4`)**:
+  - **Point 1**: Strong visual spotlight on **User Story Questionnaire (`Сюжетная Анкета Юзера`)** + `*Required: Card Template & AI Mode`.
+  - **Point 2**: 2x2 Creation Mode cards (`NexusMatch Swipes`, `Gacha Summon`, `Blitz Quiz`, `Idea / AU`).
+  - **Point 3**: **Themes & Language** and **Gacha Settings** styled in the exact same accent-striped `.nmf-home-mode-btn` card grid.
+  - **Point 4**: **Artwork & Cover Generator** placed strictly inside a collapsible **Spoiler** (`* Необязательно, но будет красиво` / `* Optional, but makes it pretty`) rather than a card.
+
+## [1.9.0-beta] - 2026-11-21
+
+### Uniform Neutral Home Cards, Full Bilingual UI (RU / EN + Dynamic SVG Covers), Click-Triggered Sealed Unpack Stages (39 Themed Labels + Custom Art), Per-Gacha Safe Resolution, Luck Rigging, Sacrifice Failure Risk, Living Altar Ritual & Custom Gender Fix
+- **Uniform Neutral Home Cards (`renderHomeTab`)**: Unified header buttons and consolidated all settings onto the Home Screen as cohesive cards: **Sessions & Switching** (inline rename, switch, create, pause), **`*Required` Template & AI Mode**, **Theme & App Language (`RU / EN`)**, **Story Questionnaire**, **Gacha, Luck & Altar Rules**, **Creation Modes**, and the bottom art spoiler **`* Необязательно, но будет красиво` (`* Optional, but makes it pretty`)** with the redundant Aspect Ratio warning removed while keeping Collection & Vault mosaic tiles intact.
+- **Full Bilingual Localization (`modules/nmf_i18n.js`) + Dynamic Placeholder Covers**: Complete `RU / EN` switch translating every tab, modal, guide, tooltip, and dynamically updating all inscriptions inside procedural SVG covers (`5 STARS · COLLECTIBLE CARD`, `NO AI ART · UPLOAD PHOTO ANYTIME`, `RENDER INTERRUPTED`).
+- **Click-Triggered Sealed Unpack & Reveal Stages (`assets/reveal_match.webp` & `assets/reveal_altar.webp`)**: Added two painterly reveal backdrops (velvet spotlight stage for NexusMatch and starfall altar for Prayers) with **39 unique themed button inscriptions** (13 themes × Match, Gacha `Unpack Card`, and Fresh Art `Open Image`) so animations play reliably on user click without straining the mobile browser.
+- **Per-Gacha Safe Resolution, Luck Rigging, Sacrifice Failure & Living Altar**: Added read-only provider-safe resolution selection per Gacha (and per Gacha card) without mutating `SillyImages`, Gacha Luck Rigging (`fair`, `soft`, `high`, `jackpot`), optional **Sacrifice Failure Risk** (`15%–50%` chance for the Altar to consume the card for `0` Prayers), live animated Altar of Fusion block during synthesis, and fixed custom gender input (`Своё...` / `Custom...`) immediately appearing on `<select>` change.
+
+## [1.8.1-beta] - 2026-11-21
+
+### Guided Home Screen (*Mandatory Format & AI Mode + Optional Art Spoiler), Procedural Cover Lifecycle, Manual Upload Everywhere, Zero-Bar Cropping & Zero "Prefill"/"4K" Labels
+- **Guided Home Screen Setup (`renderHomeTab`)**: Placed **`*Обязательно для стабильной работы`** directly on the Session Home Screen with interactive buttons and instant beginner-friendly explanations for AI Send Mode (`Через пресет Таверны` vs `Строгая JSON-схема`), all 8 Card/Dossier Templates, and Word Counts — removing them completely from the Settings gear menu.
+- **Optional Art Spoiler on Home Screen + Manual Upload in All Modes**: Added an optional collapsible Art Generator section on the Home Screen clarifying that AI art is optional, plus **`Своё фото`** manual image upload buttons across Swipe Deck, Gacha Wish Reveal, Big Character Dossiers (Matches/Gacha/Passed), and Profile Editor.
+- **Procedural Vector Cover Lifecycle (`buildProceduralCoverDataUrl`)**: Cards without AI art now display a sharp theme-tinted geometric monogram cover; during active rendering the cover disappears cleanly; on generation failure an emergency error cover appears (like SillyImages) and automatically vanishes once a valid image is generated or uploaded.
+- **Zero-Bar Cropped Portraits & Clean Wording**: Removed `max-height: 540px` + `object-fit: contain` pillarboxing on cropped portraits (`.nmf-is-cropped`), removed "4K" wording from the crop save button, and removed all "Prefill" mentions from UI labels.
+
+## [1.8.0-beta] - 2026-11-21
+
+### Session Home Launchpad, Collapsed Settings Menu (#1 Card Template), Live Tag Chips, 4K Async Crop Feedback, Visual Prompt Refiner + Auto-Art, Puzzle Mosaic Grid & Deferred Reveal Animations
+- **Session Home Launchpad & Clear Intake (`nmf_entry.js`, `nmf_templates_and_prompts.js`)**: Added a guided **Home Screen (`Старт`)** automatically greeting every new session (plus a header Home icon), featuring an upfront notice that Card Templates moved to Settings #1, a 1-tap **Очистить анкету** button, and clear mode launch cards.
+- **Clean Collapsed Settings Menu (#1 Card Template)**: All Settings sections now open collapsed as a clean accordion menu, with **1. Шаблон Анкеты / Карточки и Объём Текста** placed first (and also selectable directly inside `Создать -> Из задумки`).
+- **Live Gacha Tag Chips & End-to-End Tag Audit**: Fixed `tagsInput` previously re-rendering chips only when tag count changed (leaving partial letters like `+ С`); chips now update on every keystroke, support `+` and comma separators, auto-commit typed Tinder stop-words, and block Chrome auto-translate (`translate="no"`).
+- **4K Cropper Progress Indicator & Async `toBlob`**: Clicking `Применить кадрирование` now immediately shows `Сохраняем кадр в 4K без сжатия, подождите...` and encodes asynchronously via `canvas.toBlob`.
+- **Visual Prompt Refinement -> Auto-Art (`buildVisualPromptRefinementRequest`)**: Added 1-click prompt refinement with custom direction in Profile, Big Dossiers, and Lightbox that immediately launches Art generation.
+- **Puzzle / Bento Mosaic Grid & Deferred 5-Rarity / Match / Art Reveal Animations**: Implemented adaptive `.nmf-mosaic-grid` (`16:9`/`4:3` wide banners, `1:1` squares, `2:3`/`3:4` tall portraits), 5 distinct Gacha rarity glow colors, unique Match Signal reveal, fresh-art materialization animation, and queued reveals after minimizing (`—`).
+
+## [1.7.3-beta] - 2026-11-21
+
+### Instant 0ms Gacha & Art Cancellation, Big Match/Gacha Dossier View, Non-Destructive Touch Art Cropper & «Idea + Intake» Mode
+- **Instant 0ms Cancellation for Gacha Pulls, Gacha/Match Art & Editor Art (`nmf_entry.js`, `nmf_card_io_and_art.js`)**: Fixed `stop-cand-art` previously inspecting only `tinder.queue[0]` instead of active Gacha/Match art tasks, kept `fetchWithTimeout` abort signal active across multi-MB JSON/image body downloads, wrapped `generateCharacterPortrait` in immediate abort-race rejection, added immediate UI state teardown in `requestCancelBusyTask` / `stop-cand-art` / `stop-editor-art`, and added a direct close button on the Gacha comet screen.
+- **Big Character Dossier Modal on Tapping Match / Gacha / Passed Tiles (`renderCandidateDossierModal`)**: Tapping any tile in `Улов` now opens the full uncut character dossier (portrait, stars/match badge, full pitch, quote, appearance, tags, art controls, cropper, `В Блиц`, and `Собрать Карточку V2`).
+- **Interactive Lossless Touch Art Cropper (`renderArtCropperModal`, `computeLosslessCropGeometry`)**: Added drag-and-zoom WYSIWYG cropping (`1:1`, `3:4`, `2:3`, `4:3`, `16:9`) in both Big Dossiers and the Profile Card Editor at 100% native source pixel density while preserving the full uncropped master in `originalAvatarId` for non-destructive re-cropping or 1-tap restoration.
+- **«Задумка + Анкета» / «Только задумка» Switcher**: Added explicit mode selection on `Создать -> Из задумки` (`architect.useIntake`) to either combine free concept text with the Session Intake or build strictly from scratch.
+
+## [1.7.2-beta] - 2026-11-21
+
+### True Gacha Wish Economy (Sacrifice -> Prayers, Never Timer Reset), Global Unresettable Cooldown, 13-Theme First-Sacrifice Ritual & Dedicated Gacha Wish Questionnaire
+- **Sacrifice Grants Real Wishes (`+1..+5 Молитв`), Zero Timer Resets (`nmf_templates_and_prompts.js`, `nmf_entry.js`)**: Removed timer-reset charges completely. Sacrificing a Gacha card now directly grants `+1` to `+5` bonus **Wishes (`Молитвы`)** matching its star rating, usable immediately even while the 2-hour base 10-wish cycle timer continues counting down honestly. Legacy earned sacrifice charges from `v1.7.0` are migrated directly into `bonusWishes`.
+- **Global Dual-Persisted Gacha Wallet (`st_nmf_gacha_wallet_v2`)**: Promoted the Gacha prayer balance and 2-hour `cooldownEndsAt` timestamp to global extension state mirrored synchronously in `localStorage`, preventing timer resets when switching/creating sessions, refreshing, or closing the browser before debounced saves flush.
+- **13-Theme Sinister First-Sacrifice Warning Modal (`THEMED_SACRIFICE_WARNINGS`)**: Added a one-time dramatic ritual confirmation modal written uniquely in the lore and tone of each of the 13 Forge themes, warning that sacrificed heroes are permanently erased without archive or backup.
+- **Dedicated Gacha Wish Questionnaire (`wishPrefs`) & Cross-Pool Anti-Clone Guard**: Added a standalone **Пожелания Гачи** intake sheet (`targetType = 'oc'` by default, optional Gacha setting, gender, rating, wish notes, bans) completely isolated from Tinder's Intake across summon, fusion, Blitz, and full V2 expansion, plus `collectSessionKnownCharacterNames()` blocking duplicates of heroes already in Tinder Matches/Queue, Gacha Collection, Draft Slots, or Saved Vault.
+- **Full Android Back-Gesture (`popstate`) Stack**: Connected all 11 modal sheets and overlays to `popstate` so swiping Back closes only the open sheet instead of exiting NexusMatch Forge.
+
+## [1.7.1-beta] - 2026-11-21
+
+### Real Tinder/Gacha -> Blitz Character Flow, Zero-Lag `blob:` Media Rendering, Full-Sheet Mobile Frames & Aspect-Aware Portrait Grid
+- **Direct Tinder/Gacha Character Selection in Blitz (`nmf_templates_and_prompts.js`, `nmf_entry.js`)**: Replaced the misleading Tinder anti-tag injection in Blitz with direct character selection (`listBlitzSelectableCandidates`, `resolveBlitzSeedCandidate`, `selectedCandidateRef`, plus one-tap `В Блиц` buttons on Swipe, Matches, and Gacha Collection cards). Blitz questions now target the exact chosen hero by name with a live portrait mini-preview, and `build-from-blitz` expands that exact character with automatic portrait/appearance transfer into a unified slot without splitting characters.
+- **Zero-Lag Clicks & Typing (`nmf_media_vault.js`, `nmf_entry.js`, `nmf_themes_and_icons.js`)**: Added `resolveEntityDisplayUrl()` caching short `blob:` Object URLs (`36` chars instead of multi-megabyte lossless Base64 strings) across all DOM `<img src>` renders, debounced `input` settings persistence (`scheduleSaveSettings`), removed all GPU-heavy `backdrop-filter: blur(...)` layers, and added `contain: layout paint style` + `touch-action: manipulation`.
+- **Single-Frame Full Mobile Modals**: Removed stacked `95dvh` + `90%`/`92%` sheet heights on mobile so `Анкета`, `Настройки`, `Гид`, `Перевод` and `Лайтбокс` open cleanly without double top borders.
+- **Aspect-Aware Portrait Grid, Face-Safe `50% 6%` Framing & Format Warning**: Locked `.nmf-match-thumb img` and `.nmf-hero-photo` dimensions with `!important` against global SillyTavern CSS (`width: auto` right-side gap bug), anchored top portrait focus at `50% 6%` so heads/ears are never cropped, implemented true uncropped native aspect flow (`Авто — Под размер самого арта`) and 1-column `16:9` layout, highlighted checked Blitz answer options, and restored the explicit format/layout warning banner in Settings.
+
+## [1.7.0-beta] - 2026-11-21
+
+### Flexible `<ART_MECHANISM>` + Negatives, Honest 1-5 Star Gacha Scale & Wall-Clock Timer, AI Card Translator, Saved Vault, Method Slots & Checkable Blitz UI
+- **Flexible Avatar `<ART_MECHANISM>` & Negative Prompts (`nmf_templates_and_prompts.js`, `nmf_card_io_and_art.js`)**: Replaced generic art prompt instructions with a medium-neutral director system (`SCENE -> CHARACTERS IN THE IMAGE -> FIGURE / INTERACTION / OBJECT`) supporting 1 character, `2–3` interacting characters (`duo_group`), World vistas, and standalone Artifacts/Relics (`artifact_object`), plus style injection modes (`plain_prefix`, `[STYLE: ...]`, `suffix`) and `SillyImages` + custom Negative Prompt integration.
+- **Preset Active-Chat Macro Sanitizer**: Added `stripActiveChatMacrosFromPresetBlock()` (`stripActiveCharFromPreset = true` by default) to strip `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{worldInfoBefore}}`, `{{worldInfoAfter}}`, `{{mesExamples}}`, and persona/lorebook macros from custom preset blocks so active chat cards never leak into Forge generations.
+- **Language Presets + AI Card Translator (`nmf_entry.js`)**: Previews (Swipe & Gacha), Blitz/AU questions, and human-facing `creator_notes` use the User Language, while AI card fields use the Card Language; accidental `{{Русский}}` braces are unwrapped automatically; added one-click **AI Card Translator** allowing view-only translation storage (`savedTranslation`), copying translated cards to the Vault, or applying translation to the card.
+- **Honest External 1–5 Star Randomizer, 2h Wall-Clock Cooldown & Card Sacrifice**: External cryptographic RNG (`1` to `5` stars) fires before prompt assembly and scales the character's domain/wealth/power within the user's exact requested role and appearance (`1-star` small street-gang boss up to `5-star` global syndicate emperor). Added persistent `Date.now()` 2-hour cycle cooldown (never freezes when closing SillyTavern), `1` default reset charge, and **Card Sacrifice** (`N` stars = `+N` reset charges).
+- **Method Isolation, 5 Session Draft Slots & Global Saved Vault**: Isolated Free Generator/AU from Tinder & Gacha, added toggles in Blitz (`Tinder = ON`, `Gacha = OFF` by default), separated each session into 5 independent draft slots (`Swipe | Gacha | Blitz | Generator | Manual`), and added a cross-session **Saved Vault (`Хранилище`)**.
+- **Clean Mobile UI, Modal Windows, Spoilers & Guide (`?`)**: Converted Settings and Guide into full modal sheets, organized secondary controls into clean `<details>` spoilers with `6px` Codex-grade geometry, fixed portrait headroom (`center 12%`), added contextual `?` help popovers, and redesigned Blitz/AU questions with multi-select checkable option rows.
+
+## [1.6.0-beta] - 2026-11-21
+
+### Astral Gacha Summon & Alchemy Fusion, Minimalist PC Loader, Open-Canvas UI, Dual Manual Languages & SillyImages v3.0 Appearance References
+- **Minimalist PC-Window Loader (`nmf_themes_and_icons.js`, `nmf_entry.js`)**: Replaced the multi-step telemetry dashboard with a clean PC-style dialog featuring a single geometric loader crystal and top-right minimize (`-`) and cancel (`X`) window controls.
+- **Open-Canvas Visual Declutter**: Removed nested heavy border-boxes around forms, added a compact header session dropdown, and streamlined filter ribbons so screens breathe naturally on mobile (`412x915`) while preserving sharp technical geometry across all 13 themes.
+- **Dual Manual Language Inputs (`nmf_templates_and_prompts.js`, `nmf_entry.js`)**: Replaced the single language dropdown with two plain manual text inputs supporting `{{language}}`: (1) User-facing AI language for Blitz/AU quizzes and prompts, and (2) Card, preview, and opening-scene language, with automatic migration from `v1.5.0` sessions.
+- **Astral Gacha Mode, Separate Collection & Alchemy Soul Fusion**: Added a Gacha Wish mode (`3–10` `+`-separated tags, animated comet reveal, 10-pull cycle counter with guaranteed 5-star drop on pull 10 and one-click session pool reset) storing drops in a dedicated **Gacha Collection** (separate from Swipe Matches) with an **Alchemy Fusion Altar** (`2–3` donor cards synthesized from scratch into a brand-new original character).
+- **Strict Card Meta-Purity Guard**: Removed word-count hints inside output tag placeholders and added `CARD_META_PURITY_RULE` + `sanitizeCardMetaPollution()` so word counts, star ratings, and rarity labels never leak into Character Card V2 fields.
+- **SillyImages v3.0.0-beta.1 Compatibility & Optional Appearance References (`nmf_card_io_and_art.js`)**: Added read-only support for `SillyImages v3.0` reference `lorebooks` and `characterReferenceLibrary` plus custom lossless reference photo upload (`off` by default, user-selectable per session/settings) across Gemini (`3.1-flash-image` / `3-pro-image` / `2.5-flash-image`), OpenRouter, OpenAI / Electron Hub (`/v1/images/edits`), xAI Imagine (`resolution`/`quality` + `/edits`), and Naistera (`reference_objects`).
+
+## [1.5.0-beta] - 2026-11-20
+
+### Interactive Portrait Lightbox, AU Blitz Quiz, Selectable Question Counts & Unified Visualizer
+- **Modal-Safe PNG / JSON / Art Downloads (`nmf_card_io_and_art.js`, `nmf_entry.js`)**: Fixed `triggerDownload()` failing on Android Chrome when `<dialog>` is opened via `showModal()` (where `document.body` outside the dialog is top-layer `inert`). Download anchors now mount directly inside the active `<dialog>` with a 60-second `Blob` URL retention window and toast confirmation.
+- **Tap-to-Zoom Portrait Lightbox & Appearance Saver**: Tapping any portrait in Swipe Deck, Matches, Passed Archive, or Profile Editor opens a full-resolution lightbox allowing one-tap download of pure uncompressed artwork, copying/saving `.txt` of appearance + visual prompt, or transferring only the look + portrait into the Profile Editor.
+- **Zero-Anachronism AU Rework + Interactive AU Adaptation Quiz**: Overhauled `buildReworkCardRequest()` to enforce complete translation of old-world props, titles, magic, factions, and medieval weapons into authentic target-era equivalents while preserving formatting structure and character soul, and added `buildAuReworkQuestionsRequest()` so users can answer `3–12` clarifying AU adaptation questions directly on the Rework screen.
+- **Selectable Blitz Question Count**: Added selectable question counts (`5 / 7 / 10 / 12 / 15 / 20`) on the Blitz tab.
+- **Single Unified Forge Telemetry Visualizer**: Removed the duplicate portrait-thumbnail spinner and secondary `.nmf-editor-art-strip` table box, unifying both LLM tasks and Art generation into a single sharp-geometric Prism Telemetry Visualizer with expandable HUD and slim docked strip.
+
+## [1.4.3-beta] - 2026-11-20
+
+### Zero-Compression Lossless Artwork Pipeline
+- **Lossless File Upload (`nmf_entry.js`)**: Removed `compressImageFileToDataUrl()` (`896px` WebP downscaling). Uploaded portraits are now read 100% losslessly at their exact original resolution and bit depth.
+- **Bit-Exact 2K/4K PNG Pass-Through & Zero-Downscale Crop (`nmf_card_io_and_art.js`)**: Removed fixed `640px–768px` / `1280px` canvas downscaling caps in `ensurePngBytes()`. Matching PNG inputs bypass `<canvas>` completely (bit-for-bit preservation), and cropped or converted images render at 100% native source pixel density (`MAX_IMAGE_DOWNLOAD_BYTES` raised to `60 MB`; `2K`/`4K` `imageSize` preserved across `native` aspect mode).
+
 ## [1.4.2-beta] - 2026-11-20
 
 ### Targeted Recovery & Media Resilience Patch (Audit #3)

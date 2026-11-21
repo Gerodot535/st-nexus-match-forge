@@ -9,7 +9,38 @@ const MAX_BACKUPS = 20;
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const memoryMediaCache = new Map();
+const memoryObjectUrlCache = new Map(); // mediaId -> { sourceLen, blobUrl }
+const inlineObjectUrlCache = new Map(); // inlinePrefixHash -> { sourceLen, blobUrl }
 const durablyPersistedMediaIds = new Set();
+
+function dataUrlToFastObjectUrl(dataUrl) {
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof atob !== 'function') {
+        return dataUrl;
+    }
+    try {
+        const commaIdx = dataUrl.indexOf(',');
+        if (commaIdx === -1) return dataUrl;
+        const header = dataUrl.slice(0, commaIdx);
+        const mimeMatch = header.match(/^data:([^;]+)/i);
+        const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+        const b64 = dataUrl.slice(commaIdx + 1);
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+        return URL.createObjectURL(new Blob([bytes], { type: mime }));
+    } catch {
+        return dataUrl;
+    }
+}
+
+function revokeCachedObjectUrl(mediaId) {
+    const key = String(mediaId || '');
+    const hit = memoryObjectUrlCache.get(key);
+    if (hit?.blobUrl && hit.blobUrl.startsWith('blob:') && typeof URL?.revokeObjectURL === 'function') {
+        try { URL.revokeObjectURL(hit.blobUrl); } catch {}
+    }
+    memoryObjectUrlCache.delete(key);
+}
 const memoryBackupList = [];
 let dbOpenPromise = null;
 let activeDbInstance = null;
@@ -268,8 +299,49 @@ export function resolveEntityAvatarUrl(entity) {
     return '';
 }
 
+/**
+ * Returns a short, GPU-cached blob: URL (36 chars instead of 8MB Base64!) for fast DOM <img src> rendering
+ * so clicks and tab switches never freeze mobile or desktop browsers re-parsing multi-megabyte data: URLs.
+ */
+export function resolveEntityDisplayUrl(entity) {
+    if (!entity || typeof entity !== 'object') return '';
+    if (entity.avatarId) {
+        const key = String(entity.avatarId);
+        const raw = memoryMediaCache.get(key);
+        if (raw) {
+            const cachedObj = memoryObjectUrlCache.get(key);
+            if (cachedObj && cachedObj.sourceLen === raw.length) {
+                return cachedObj.blobUrl;
+            }
+            revokeCachedObjectUrl(key);
+            const blobUrl = dataUrlToFastObjectUrl(raw);
+            memoryObjectUrlCache.set(key, { sourceLen: raw.length, blobUrl });
+            return blobUrl;
+        }
+    }
+    if (typeof entity.avatarDataUrl === 'string' && entity.avatarDataUrl.startsWith('data:')) {
+        const raw = entity.avatarDataUrl;
+        if (raw.length < 4096) return raw;
+        const sig = raw.slice(0, 48) + ':' + raw.length + ':' + raw.slice(-32);
+        const hit = inlineObjectUrlCache.get(sig);
+        if (hit && hit.sourceLen === raw.length) return hit.blobUrl;
+        const blobUrl = dataUrlToFastObjectUrl(raw);
+        if (inlineObjectUrlCache.size > 60) {
+            const firstKey = inlineObjectUrlCache.keys().next().value;
+            const old = inlineObjectUrlCache.get(firstKey);
+            if (old?.blobUrl?.startsWith('blob:')) {
+                try { URL.revokeObjectURL(old.blobUrl); } catch {}
+            }
+            inlineObjectUrlCache.delete(firstKey);
+        }
+        inlineObjectUrlCache.set(sig, { sourceLen: raw.length, blobUrl });
+        return blobUrl;
+    }
+    return '';
+}
+
 export const MAX_EMERGENCY_INLINE_ITEMS = 8;
-export const MAX_EMERGENCY_INLINE_TOTAL_CHARS = 6_000_000;
+export const MAX_EMERGENCY_INLINE_TOTAL_CHARS = 25_000_000;
 
 export async function saveMediaDataUrl(dataUrl, existingId = '') {
     const clean = String(dataUrl || '').trim();
@@ -278,6 +350,7 @@ export async function saveMediaDataUrl(dataUrl, existingId = '') {
         return '';
     }
     const id = existingId && String(existingId).startsWith('nmf_img_') ? String(existingId) : makeMediaId();
+    revokeCachedObjectUrl(id);
     memoryMediaCache.set(id, clean);
     durablyPersistedMediaIds.delete(id);
 
@@ -336,7 +409,7 @@ export async function assignEntityMediaWithFallback(entity, dataUrl, existingId 
 export function enforceEmergencyInlineBudget(
     sessions = [],
     activeSessionId = '',
-    { maxItems = MAX_EMERGENCY_INLINE_ITEMS, maxTotalChars = MAX_EMERGENCY_INLINE_TOTAL_CHARS } = {}
+    { maxItems = MAX_EMERGENCY_INLINE_ITEMS, maxTotalChars = MAX_EMERGENCY_INLINE_TOTAL_CHARS, savedVault = [] } = {}
 ) {
     if (!Array.isArray(sessions)) return { keptCount: 0, evictedCount: 0, totalChars: 0 };
 
@@ -370,6 +443,9 @@ export function enforceEmergencyInlineBudget(
     }
     for (const s of sessions) {
         visitEntity(s?.card);
+        if (s?.cardSlots && typeof s.cardSlots === 'object') {
+            for (const slotCard of Object.values(s.cardSlots)) visitEntity(slotCard);
+        }
     }
     for (const pool of ['queue', 'liked', 'passed']) {
         for (const s of sessions) {
@@ -380,6 +456,16 @@ export function enforceEmergencyInlineBudget(
     }
     for (const s of sessions) {
         visitEntity(s?.tinder?.lastDislikedCandidate);
+        visitEntity(s?.artRefCustom);
+        if (Array.isArray(s?.gacha?.collection)) {
+            for (const g of s.gacha.collection) visitEntity(g);
+        }
+        if (Array.isArray(s?.gacha?.lastRevealBatch)) {
+            for (const g of s.gacha.lastRevealBatch) visitEntity(g);
+        }
+    }
+    if (Array.isArray(savedVault)) {
+        for (const v of savedVault) visitEntity(v);
     }
 
     let keptCount = 0;
@@ -425,6 +511,7 @@ export async function loadMediaDataUrl(mediaId) {
 export async function deleteMediaById(mediaId) {
     const id = String(mediaId || '').trim();
     if (!id) return false;
+    revokeCachedObjectUrl(id);
     memoryMediaCache.delete(id);
     durablyPersistedMediaIds.delete(id);
 
@@ -439,28 +526,55 @@ export async function deleteMediaById(mediaId) {
     return true;
 }
 
-export function collectReferencedMediaIds(sessions = []) {
+export function resolveOriginalEntityMediaUrl(entity) {
+    if (!entity || typeof entity !== 'object') return '';
+    if (entity.originalAvatarId) {
+        const orig = memoryMediaCache.get(String(entity.originalAvatarId));
+        if (orig) return orig;
+    }
+    return resolveEntityAvatarUrl(entity);
+}
+
+export function collectReferencedMediaIds(sessions = [], extraIds = [], savedVault = []) {
     const ids = new Set();
+    const pushEnt = (ent) => {
+        if (!ent || typeof ent !== 'object') return;
+        if (ent.avatarId) ids.add(String(ent.avatarId));
+        if (ent.originalAvatarId) ids.add(String(ent.originalAvatarId));
+    };
+    if (Array.isArray(extraIds)) {
+        for (const eid of extraIds) {
+            if (eid) ids.add(String(eid));
+        }
+    }
+    if (Array.isArray(savedVault)) {
+        for (const v of savedVault) pushEnt(v);
+    }
     if (!Array.isArray(sessions)) return ids;
     for (const s of sessions) {
         if (!s || typeof s !== 'object') continue;
-        if (s.card?.avatarId) ids.add(String(s.card.avatarId));
+        pushEnt(s.card);
+        if (s.cardSlots && typeof s.cardSlots === 'object') {
+            for (const sc of Object.values(s.cardSlots)) pushEnt(sc);
+        }
+        pushEnt(s.artRefCustom);
         for (const pool of ['queue', 'liked', 'passed']) {
             const arr = s.tinder?.[pool];
             if (!Array.isArray(arr)) continue;
-            for (const c of arr) {
-                if (c?.avatarId) ids.add(String(c.avatarId));
-            }
+            for (const c of arr) pushEnt(c);
         }
-        if (s.tinder?.lastDislikedCandidate?.avatarId) {
-            ids.add(String(s.tinder.lastDislikedCandidate.avatarId));
+        pushEnt(s.tinder?.lastDislikedCandidate);
+        for (const gPool of ['collection', 'lastRevealBatch']) {
+            const gArr = s.gacha?.[gPool];
+            if (!Array.isArray(gArr)) continue;
+            for (const g of gArr) pushEnt(g);
         }
     }
     return ids;
 }
 
-export async function hydrateSessionsMedia(sessions = []) {
-    const ids = collectReferencedMediaIds(sessions);
+export async function hydrateSessionsMedia(sessions = [], extraIds = [], savedVault = []) {
+    const ids = collectReferencedMediaIds(sessions, extraIds, savedVault);
     await Promise.all([...ids].map((id) => loadMediaDataUrl(id)));
 }
 
@@ -468,17 +582,19 @@ export async function hydrateSessionsMedia(sessions = []) {
 // 1. Captures an immutable snapshot of all inline data: URLs synchronously BEFORE the first await.
 // 2. Clears ent.avatarDataUrl ONLY after confirmed IndexedDB write + readback verification.
 // 3. Preserves ent.avatarDataUrl intact if IndexedDB is unavailable or fails mid-batch (e.g. QuotaExceededError).
-export function migrateInlineSessionMediaToVault(sessions = []) {
-    if (!Array.isArray(sessions)) {
+export function migrateInlineSessionMediaToVault(sessions = [], savedVault = []) {
+    if (!Array.isArray(sessions) && !Array.isArray(savedVault)) {
         return Promise.resolve({ changed: false, migratedCount: 0, failedCount: 0, complete: true });
     }
 
     // Synchronous snapshot BEFORE any await so concurrent saveSettings() cannot race ahead
     const snapshotItems = [];
+    const seenEntities = new Set();
     let cleanedGarbage = 0;
 
     const collectEntity = (ent) => {
-        if (!ent || typeof ent !== 'object') return;
+        if (!ent || typeof ent !== 'object' || seenEntities.has(ent)) return;
+        seenEntities.add(ent);
         const raw = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';
         if (raw.startsWith('data:')) {
             snapshotItems.push({
@@ -495,6 +611,9 @@ export function migrateInlineSessionMediaToVault(sessions = []) {
     for (const s of sessions) {
         if (!s || typeof s !== 'object') continue;
         collectEntity(s.card);
+        if (s.cardSlots && typeof s.cardSlots === 'object') {
+            for (const sc of Object.values(s.cardSlots)) collectEntity(sc);
+        }
         for (const pool of ['queue', 'liked', 'passed']) {
             const arr = s.tinder?.[pool];
             if (!Array.isArray(arr)) continue;
@@ -505,6 +624,19 @@ export function migrateInlineSessionMediaToVault(sessions = []) {
         if (s.tinder?.lastDislikedCandidate) {
             collectEntity(s.tinder.lastDislikedCandidate);
         }
+        if (s.artRefCustom) {
+            collectEntity(s.artRefCustom);
+        }
+        for (const gPool of ['collection', 'lastRevealBatch']) {
+            const gArr = s.gacha?.[gPool];
+            if (!Array.isArray(gArr)) continue;
+            for (const g of gArr) {
+                collectEntity(g);
+            }
+        }
+    }
+    if (Array.isArray(savedVault)) {
+        for (const v of savedVault) collectEntity(v);
     }
 
     const runStep = async () => {
@@ -549,12 +681,13 @@ export function waitForActiveMediaMigration() {
     return activeMigrationChain;
 }
 
-export async function pruneOrphanedMedia(sessions = []) {
-    const referenced = collectReferencedMediaIds(sessions);
+export async function pruneOrphanedMedia(sessions = [], extraIds = [], savedVault = []) {
+    const referenced = collectReferencedMediaIds(sessions, extraIds, savedVault);
     let removed = 0;
 
     for (const key of [...memoryMediaCache.keys()]) {
         if (!referenced.has(key)) {
+            revokeCachedObjectUrl(key);
             memoryMediaCache.delete(key);
             durablyPersistedMediaIds.delete(key);
             removed += 1;

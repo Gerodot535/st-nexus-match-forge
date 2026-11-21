@@ -455,7 +455,7 @@ function applySingleFieldToCardObject(target, field, card) {
             if (cleanImgPrompt || target.data.extensions.nexus_match_forge) {
                 target.data.extensions.nexus_match_forge = {
                     ...(target.data.extensions.nexus_match_forge || {}),
-                    version: '1.4.2-beta',
+                    version: '1.5.0-beta',
                     image_prompt: cleanImgPrompt,
                 };
             }
@@ -517,7 +517,7 @@ export function buildV2CardObject(card) {
     };
     if (cleanImgPrompt) {
         extensions.nexus_match_forge = {
-            version: '1.4.2-beta',
+            version: '1.5.0-beta',
             image_prompt: cleanImgPrompt,
         };
     }
@@ -626,7 +626,7 @@ export function buildSurgicalMergePayload(avatarFileName, card) {
                 break;
             case 'imagePrompt':
                 extPatch.nexus_match_forge = {
-                    version: '1.4.2-beta',
+                    version: '1.5.0-beta',
                     image_prompt: String(card.imagePrompt ?? '').trim(),
                 };
                 break;
@@ -682,10 +682,58 @@ export function computeCardDiff(card, liveOrigData = null) {
 }
 
 function getTargetCanvasDimensions(aspectRatio = '1:1') {
-    if (aspectRatio === '2:3') return { width: 640, height: 960 };
-    if (aspectRatio === '3:4') return { width: 672, height: 896 };
-    if (aspectRatio === '16:9') return { width: 960, height: 540 };
-    return { width: 768, height: 768 };
+    if (aspectRatio === '2:3') return { width: 1024, height: 1536 };
+    if (aspectRatio === '3:4') return { width: 1152, height: 1536 };
+    if (aspectRatio === '3:2') return { width: 1536, height: 1024 };
+    if (aspectRatio === '4:3') return { width: 1536, height: 1152 };
+    if (aspectRatio === '16:9') return { width: 1536, height: 864 };
+    if (aspectRatio === '9:16') return { width: 864, height: 1536 };
+    return { width: 1024, height: 1024 };
+}
+
+function parseAspectRatioNumber(aspectRatio = '1:1') {
+    if (aspectRatio === '2:3') return 2 / 3;
+    if (aspectRatio === '3:4') return 3 / 4;
+    if (aspectRatio === '3:2') return 3 / 2;
+    if (aspectRatio === '4:3') return 4 / 3;
+    if (aspectRatio === '16:9') return 16 / 9;
+    if (aspectRatio === '9:16') return 9 / 16;
+    if (aspectRatio === '1:1') return 1;
+    return null;
+}
+
+export function sanitizeAspectForProvider(rawAspect = 'native', apiType = '') {
+    const clean = String(rawAspect || '').trim();
+    if (!clean || clean === 'native' || clean === 'sillyimages_default' || clean === 'auto') {
+        return 'native';
+    }
+    const allowedAll = new Set(['1:1', '2:3', '3:4', '3:2', '4:3', '16:9', '9:16']);
+    if (!allowedAll.has(clean)) return 'native';
+
+    const pLow = String(apiType || '').toLowerCase();
+    if (pLow === 'novelai' || pLow === 'naistera') {
+        if (clean === '3:4') return '2:3';
+        if (clean === '4:3') return '3:2';
+    }
+    return clean;
+}
+
+function decodePngDataUrlBytesDirect(avatarDataUrl) {
+    if (typeof avatarDataUrl !== 'string') return null;
+    const trimmed = avatarDataUrl.trim();
+    const prefixMatch = trimmed.match(/^data:image\/png;base64,([\s\S]+)$/i);
+    if (!prefixMatch) return null;
+    try {
+        const bin = atob(prefixMatch[1].replace(/\s+/g, ''));
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i) & 0xff;
+        if (!isValidNonEmptyPngBytes(arr)) return null;
+        const width = (((arr[16] << 24) >>> 0) + ((arr[17] << 16) >>> 0) + ((arr[18] << 8) >>> 0) + (arr[19] >>> 0)) >>> 0;
+        const height = (((arr[20] << 24) >>> 0) + ((arr[21] << 16) >>> 0) + ((arr[22] << 8) >>> 0) + (arr[23] >>> 0)) >>> 0;
+        return { bytes: arr, width, height };
+    } catch {
+        return null;
+    }
 }
 
 // Valid minimal 1x1 RGB PNG fallback for headless Node unit tests without HTMLCanvasElement
@@ -726,15 +774,24 @@ function buildHeadlessPlaceholderPng(charName = 'NMF', accentHex = '#1de9b6') {
     return out;
 }
 
+// Strictly lossless, zero-downscale PNG builder:
+// - Never shrinks 2K/4K artwork or applies lossy compression.
+// - Bypasses <canvas> completely (bit-for-bit pass-through) whenever input is already a PNG matching 'native' or target aspect ratio.
+// - When cropping or converting JPEG/WebP -> PNG, outputs at 100% native pixel density of the source crop window.
 export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex = '#1de9b6', { aspectRatio = '1:1', cropFocus = 'top' } = {}) {
-    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
-        if (typeof avatarDataUrl === 'string' && avatarDataUrl.startsWith('data:image/png;base64,')) {
-            const b64 = avatarDataUrl.slice('data:image/png;base64,'.length);
-            const bin = atob(b64);
-            const arr = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i) & 0xff;
-            return arr;
+    const directPng = decodePngDataUrlBytesDirect(avatarDataUrl);
+    const targetRatio = aspectRatio === 'native' ? null : parseAspectRatioNumber(aspectRatio);
+
+    if (directPng) {
+        const srcRatio = directPng.width / directPng.height;
+        const ratioAlreadyMatches = targetRatio !== null && Math.abs(srcRatio - targetRatio) / targetRatio <= 0.015;
+        if (aspectRatio === 'native' || (ratioAlreadyMatches && cropFocus !== 'contain')) {
+            return directPng.bytes;
         }
+    }
+
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+        if (directPng) return directPng.bytes;
         return buildHeadlessPlaceholderPng(charName, accentHex);
     }
 
@@ -745,7 +802,7 @@ export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex 
     const g = canvas.getContext('2d');
 
     if (!g) {
-        return new Uint8Array(MINIMAL_1X1_PNG_BYTES);
+        return directPng ? directPng.bytes : new Uint8Array(MINIMAL_1X1_PNG_BYTES);
     }
 
     if (avatarDataUrl) {
@@ -758,35 +815,53 @@ export async function ensurePngBytes(avatarDataUrl, charName = 'NMF', accentHex 
                 el.src = avatarDataUrl;
             });
 
-            if (aspectRatio === 'native' && img.width > 0 && img.height > 0) {
-                const maxSide = 1280;
-                const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-                canvas.width = Math.max(1, Math.round(img.width * scale));
-                canvas.height = Math.max(1, Math.round(img.height * scale));
-                g.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const srcW = Math.max(1, img.naturalWidth || img.width);
+            const srcH = Math.max(1, img.naturalHeight || img.height);
+
+            if (aspectRatio === 'native' || targetRatio === null) {
+                // 100% native pixel dimensions — zero downscaling!
+                canvas.width = srcW;
+                canvas.height = srcH;
+                g.imageSmoothingEnabled = false;
+                g.drawImage(img, 0, 0, srcW, srcH);
             } else if (cropFocus === 'contain') {
+                // Fit entire image inside target aspect ratio at 100% native pixel resolution (zero shrinking!)
+                const srcRatio = srcW / srcH;
+                const outW = srcRatio >= targetRatio ? srcW : Math.max(1, Math.round(srcH * targetRatio));
+                const outH = srcRatio >= targetRatio ? Math.max(1, Math.round(srcW / targetRatio)) : srcH;
+                canvas.width = outW;
+                canvas.height = outH;
                 g.fillStyle = '#0b0e13';
-                g.fillRect(0, 0, dims.width, dims.height);
-                const scale = Math.min(dims.width / img.width, dims.height / img.height);
-                const dw = img.width * scale;
-                const dh = img.height * scale;
-                const dx = (dims.width - dw) / 2;
-                const dy = (dims.height - dh) / 2;
-                g.drawImage(img, dx, dy, dw, dh);
+                g.fillRect(0, 0, outW, outH);
+                const dx = Math.round((outW - srcW) / 2);
+                const dy = Math.round((outH - srcH) / 2);
+                g.imageSmoothingEnabled = false;
+                g.drawImage(img, dx, dy, srcW, srcH);
             } else {
-                const scale = Math.max(dims.width / img.width, dims.height / img.height);
-                const sw = dims.width / scale;
-                const sh = dims.height / scale;
-                const sx = Math.max(0, (img.width - sw) / 2);
+                // Crop to target aspect ratio at 100% native pixel density of the source crop area (zero downscaling!)
+                const srcRatio = srcW / srcH;
+                let sw = srcW;
+                let sh = srcH;
+                if (srcRatio > targetRatio) {
+                    sw = Math.max(1, Math.round(srcH * targetRatio));
+                } else if (srcRatio < targetRatio) {
+                    sh = Math.max(1, Math.round(srcW / targetRatio));
+                }
+                const sx = Math.max(0, Math.round((srcW - sw) / 2));
                 const sy = cropFocus === 'top'
-                    ? Math.max(0, (img.height - sh) * 0.14)
-                    : Math.max(0, (img.height - sh) / 2);
-                g.drawImage(img, sx, sy, sw, sh, 0, 0, dims.width, dims.height);
+                    ? Math.max(0, Math.round((srcH - sh) * 0.14))
+                    : Math.max(0, Math.round((srcH - sh) / 2));
+
+                canvas.width = sw;
+                canvas.height = sh;
+                g.imageSmoothingQuality = 'high';
+                g.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
             }
 
             const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
             return new Uint8Array(await blob.arrayBuffer());
         } catch (err) {
+            if (directPng) return directPng.bytes;
             console.warn('[NexusMatch Forge] Avatar decode fallback:', err);
         }
     }
@@ -951,18 +1026,51 @@ export async function buildCardPngBlob(card, accentHex = '#1de9b6', cropOpts = {
     return new Blob([withMeta], { type: 'image/png' });
 }
 
+// Modal-safe download helper for Android Chrome & Desktop:
+// Appends <a> inside open <dialog> (avoiding HTML5 showModal() inertness on document.body!) and holds blob URL for 60s
 export function triggerDownload(blob, filename) {
-    if (typeof document === 'undefined') return;
+    if (typeof document === 'undefined' || !blob) return false;
+    const safeName = String(filename || 'download.bin').trim().replace(/[\\/:*?"<>|]+/g, '_');
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
+    a.download = safeName;
+    a.rel = 'noopener';
+    a.style.position = 'fixed';
+    a.style.left = '-4096px';
+    a.style.opacity = '0';
+
+    const mountTarget = document.getElementById('nmf-dialog')
+        || document.querySelector('dialog[open]')
+        || document.body;
+    mountTarget.appendChild(a);
     a.click();
-    setTimeout(() => {
-        a.remove();
-        URL.revokeObjectURL(url);
-    }, 800);
+
+    const tRemove = setTimeout(() => {
+        try { a.remove(); } catch {}
+    }, 2500);
+    const tRevoke = setTimeout(() => {
+        try { URL.revokeObjectURL(url); } catch {}
+    }, 60_000);
+    tRemove?.unref?.();
+    tRevoke?.unref?.();
+    return true;
+}
+
+export function dataUrlToPureBlob(dataUrl) {
+    const clean = String(dataUrl || '').trim();
+    const m = clean.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/i);
+    if (!m) {
+        throw new Error('Некорректный формат изображения для скачивания.');
+    }
+    const mime = m[1].toLowerCase();
+    const bin = atob(m[2].replace(/\s+/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+    const ext = mime.includes('jpeg') || mime.includes('jpg')
+        ? 'jpg'
+        : (mime.includes('webp') ? 'webp' : (mime.includes('gif') ? 'gif' : 'png'));
+    return { blob: new Blob([bytes], { type: mime }), ext, mime };
 }
 
 // Strict NEW-card import only — never overwrites existing character files (fixes NMF-001)
@@ -1887,7 +1995,87 @@ export async function fetchTavernRosterAndWorlds({ signal = null } = {}) {
 
 // Network helper with unified per-request timeout & combined AbortSignal (fixes NMF-016)
 export const DEFAULT_IMAGE_REQUEST_TIMEOUT_MS = 120_000;
-export const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024; // 20 MB guard
+export const MAX_IMAGE_DOWNLOAD_BYTES = 60 * 1024 * 1024; // 60 MB guard for uncompressed 4K PNGs
+
+export function computeLosslessCropGeometry(imgW, imgH, { aspectRatio = '1:1', zoom = 1, panX = 50, panY = 10 } = {}) {
+    const w = Math.max(1, Number(imgW) || 1024);
+    const h = Math.max(1, Number(imgH) || 1024);
+    const ratioMap = { '1:1': 1, '3:4': 3 / 4, '2:3': 2 / 3, '4:3': 4 / 3, '16:9': 16 / 9 };
+    const targetRatio = ratioMap[aspectRatio] || 1;
+    const z = Math.max(1, Math.min(3.5, Number(zoom) || 1));
+    const px = Math.max(0, Math.min(100, Number.isFinite(Number(panX)) ? Number(panX) : 50));
+    const py = Math.max(0, Math.min(100, Number.isFinite(Number(panY)) ? Number(panY) : 10));
+
+    const srcRatio = w / h;
+    let baseW;
+    let baseH;
+    if (srcRatio > targetRatio) {
+        baseH = h;
+        baseW = h * targetRatio;
+    } else {
+        baseW = w;
+        baseH = w / targetRatio;
+    }
+
+    const cropW = baseW / z;
+    const cropH = baseH / z;
+    const maxSX = Math.max(0, w - cropW);
+    const maxSY = Math.max(0, h - cropH);
+    const sx = (px / 100) * maxSX;
+    const sy = (py / 100) * maxSY;
+
+    return {
+        targetRatio,
+        sx,
+        sy,
+        cropW,
+        cropH,
+        maxSX,
+        maxSY,
+        outW: Math.max(64, Math.round(cropW)),
+        outH: Math.max(64, Math.round(cropH)),
+        cssWidthPct: (w / cropW) * 100,
+        cssHeightPct: (h / cropH) * 100,
+        cssLeftPct: -(sx / cropW) * 100,
+        cssTopPct: -(sy / cropH) * 100,
+    };
+}
+
+export async function cropImageDataUrlLossless(sourceDataUrl, cropParams = {}) {
+    if (!sourceDataUrl || typeof sourceDataUrl !== 'string') {
+        throw new Error('Нет исходного изображения для кадрирования.');
+    }
+    if (typeof Image === 'undefined' || typeof document === 'undefined') {
+        return sourceDataUrl;
+    }
+    const img = await new Promise((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Не удалось декодировать исходный арт для обрезки.'));
+        el.src = sourceDataUrl;
+    });
+    const geom = computeLosslessCropGeometry(img.naturalWidth || img.width, img.naturalHeight || img.height, cropParams);
+    const canvas = document.createElement('canvas');
+    canvas.width = geom.outW;
+    canvas.height = geom.outH;
+    const ctx2d = canvas.getContext('2d');
+    if (!ctx2d) throw new Error('2D-контекст холста недоступен.');
+    ctx2d.imageSmoothingEnabled = true;
+    ctx2d.imageSmoothingQuality = 'high';
+    ctx2d.drawImage(img, geom.sx, geom.sy, geom.cropW, geom.cropH, 0, 0, geom.outW, geom.outH);
+    if (typeof canvas.toBlob === 'function' && typeof FileReader !== 'undefined') {
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+        if (blob) {
+            return await new Promise((resolve, reject) => {
+                const fr = new FileReader();
+                fr.onload = () => resolve(String(fr.result || ''));
+                fr.onerror = () => reject(new Error('Не удалось закодировать PNG-кадр.'));
+                fr.readAsDataURL(blob);
+            });
+        }
+    }
+    return canvas.toDataURL('image/png');
+}
 
 export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, externalSignal = null) {
     if (externalSignal?.aborted) {
@@ -1911,8 +2099,15 @@ export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE
     }, effectiveTimeout);
 
     try {
-        return await fetch(url, { ...init, signal: ctl.signal });
+        // Keep externalSignal -> ctl.abort() active while response body (.json() / .arrayBuffer()) downloads!
+        const resp = await fetch(url, { ...init, signal: ctl.signal });
+        clearTimeout(timer);
+        return resp;
     } catch (err) {
+        clearTimeout(timer);
+        if (externalSignal) {
+            externalSignal.removeEventListener('abort', onExternalAbort);
+        }
         if (timedOut) {
             const te = new Error(`Превышено время ожидания ответа от сервера изображений (${Math.round(effectiveTimeout / 1000)} сек).`);
             te.code = 'TIMEOUT';
@@ -1924,11 +2119,6 @@ export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE
             throw ae;
         }
         throw err;
-    } finally {
-        clearTimeout(timer);
-        if (externalSignal) {
-            externalSignal.removeEventListener('abort', onExternalAbort);
-        }
     }
 }
 
@@ -2162,7 +2352,7 @@ export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
     const targetId = String(requestedProfileId || cfgBase.activeConnectionProfileId || '').trim();
     const selectedProfile = targetId ? profiles.find((p) => p.id === targetId) : null;
 
-    // Only global non-credential fields come from cfgBase
+    // Only global non-credential fields come from cfgBase (strictly READ-ONLY)
     const globalShared = {
         enabled: cfgBase.enabled !== false,
         styles: Array.isArray(cfgBase.styles) ? cfgBase.styles : [],
@@ -2170,6 +2360,9 @@ export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
         negativePrompts: Array.isArray(cfgBase.negativePrompts) ? cfgBase.negativePrompts : [],
         activeNegativePromptId: String(cfgBase.activeNegativePromptId || ''),
         slayStyle: String(cfgBase.slayStyle || ''),
+        refInstructionEnabled: cfgBase.refInstructionEnabled !== false,
+        refInstruction: String(cfgBase.refInstruction ?? '').trim(),
+        sendRefDescriptions: cfgBase.sendRefDescriptions !== false,
     };
 
     const sourceSnapshot = selectedProfile || cfgBase;
@@ -2246,19 +2439,22 @@ export function validateResolvedImageConfig(imgCfg) {
     return { ready: true, reason: '' };
 }
 
-function getEffectiveNegativePromptForConfig(imgCfg) {
-    const isNovelAi = imgCfg.apiType === 'novelai'
-        || (imgCfg.apiType === 'naistera' && /^novelai(?:-|$)/i.test(resolveBucketModel(imgCfg)));
-    if (isNovelAi && Array.isArray(imgCfg.negativePrompts) && imgCfg.activeNegativePromptId) {
-        const activeNeg = imgCfg.negativePrompts.find((n) => n && n.id === imgCfg.activeNegativePromptId);
-        if (activeNeg && typeof activeNeg.value === 'string' && activeNeg.value.trim()) {
-            return activeNeg.value.trim();
+function getEffectiveNegativePromptForConfig(imgCfg, requestedNegId = '', customNegText = '') {
+    const negArr = Array.isArray(imgCfg.negativePrompts) ? imgCfg.negativePrompts : [];
+    let presetVal = '';
+    if (requestedNegId !== '__none__') {
+        const chosenNeg = (requestedNegId && negArr.find((n) => n && n.id === requestedNegId))
+            || negArr.find((n) => n && n.id === imgCfg.activeNegativePromptId);
+        if (chosenNeg && typeof chosenNeg.value === 'string' && chosenNeg.value.trim()) {
+            presetVal = chosenNeg.value.trim();
+        } else if (!requestedNegId) {
+            if (imgCfg.apiType === 'novelai') presetVal = String(imgCfg.novelaiNegativePrompt || '').trim();
+            else if (imgCfg.apiType === 'naistera') presetVal = String(imgCfg.naisteraNegativePrompt || '').trim();
+            else if (imgCfg.apiType === 'a1111') presetVal = String(imgCfg.a1111NegativePrompt || '').trim();
         }
     }
-    if (imgCfg.apiType === 'novelai') return String(imgCfg.novelaiNegativePrompt || '').trim();
-    if (imgCfg.apiType === 'naistera') return String(imgCfg.naisteraNegativePrompt || '').trim();
-    if (imgCfg.apiType === 'a1111') return String(imgCfg.a1111NegativePrompt || '').trim();
-    return '';
+    const extraVal = String(customNegText || '').trim();
+    return [presetVal, extraVal].filter(Boolean).join(', ');
 }
 
 // Strict known-ID discovery for SillyImages & compatible forks (fixes NMF-009)
@@ -2309,6 +2505,9 @@ export function listImageExtensionBuckets() {
             styles: (Array.isArray(v.styles) ? v.styles : [])
                 .filter((s) => s && s.id)
                 .map((s) => ({ id: s.id, name: s.name || s.id })),
+            negativePrompts: (Array.isArray(v.negativePrompts) ? v.negativePrompts : [])
+                .filter((n) => n && n.id)
+                .map((n) => ({ id: n.id, name: n.name || n.id })),
         });
     }
     return out;
@@ -2526,6 +2725,305 @@ async function verifyNovelAiFreeAllowance(generateUrl, apiKey, model, timeoutMs,
     }
 }
 
+export const SILLYIMAGES_DEFAULT_REF_INSTRUCTION = '[CRITICAL: The reference image(s) above show the EXACT appearance of the character(s). You MUST precisely copy their: face structure, eye color, hair color and style, skin tone, body type, clothing, and all distinctive features. Do not deviate from the reference appearances.]';
+export const FUSION_BLEND_REF_INSTRUCTION = '[VISUAL ALCHEMY REFERENCE: The reference image(s) above show parent donor archetypes. Synthesize a brand-new, cohesive original character appearance that organically harmonizes select visual echoes from them while strictly following the new character portrait description below. Do NOT copy any single reference verbatim.]';
+
+function splitDataUrlComponents(rawStr) {
+    const val = String(rawStr || '').trim();
+    if (!val) return null;
+    const m = val.match(/^data:([^;,]+);base64,(.+)$/s);
+    if (m) {
+        return {
+            mimeType: m[1] || 'image/png',
+            base64: m[2].replace(/\s+/g, ''),
+            dataUrl: `data:${m[1] || 'image/png'};base64,${m[2].replace(/\s+/g, '')}`,
+        };
+    }
+    if (/^[A-Za-z0-9+/=\s]+$/.test(val) && val.length > 64) {
+        const cleanB64 = val.replace(/\s+/g, '');
+        const mime = cleanB64.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+        return {
+            mimeType: mime,
+            base64: cleanB64,
+            dataUrl: `data:${mime};base64,${cleanB64}`,
+        };
+    }
+    return null;
+}
+
+function base64ToBlobBinary(base64Str, mimeType = 'image/png') {
+    let binStr = '';
+    if (typeof atob === 'function') {
+        binStr = atob(base64Str);
+    } else if (typeof Buffer !== 'undefined') {
+        return new Blob([Buffer.from(base64Str, 'base64')], { type: mimeType });
+    }
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) {
+        bytes[i] = binStr.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: mimeType });
+}
+
+function normalizeSillyImagesStoredImagePath(rawPath) {
+    const val = String(rawPath || '').trim();
+    if (!val) return '';
+    if (val.startsWith('data:') || val.startsWith('http://') || val.startsWith('https://') || val.startsWith('/')) {
+        return val;
+    }
+    return `/${val.replace(/^\.?\//, '')}`;
+}
+
+function textMatchesTriggerAlias(haystackNorm, aliasRaw) {
+    const alias = String(aliasRaw || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!haystackNorm || !alias) return false;
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    try {
+        const re = new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu');
+        return re.test(haystackNorm);
+    } catch {
+        return haystackNorm.includes(alias);
+    }
+}
+
+/**
+ * Read-only catalog of available appearance references from SillyImages v3.0+ (lorebooks & characterReferenceLibrary)
+ * and legacy v2 additionalReferences. Never mutates SillyImages settings.
+ */
+export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
+    let picked = null;
+    try {
+        picked = pickEffectiveBucket(sourcePref);
+    } catch {
+        picked = null;
+    }
+    const cfg = picked?.cfg;
+    if (!cfg || typeof cfg !== 'object') return [];
+
+    const catalog = [];
+    const powerMode = cfg.additionalReferencesMode === 'power';
+
+    // 1. SillyImages v3.0+ Lorebooks
+    if (Array.isArray(cfg.lorebooks)) {
+        for (const lb of cfg.lorebooks) {
+            if (!lb || typeof lb !== 'object') continue;
+            const lbEnabled = lb.enabled !== false;
+            const lbName = String(lb.name || 'Lorebook').trim();
+            const refs = Array.isArray(lb.refs) ? lb.refs : [];
+            for (const r of refs) {
+                if (!r || typeof r !== 'object' || r.enabled === false) continue;
+                const imagePath = normalizeSillyImagesStoredImagePath(r.imagePath);
+                const description = String(r.description || '').trim();
+                const name = String(r.name || '').trim();
+                if (!imagePath && !description) continue;
+                catalog.push({
+                    uid: `lb:${lb.id || lbName}:${r.id || name}`,
+                    kind: 'lorebook',
+                    bookEnabled: !powerMode || lbEnabled,
+                    bookName: lbName,
+                    name: name || 'Без имени',
+                    label: `[${lbName}] ${name || 'Референс'}`,
+                    description,
+                    imagePath,
+                    matchMode: r.matchMode === 'always' ? 'always' : 'match',
+                    priority: Number.isFinite(Number(r.priority)) ? Number(r.priority) : 0,
+                    useRegex: r.useRegex === true,
+                    secondaryKeys: String(r.secondaryKeys || '').trim(),
+                });
+            }
+        }
+    } else if (Array.isArray(cfg.additionalReferences)) {
+        // Legacy SillyImages v2 fallback
+        for (const [idx, r] of cfg.additionalReferences.entries()) {
+            if (!r || typeof r !== 'object' || r.enabled === false) continue;
+            const imagePath = normalizeSillyImagesStoredImagePath(r.imagePath || r.url || r.image);
+            const description = String(r.description || '').trim();
+            const name = String(r.name || '').trim();
+            if (!imagePath && !description) continue;
+            catalog.push({
+                uid: `legacy:${r.id || idx}`,
+                kind: 'lorebook',
+                bookEnabled: true,
+                bookName: 'Refs',
+                name: name || `Ref ${idx + 1}`,
+                label: `[Refs] ${name || `Ref ${idx + 1}`}`,
+                description,
+                imagePath,
+                matchMode: r.matchMode === 'always' ? 'always' : 'match',
+                priority: Number.isFinite(Number(r.priority)) ? Number(r.priority) : 0,
+                useRegex: r.useRegex === true,
+                secondaryKeys: String(r.secondaryKeys || '').trim(),
+            });
+        }
+    }
+
+    // 2. SillyImages v3.0+ Character Reference Library
+    const charLib = cfg.characterReferenceLibrary?.characters;
+    if (charLib && typeof charLib === 'object') {
+        for (const [charKey, entry] of Object.entries(charLib)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const disp = String(entry.displayName || charKey.replace(/^avatar:|^name:/, '')).trim() || charKey;
+            const primImg = normalizeSillyImagesStoredImagePath(entry.primary?.imagePath);
+            const primDesc = String(entry.primary?.description || '').trim();
+            if (entry.primary?.enabled !== false && (primImg || primDesc)) {
+                catalog.push({
+                    uid: `charlib:${charKey}:primary`,
+                    kind: 'char_lib',
+                    bookEnabled: true,
+                    bookName: 'Персонажи ST',
+                    name: disp,
+                    label: `[Чар] ${disp}`,
+                    description: primDesc,
+                    imagePath: primImg,
+                    matchMode: 'match',
+                    priority: 10,
+                    useRegex: false,
+                    secondaryKeys: '',
+                });
+            }
+            const items = Array.isArray(entry.appearanceItems) ? entry.appearanceItems : [];
+            items.forEach((it, idx) => {
+                if (!it || it.enabled === false) return;
+                const itImg = it.type === 'image' ? normalizeSillyImagesStoredImagePath(it.imagePath) : '';
+                const itDesc = String(it.description || '').trim();
+                if (!itImg && !itDesc) return;
+                catalog.push({
+                    uid: `charlib:${charKey}:item:${it.id || idx}`,
+                    kind: 'char_lib',
+                    bookEnabled: true,
+                    bookName: 'Персонажи ST',
+                    name: `${disp} #${idx + 1}`,
+                    label: `[Чар] ${disp} — облик #${idx + 1}`,
+                    description: itDesc,
+                    imagePath: itImg,
+                    matchMode: 'match',
+                    priority: 5,
+                    useRegex: false,
+                    secondaryKeys: '',
+                });
+            });
+        }
+    }
+
+    return catalog;
+}
+
+export function matchSillyImagesReferencesByText(sourcePref = 'auto', searchText = '', maxRefs = 3) {
+    const catalog = listSillyImagesReferenceCatalog(sourcePref).filter((x) => x.kind === 'lorebook' && x.bookEnabled);
+    if (!catalog.length) return [];
+    const normHaystack = String(searchText || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    const matched = [];
+
+    for (const item of catalog) {
+        if (item.matchMode === 'always') {
+            matched.push(item);
+            continue;
+        }
+        if (!normHaystack) continue;
+        let primaryHit = false;
+        if (item.useRegex && item.name) {
+            try {
+                const m = item.name.match(/^\/(.+)\/([a-z]*)$/i);
+                const re = m ? new RegExp(m[1], m[2] || 'iu') : new RegExp(item.name, 'iu');
+                primaryHit = re.test(searchText);
+            } catch {
+                primaryHit = textMatchesTriggerAlias(normHaystack, item.name);
+            }
+        } else {
+            const aliases = String(item.name || '').split(',').map((s) => s.trim()).filter(Boolean);
+            primaryHit = aliases.some((a) => textMatchesTriggerAlias(normHaystack, a));
+        }
+        if (!primaryHit) continue;
+
+        if (item.secondaryKeys) {
+            const sec = item.secondaryKeys.split(',').map((s) => s.trim()).filter(Boolean);
+            if (sec.length > 0 && !sec.some((s) => textMatchesTriggerAlias(normHaystack, s))) {
+                continue;
+            }
+        }
+        matched.push(item);
+    }
+
+    matched.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    return matched.slice(0, Math.max(1, maxRefs));
+}
+
+async function resolveActiveReferencePayloadList({
+    sourcePref = 'auto',
+    refMode = 'off',
+    pickedRefUid = '',
+    customRefDataUrls = [],
+    customRefDesc = '',
+    matchText = '',
+    signal = null,
+    timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS,
+} = {}) {
+    const normalizedMode = String(refMode || 'off').trim();
+    if (normalizedMode === 'off' && (!Array.isArray(customRefDataUrls) || customRefDataUrls.length === 0)) {
+        return [];
+    }
+
+    const out = [];
+    const pushResolved = (rawDataUrl, desc, label) => {
+        const parts = splitDataUrlComponents(rawDataUrl);
+        if (parts) {
+            out.push({
+                dataUrl: parts.dataUrl,
+                base64: parts.base64,
+                mimeType: parts.mimeType,
+                description: String(desc || '').trim(),
+                label: String(label || '').trim(),
+            });
+        } else if (String(desc || '').trim()) {
+            out.push({
+                dataUrl: '',
+                base64: '',
+                mimeType: '',
+                description: String(desc || '').trim(),
+                label: String(label || '').trim(),
+            });
+        }
+    };
+
+    if (Array.isArray(customRefDataUrls) && customRefDataUrls.length > 0 && (normalizedMode === 'custom_photo' || normalizedMode === 'explicit')) {
+        for (const item of customRefDataUrls.slice(0, 4)) {
+            if (typeof item === 'string') {
+                pushResolved(item, customRefDesc, 'Custom Reference');
+            } else if (item && typeof item === 'object') {
+                pushResolved(item.dataUrl || item.image || '', item.description ?? customRefDesc, item.label || 'Reference');
+            }
+        }
+        return out;
+    }
+
+    let rawItems = [];
+    if (normalizedMode === 'pick_sillyimages' && pickedRefUid) {
+        const all = listSillyImagesReferenceCatalog(sourcePref);
+        const found = all.find((x) => x.uid === pickedRefUid);
+        if (found) rawItems = [found];
+    } else if (normalizedMode === 'auto_lorebook') {
+        rawItems = matchSillyImagesReferencesByText(sourcePref, matchText, 3);
+    }
+
+    for (const item of rawItems.slice(0, 4)) {
+        if (item.imagePath) {
+            try {
+                const dUrl = item.imagePath.startsWith('data:')
+                    ? item.imagePath
+                    : await urlToDataUrl(item.imagePath, signal, timeoutMs);
+                pushResolved(dUrl, item.description, item.name);
+            } catch {
+                if (item.description) {
+                    pushResolved('', item.description, item.name);
+                }
+            }
+        } else if (item.description) {
+            pushResolved('', item.description, item.name);
+        }
+    }
+    return out;
+}
+
 export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const cleanPrompt = String(visualPrompt || '').trim();
     if (!cleanPrompt) throw new Error('Промпт изображения пуст.');
@@ -2533,13 +3031,23 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const sourcePref = typeof options === 'string' ? options : (options.imageSource || 'auto');
     const profileId = typeof options === 'object' ? (options.imageProfileId || '') : '';
     const styleId = typeof options === 'object' ? (options.imageStyleId || '') : '';
-    const aspect = typeof options === 'object' && options.aspectRatio ? options.aspectRatio : '1:1';
+    const styleWrapMode = typeof options === 'object' ? (options.styleWrapMode || 'plain_prefix') : 'plain_prefix';
+    const negativePromptId = typeof options === 'object' ? (options.imageNegativeId || '') : '';
+    const customNegativePrompt = typeof options === 'object' ? (options.imageCustomNegative || '') : '';
+    const rawAspect = typeof options === 'object' && options.aspectRatio ? options.aspectRatio : '1:1';
     const signal = typeof options === 'object' ? (options.signal || null) : null;
     const maxAttempts = typeof options === 'object' && Number(options.maxAttempts) > 0 ? Number(options.maxAttempts) : 3;
     const timeoutMs = typeof options === 'object' && Number(options.timeoutMs) > 0
         ? Number(options.timeoutMs)
         : DEFAULT_IMAGE_REQUEST_TIMEOUT_MS;
     const onStatus = typeof options === 'object' && typeof options.onStatus === 'function' ? options.onStatus : null;
+
+    const refMode = typeof options === 'object' ? (options.refMode || 'off') : 'off';
+    const pickedRefUid = typeof options === 'object' ? (options.pickedRefUid || '') : '';
+    const customRefDataUrls = typeof options === 'object' && Array.isArray(options.customRefDataUrls) ? options.customRefDataUrls : [];
+    const customRefDesc = typeof options === 'object' ? (options.customRefDesc || '') : '';
+    const refMatchContext = typeof options === 'object' ? (options.refMatchContext || '') : '';
+    const fusionBlendRefs = typeof options === 'object' && options.fusionBlendRefs === true;
 
     const emit = (stage, detail = '', attempt = 1, providerLabel = '') => {
         if (!onStatus) return;
@@ -2568,7 +3076,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         return outUrl.startsWith('data:') ? outUrl : await urlToDataUrl(outUrl, signal, timeoutMs);
     }
 
-    emit('Подготовка генерации', 'Чтение изолированного профиля и стиля...', 1, '');
+    emit('Подготовка генерации', 'Чтение профиля и параметров генератора...', 1, '');
 
     const picked = pickEffectiveBucket(sourcePref);
     if (!picked) {
@@ -2581,13 +3089,37 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         throw new Error(`${picked.key} (${imgCfg.profileName}): ${validation.reason}`);
     }
 
+    const resolvedRefs = await resolveActiveReferencePayloadList({
+        sourcePref,
+        refMode,
+        pickedRefUid,
+        customRefDataUrls,
+        customRefDesc,
+        matchText: `${refMatchContext}\n${cleanPrompt}`,
+        signal,
+        timeoutMs,
+    });
+    const imageRefs = resolvedRefs.filter((r) => Boolean(r.base64 && r.dataUrl));
+    const refDescriptionsBlock = imgCfg.sendRefDescriptions !== false
+        ? resolvedRefs
+            .filter((r) => Boolean(r.description))
+            .map((r, idx) => `- Reference ${idx + 1}${r.label ? ` (${r.label})` : ''}: ${r.description}`)
+            .join('\n')
+        : '';
+
     const apiType = imgCfg.apiType;
+    const aspect = sanitizeAspectForProvider(rawAspect, apiType);
     const isPollinations = apiType === 'pollinations' || /pollinations\.ai/i.test(String(imgCfg.endpoint || ''));
     const model = resolveBucketModel(imgCfg);
     const rawEndpointFlag = Boolean(imgCfg.rawEndpoint);
     const endpoint = imgCfg.endpoint;
-    const negativePrompt = getEffectiveNegativePromptForConfig(imgCfg);
+    const negativePrompt = getEffectiveNegativePromptForConfig(imgCfg, negativePromptId, customNegativePrompt);
     const providerLabel = [apiType || picked.key, model ? String(model).split('/').pop() : ''].filter(Boolean).join(' · ');
+
+    // Keep SCENE/FIGURE prompt medium-neutral if LLM accidentally appended generic medium filler tags at the end
+    const mediumNeutralScenePrompt = cleanPrompt
+        .replace(/,\s*(?:crisp\s+linework|anime\s+style|manhwa\s+style|webtoon\s+style|photorealistic|3d\s+render|octane\s+render|unreal\s+engine)(?=\s*(?:,|$))/gi, '')
+        .trim() || cleanPrompt;
 
     let styleText = '';
     if (styleId !== '__none__') {
@@ -2599,7 +3131,38 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             styleText = String(imgCfg.slayStyle).trim();
         }
     }
-    const fullPrompt = styleText ? `[STYLE: ${styleText}]\n\n${cleanPrompt}` : cleanPrompt;
+
+    let baseStyledPrompt = mediumNeutralScenePrompt;
+    if (styleText) {
+        if (styleWrapMode === 'sillyimages_tag') {
+            baseStyledPrompt = `[STYLE: ${styleText}]\n\n${mediumNeutralScenePrompt}`;
+        } else if (styleWrapMode === 'suffix') {
+            baseStyledPrompt = `${mediumNeutralScenePrompt}\n\n${styleText}`;
+        } else {
+            // 'plain_prefix' (default): clean direct style direction at the very top without bracket noise
+            baseStyledPrompt = `${styleText}\n\n${mediumNeutralScenePrompt}`;
+        }
+    }
+
+    const promptWithRefOnly = refDescriptionsBlock
+        ? `${baseStyledPrompt}\n\nCharacter reference descriptions:\n${refDescriptionsBlock}`
+        : baseStyledPrompt;
+
+    // For LLM/diffusion endpoints without a dedicated negative_prompt JSON field, append explicit exclusion block when set
+    const promptWithRefText = negativePrompt
+        ? `${promptWithRefOnly}\n\n[NEGATIVE / DO NOT INCLUDE: ${negativePrompt}]`
+        : promptWithRefOnly;
+
+    const effectiveRefInstruction = fusionBlendRefs
+        ? FUSION_BLEND_REF_INSTRUCTION
+        : (imgCfg.refInstructionEnabled === false ? '' : (imgCfg.refInstruction || SILLYIMAGES_DEFAULT_REF_INSTRUCTION));
+
+    const buildConditionedPrompt = (hasSentRefImages) => {
+        if (hasSentRefImages && effectiveRefInstruction) {
+            return `${effectiveRefInstruction}\n\n${promptWithRefText}`;
+        }
+        return promptWithRefText;
+    };
 
     const executeSingleAttempt = async (attemptNum) => {
         const stagePrefix = attemptNum === 1
@@ -2613,7 +3176,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             const dims = getTargetCanvasDimensions(aspect);
             const pModel = model || 'flux';
             const seed = Math.floor(Math.random() * 1000000);
-            const pUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${dims.width}&height=${dims.height}&model=${encodeURIComponent(pModel)}&seed=${seed}&nologo=true`;
+            const pUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptWithRefText)}?width=${dims.width}&height=${dims.height}&model=${encodeURIComponent(pModel)}&seed=${seed}&nologo=true`;
             emit(stagePrefix, `Ожидание рендера Pollinations (${pModel})...`, attemptNum, providerLabel);
             return await urlToDataUrl(pUrl, signal, timeoutMs);
         }
@@ -2626,7 +3189,8 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             if (imgCfg.novelaiNeverSpendAnlas !== false) {
                 await verifyNovelAiFreeAllowance(url, imgCfg.apiKey, model, timeoutMs, signal);
             }
-            const naiPrompt = styleText ? `${styleText}, ${cleanPrompt}` : cleanPrompt;
+            const naiBase = styleText ? `${styleText}, ${cleanPrompt}` : cleanPrompt;
+            const naiPrompt = refDescriptionsBlock ? `${naiBase}, ${resolvedRefs.map((r) => r.description).filter(Boolean).join(', ')}` : naiBase;
             const body = buildNovelAiPayload(imgCfg, naiPrompt, negativePrompt, aspect);
             const resp = await fetchWithTimeout(url, {
                 method: 'POST',
@@ -2649,12 +3213,14 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             return `data:image/png;base64,${imageB64.trim()}`;
         }
 
-        // 2. NAISTERA
+        // 2. NAISTERA (supports reference_objects in SillyImages v3.0+)
         if (apiType === 'naistera') {
             const base = endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.naistera;
             const url = rawEndpointFlag ? base : (base.endsWith('/api/generate') ? base : `${base}/api/generate`);
+            const isNaiSubModel = /^novelai(?:-|$)/i.test(String(model || ''));
+            const canUseNaisteraRefs = !isNaiSubModel && imageRefs.length > 0;
             const body = {
-                prompt: fullPrompt,
+                prompt: buildConditionedPrompt(canUseNaisteraRefs),
                 model: model || undefined,
                 steps: Math.round(Number(imgCfg.naisteraSteps) || 23),
                 scale: Number(imgCfg.naisteraCfgScale) || 7,
@@ -2662,6 +3228,12 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             if (aspect !== 'native') body.aspect_ratio = aspect;
             else if (imgCfg.naisteraAspectRatio) body.aspect_ratio = imgCfg.naisteraAspectRatio;
             if (negativePrompt) body.negative_prompt = negativePrompt;
+            if (canUseNaisteraRefs) {
+                body.reference_objects = imageRefs.map((r) => ({
+                    image: r.dataUrl,
+                    description: r.description || '',
+                }));
+            }
 
             const resp = await fetchWithTimeout(url, {
                 method: 'POST',
@@ -2711,8 +3283,11 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                     ? `Basic ${btoa(imgCfg.apiKey)}`
                     : `Bearer ${imgCfg.apiKey}`;
             }
+            const rawTagPrompt = resolvedRefs.some((r) => r.description)
+                ? `${cleanPrompt}, ${resolvedRefs.map((r) => r.description).filter(Boolean).join(', ')}`
+                : cleanPrompt;
             const a1111Body = {
-                prompt: imgCfg.a1111PromptPrefix ? `${imgCfg.a1111PromptPrefix}, ${fullPrompt}` : fullPrompt,
+                prompt: imgCfg.a1111PromptPrefix ? `${imgCfg.a1111PromptPrefix}, ${rawTagPrompt}` : rawTagPrompt,
                 negative_prompt: negativePrompt,
                 width: Number(imgCfg.a1111Width) > 0 && aspect === 'native' ? Number(imgCfg.a1111Width) : dims.width,
                 height: Number(imgCfg.a1111Height) > 0 && aspect === 'native' ? Number(imgCfg.a1111Height) : dims.height,
@@ -2737,12 +3312,13 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             return `data:image/png;base64,${j.images[0]}`;
         }
 
-        // 4. OPENROUTER (1:1 parity: enable_base64_output, image_config.image_size, URL & Base64 extraction)
+        // 4. OPENROUTER (1:1 parity with SillyImages v3.0: multimodal image_url refs, 512/1K/2K/4K, enable_base64_output)
         if (apiType === 'openrouter') {
             const base = (endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.openrouter).replace(/\/+$/, '');
             const url = rawEndpointFlag ? base : (base.endsWith('/chat/completions') ? base : `${base}/chat/completions`);
             const isGeminiOrText = /gemini|gpt|banana/i.test(model);
-            const supportsImageSize = /gemini-3|3\.1-flash-image|nano-banana-2/i.test(model);
+            const isGemini25Flash = /gemini-2\.5-flash-image|(?:^|\/)nano-banana(?!-2|-pro)/i.test(model);
+            const supportsImageSize = !isGemini25Flash && /gemini-3|3\.1-flash-image|nano-banana-2|nano-banana-pro/i.test(model);
 
             const headers = {
                 Authorization: `Bearer ${imgCfg.apiKey}`,
@@ -2755,19 +3331,35 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 }
             } catch {}
 
+            let messageContent = buildConditionedPrompt(imageRefs.length > 0);
+            if (imageRefs.length > 0) {
+                const contentParts = [];
+                imageRefs.slice(0, 5).forEach((ref, idx) => {
+                    if (ref.description) {
+                        contentParts.push({ type: 'text', text: `Reference ${idx + 1}: ${ref.description}` });
+                    }
+                    contentParts.push({ type: 'image_url', image_url: { url: ref.dataUrl } });
+                });
+                contentParts.push({ type: 'text', text: buildConditionedPrompt(true) });
+                messageContent = contentParts;
+            }
+
             const sendOpenRouter = async (withAspect) => {
                 const payload = {
                     model,
-                    messages: [{ role: 'user', content: fullPrompt }],
+                    messages: [{ role: 'user', content: messageContent }],
                     modalities: isGeminiOrText ? ['image', 'text'] : ['image'],
                     enable_base64_output: true,
                 };
-                if (withAspect && aspect !== 'native') {
-                    const imageConfig = { aspect_ratio: aspect };
-                    if (supportsImageSize && imgCfg.imageSize && /^(0\.5K|1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
+                if (withAspect) {
+                    const imageConfig = {};
+                    if (aspect !== 'native') imageConfig.aspect_ratio = aspect;
+                    if (supportsImageSize && imgCfg.imageSize && /^(512|0\.5K|1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
                         imageConfig.image_size = String(imgCfg.imageSize).toUpperCase();
                     }
-                    payload.image_config = imageConfig;
+                    if (Object.keys(imageConfig).length > 0) {
+                        payload.image_config = imageConfig;
+                    }
                 }
                 return await fetchWithTimeout(url, {
                     method: 'POST',
@@ -2810,7 +3402,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             throw new Error('OpenRouter не вернул изображение в ответе.');
         }
 
-        // 5. GEMINI / NANO-BANANA
+        // 5. GEMINI / NANO-BANANA (1:1 parity with SillyImages v3.0 GeminiProvider + inlineData references)
         const isGemini = apiType === 'gemini' || (apiType === 'openai' && /google-ai/i.test(endpoint));
         if (isGemini) {
             const pathModel = String(model).includes('/') ? String(model).slice(String(model).indexOf('/') + 1) : String(model);
@@ -2819,32 +3411,58 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 ? endpoint
                 : `${baseClean}/v1beta/models/${encodeURIComponent(pathModel)}:generateContent`;
 
+            const mLower = pathModel.toLowerCase();
+            const is25Flash = mLower.startsWith('gemini-2.5-flash-image')
+                || (mLower.includes('nano-banana') && !mLower.includes('nano-banana-2') && !mLower.includes('nano-banana-pro'));
+            const maxGeminiRefs = (mLower.startsWith('gemini-3.1-flash-image') || mLower.includes('nano-banana-2'))
+                ? 14
+                : ((mLower.startsWith('gemini-3-pro-image') || mLower.includes('nano-banana-pro')) ? 11 : (is25Flash ? 3 : 5));
+
             const headers = {
                 Authorization: `Bearer ${imgCfg.apiKey}`,
                 'Content-Type': 'application/json',
             };
             if (/googleapis\.com/i.test(url)) headers['x-goog-api-key'] = imgCfg.apiKey;
 
+            const geminiParts = [];
+            const usedGeminiRefs = imageRefs.slice(0, maxGeminiRefs);
+            usedGeminiRefs.forEach((ref, idx) => {
+                if (ref.description) {
+                    geminiParts.push({ text: `IMAGE_${idx + 1}: ${ref.description}` });
+                }
+                geminiParts.push({
+                    inlineData: {
+                        mimeType: ref.mimeType || 'image/png',
+                        data: ref.base64,
+                    },
+                });
+            });
+            geminiParts.push({ text: buildConditionedPrompt(usedGeminiRefs.length > 0) });
+
             const sendGemini = async (withImageCfg) => {
                 const genCfg = { responseModalities: ['TEXT', 'IMAGE'] };
-                if (withImageCfg && aspect !== 'native') {
-                    genCfg.imageConfig = { aspectRatio: aspect };
-                    if (imgCfg.imageSize && /^(1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
-                        genCfg.imageConfig.imageSize = String(imgCfg.imageSize).toUpperCase();
+                if (withImageCfg) {
+                    const imgCfgBlock = {};
+                    if (aspect !== 'native') imgCfgBlock.aspectRatio = aspect;
+                    if (!is25Flash && imgCfg.imageSize && /^(512|1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
+                        imgCfgBlock.imageSize = String(imgCfg.imageSize).toUpperCase();
+                    }
+                    if (Object.keys(imgCfgBlock).length > 0) {
+                        genCfg.imageConfig = imgCfgBlock;
                     }
                 }
                 return await fetchWithTimeout(url, {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
-                        contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+                        contents: [{ role: 'user', parts: geminiParts }],
                         generationConfig: genCfg,
                     }),
                 }, timeoutMs, signal);
             };
 
-            let resp = await sendGemini(aspect !== 'native');
-            if (!resp.ok && aspect !== 'native' && [400, 404, 422].includes(resp.status)) {
+            let resp = await sendGemini(true);
+            if (!resp.ok && [400, 404, 422].includes(resp.status)) {
                 emit(stagePrefix, 'Модель не принимает imageConfig · повтор в родном формате модели...', attemptNum, providerLabel);
                 resp = await sendGemini(false);
             }
@@ -2874,17 +3492,17 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             );
         }
 
-        // 6. OPENAI-COMPATIBLE / XAI / ELECTRON HUB (with exact provider default endpoints!)
+        // 6. OPENAI-COMPATIBLE / XAI / ELECTRON HUB (1:1 parity with SillyImages v3.0 /generations & /edits)
         const defaultBase = SILLYIMAGES_DEFAULT_ENDPOINTS[apiType] || 'https://api.openai.com';
         const oaBase = (endpoint || defaultBase)
             .replace(/\/compatible$/i, '')
-            .replace(/\/v1\/images\/generations$/i, '')
-            .replace(/\/images\/generations$/i, '')
+            .replace(/\/v1\/images\/(?:generations|edits)$/i, '')
+            .replace(/\/images\/(?:generations|edits)$/i, '')
             .replace(/\/v1$/i, '');
-        const oaUrl = rawEndpointFlag ? (endpoint || defaultBase) : `${oaBase}/v1/images/generations`;
 
         const mLow = String(model || '').toLowerCase();
         const isGptImg = mLow.includes('gpt-image');
+        const isFluxKontext = mLow.includes('flux') && mLow.includes('kontext');
         const isDalle3 = mLow.includes('dall-e-3');
         const isDalle2 = mLow.includes('dall-e-2');
 
@@ -2892,11 +3510,11 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         if (aspect !== 'native') {
             if (isGptImg) {
                 resolvedSize = aspect === '1:1' ? '1024x1024'
-                    : (aspect === '2:3' || aspect === '3:4') ? '1024x1536'
+                    : (aspect === '2:3' || aspect === '3:4' || aspect === '9:16') ? '1024x1536'
                     : '1536x1024';
             } else if (isDalle3) {
                 resolvedSize = aspect === '1:1' ? '1024x1024'
-                    : (aspect === '2:3' || aspect === '3:4') ? '1024x1792'
+                    : (aspect === '2:3' || aspect === '3:4' || aspect === '9:16') ? '1024x1792'
                     : '1792x1024';
             } else if (isDalle2) {
                 resolvedSize = '1024x1024';
@@ -2917,15 +3535,92 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             resolvedQuality = 'standard';
         }
 
-        const sendOpenAiCompat = async (minimalFallback = false) => {
-            const body = { model, prompt: fullPrompt, n: 1 };
-            if (!minimalFallback) {
-                if (apiType === 'xai') {
-                    if (aspect !== 'native') body.aspect_ratio = aspect;
+        // 6A. xAI Imagine with v3.0 resolution/quality & reference edits
+        if (apiType === 'xai') {
+            const canXaiRefs = mLow.includes('grok-imagine-image') && imageRefs.length > 0;
+            const xaiPath = canXaiRefs ? '/v1/images/edits' : '/v1/images/generations';
+            const xaiUrl = rawEndpointFlag ? (endpoint || defaultBase) : `${oaBase}${xaiPath}`;
+            const xaiBody = {
+                model,
+                prompt: buildConditionedPrompt(canXaiRefs),
+                n: 1,
+                response_format: 'b64_json',
+                aspect_ratio: aspect !== 'native' ? aspect : (imgCfg.xaiAspectRatio || '1:1'),
+                resolution: String(imgCfg.xaiResolution || '1k').toLowerCase() === '2k' ? '2k' : '1k',
+            };
+            if (mLow.includes('grok-imagine-image-2.0')) {
+                xaiBody.quality = String(imgCfg.xaiQuality || 'medium').toLowerCase() === 'low' ? 'low' : 'medium';
+            }
+            if (canXaiRefs) {
+                if (imageRefs.length === 1) {
+                    xaiBody.image = { type: 'image_url', url: imageRefs[0].dataUrl };
                 } else {
-                    if (resolvedSize) body.size = resolvedSize;
-                    if (resolvedQuality) body.quality = resolvedQuality;
+                    xaiBody.images = imageRefs.slice(0, 3).map((r) => ({ type: 'image_url', url: r.dataUrl }));
                 }
+            }
+            const xResp = await fetchWithTimeout(xaiUrl, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${imgCfg.apiKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(xaiBody),
+            }, timeoutMs, signal);
+            if (!xResp.ok) {
+                throw new Error(formatHttpProviderError('xAI', xResp.status, await xResp.text().catch(() => '')));
+            }
+            const xj = await xResp.json();
+            const xd = xj?.data?.[0];
+            if (xd?.b64_json) {
+                const mime = String(xd.b64_json).startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+                return `data:${mime};base64,${xd.b64_json}`;
+            }
+            if (xd?.url || xj?.url) return await urlToDataUrl(xd?.url || xj?.url, signal, timeoutMs);
+            throw new Error('xAI не вернул изображение.');
+        }
+
+        // 6B. OpenAI / ElectronHub multipart /v1/images/edits when references are provided and supported
+        const canOpenAiEdits = (isGptImg || isFluxKontext) && imageRefs.length > 0 && typeof FormData !== 'undefined';
+        if (canOpenAiEdits) {
+            const editsUrl = rawEndpointFlag ? (endpoint || defaultBase) : `${oaBase}/v1/images/edits`;
+            const form = new FormData();
+            form.append('model', model);
+            form.append('prompt', buildConditionedPrompt(true));
+            form.append('n', '1');
+            if (resolvedSize) form.append('size', resolvedSize);
+            if (resolvedQuality) form.append('quality', resolvedQuality);
+            if (isGptImg) form.append('moderation', 'low');
+
+            if (isGptImg && apiType !== 'electronhub' && imageRefs.length > 1) {
+                imageRefs.slice(0, 5).forEach((ref, idx) => {
+                    form.append('image[]', base64ToBlobBinary(ref.base64, ref.mimeType || 'image/png'), `reference-${idx}.png`);
+                });
+            } else {
+                form.append('image', base64ToBlobBinary(imageRefs[0].base64, imageRefs[0].mimeType || 'image/png'), 'reference-0.png');
+            }
+
+            const eResp = await fetchWithTimeout(editsUrl, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${imgCfg.apiKey}` },
+                body: form,
+            }, timeoutMs, signal);
+            if (!eResp.ok) {
+                throw new Error(formatHttpProviderError(apiType === 'electronhub' ? 'Electron Hub /edits' : 'OpenAI /edits', eResp.status, await eResp.text().catch(() => '')));
+            }
+            const ej = await eResp.json();
+            const ed = ej?.data?.[0];
+            if (ed?.b64_json) {
+                const mime = String(ed.b64_json).startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+                return `data:${mime};base64,${ed.b64_json}`;
+            }
+            if (ed?.url || ej?.url) return await urlToDataUrl(ed?.url || ej?.url, signal, timeoutMs);
+            throw new Error('Image /edits API не вернул изображение.');
+        }
+
+        // 6C. Standard OpenAI / ElectronHub /v1/images/generations
+        const oaUrl = rawEndpointFlag ? (endpoint || defaultBase) : `${oaBase}/v1/images/generations`;
+        const sendOpenAiCompat = async (minimalFallback = false) => {
+            const body = { model, prompt: promptWithRefText, n: 1 };
+            if (!minimalFallback) {
+                if (resolvedSize) body.size = resolvedSize;
+                if (resolvedQuality) body.quality = resolvedQuality;
             }
             if (!isGptImg) {
                 body.response_format = 'b64_json';
@@ -2961,35 +3656,102 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     };
 
     let lastErr = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (signal?.aborted) throw new Error('Генерация остановлена пользователем.');
-        try {
-            const outDataUrl = await executeSingleAttempt(attempt);
-            emit('Готово', 'Изображение успешно получено!', attempt, providerLabel);
-            return outDataUrl;
-        } catch (err) {
-            lastErr = err;
-            if (attempt >= maxAttempts || isNonRetryableArtError(err)) {
-                throw err;
+    const runLoop = async () => {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (signal?.aborted) {
+                const ae = new Error('Генерация остановлена пользователем.');
+                ae.code = 'ABORTED';
+                throw ae;
             }
-            const shortErr = String(err?.message || err).slice(0, 80);
-            const waitSec = attempt === 1 ? 2 : 3;
-            for (let left = waitSec; left > 0; left--) {
-                emit(
-                    `Ожидание повтора [${attempt + 1}/${maxAttempts}]`,
-                    `Попытка ${attempt} не удалась (${shortErr}) · повтор через ${left} сек...`,
-                    attempt + 1,
-                    providerLabel,
-                );
-                await sleepAbortable(1000, signal);
+            try {
+                const outDataUrl = await executeSingleAttempt(attempt);
+                if (signal?.aborted) {
+                    const ae = new Error('Генерация остановлена пользователем.');
+                    ae.code = 'ABORTED';
+                    throw ae;
+                }
+                emit('Готово', 'Изображение успешно получено!', attempt, providerLabel);
+                return outDataUrl;
+            } catch (err) {
+                if (signal?.aborted) {
+                    const ae = new Error('Генерация остановлена пользователем.');
+                    ae.code = 'ABORTED';
+                    throw ae;
+                }
+                lastErr = err;
+                if (attempt >= maxAttempts || isNonRetryableArtError(err)) {
+                    throw err;
+                }
+                const shortErr = String(err?.message || err).slice(0, 80);
+                const waitSec = attempt === 1 ? 2 : 3;
+                for (let left = waitSec; left > 0; left--) {
+                    emit(
+                        `Ожидание повтора [${attempt + 1}/${maxAttempts}]`,
+                        `Попытка ${attempt} не удалась (${shortErr}) · повтор через ${left} сек...`,
+                        attempt + 1,
+                        providerLabel,
+                    );
+                    await sleepAbortable(1000, signal);
+                }
             }
         }
-    }
-    throw lastErr || new Error('Не удалось сгенерировать изображение.');
+        throw lastErr || new Error('Не удалось сгенерировать изображение.');
+    };
+
+    if (!signal) return await runLoop();
+
+    return await new Promise((resolve, reject) => {
+        const onAbort = () => {
+            const ae = new Error('Генерация остановлена пользователем.');
+            ae.code = 'ABORTED';
+            reject(ae);
+        };
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+        runLoop().then(
+            (val) => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(val);
+            },
+            (err) => {
+                signal.removeEventListener('abort', onAbort);
+                reject(err);
+            },
+        );
+    });
 }
 
-// Chat Completion preset message builder — fixes assistant_prefill preservation even when post-history blocks exist! (fixes NMF-011)
-export function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = '', presetCorrectionPrompt = '') {
+/**
+ * Strips all SillyTavern active character, persona, world-info/lorebook, example-dialogue, and chat-summary macros
+ * from custom preset prompt blocks BEFORE SillyTavern runs substituteParams(), preventing active chat cards/worlds
+ * from leaking into NexusMatch Forge generations across any user preset.
+ */
+export function stripActiveChatMacrosFromPresetBlock(rawBlockText) {
+    const src = String(rawBlockText ?? '');
+    if (!src) return '';
+
+    const CHAT_LEAK_MACRO_RE = /\{\{\s*(?:description|charPrompt|char_prompt|personality|scenario|mesExamples|mesExamplesRaw|worldInfoBefore|worldInfoAfter|wiBefore|wiAfter|charDepthPrompt|depth_prompt|charJailbreak|char_version|persona|personaDescription|summary|authorsNote|char_GlobalNote|iig-book|iig_book|char_appearance|user_appearance)\s*\}\}/gi;
+
+    let cleaned = src.replace(CHAT_LEAK_MACRO_RE, '');
+
+    // Collapse XML/tag wrappers that became empty after removing the macro (e.g. <description>\n</description>)
+    cleaned = cleaned.replace(/<([a-zA-Z0-9_:-]+)>\s*<\/\1>/g, '');
+    cleaned = cleaned.replace(/\[(?:Character|Scenario|World\s*Info|Lorebook|Persona|Examples)[^\]]*:\s*\]/gi, '');
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    return cleaned;
+}
+
+// Chat Completion preset message builder — fixes assistant_prefill preservation & strips active char/lorebook macro leaks!
+export function buildPresetAlignedMessages(
+    ctx,
+    userTaskContent,
+    systemPrompt = '',
+    presetCorrectionPrompt = '',
+    { stripActiveCharFromPreset = true } = {},
+) {
     const oai = ctx?.chatCompletionSettings || {};
     const prompts = Array.isArray(oai.prompts) ? oai.prompts : [];
     const byId = new Map(prompts.map((p) => [p?.identifier, p]));
@@ -3006,6 +3768,11 @@ export function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = 
         'scenario', 'personaDescription', 'dialogueExamples', 'chatHistory', 'enhanceDefinitions',
     ]);
 
+    const sanitizePresetPromptContent = (rawContent) => {
+        if (!stripActiveCharFromPreset) return String(rawContent || '');
+        return stripActiveChatMacrosFromPresetBlock(rawContent);
+    };
+
     const correctionClean = String(presetCorrectionPrompt || '').trim();
     const finalUserTask = correctionClean
         ? `${userTaskContent}\n\n${correctionClean}`
@@ -3017,33 +3784,40 @@ export function buildPresetAlignedMessages(ctx, userTaskContent, systemPrompt = 
 
     if (chatIdx === -1) {
         for (const item of orderList) {
-            if (DYNAMIC_SLOTS.has(item.identifier)) continue;
+            if (stripActiveCharFromPreset && DYNAMIC_SLOTS.has(item.identifier)) continue;
+            if (item.identifier === 'chatHistory') continue;
             const p = byId.get(item.identifier);
             if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-            messages.push({ role: p.role || 'system', content: p.content });
+            const cleanBlock = sanitizePresetPromptContent(p.content);
+            if (!cleanBlock) continue;
+            messages.push({ role: p.role || 'system', content: cleanBlock });
         }
         messages.push({ role: 'user', content: finalUserTask });
     } else {
         for (let i = 0; i < chatIdx; i++) {
             const id = orderList[i].identifier;
-            if (DYNAMIC_SLOTS.has(id)) continue;
+            if (stripActiveCharFromPreset && DYNAMIC_SLOTS.has(id)) continue;
             const p = byId.get(id);
             if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-            messages.push({ role: p.role || 'system', content: p.content });
+            const cleanBlock = sanitizePresetPromptContent(p.content);
+            if (!cleanBlock) continue;
+            messages.push({ role: p.role || 'system', content: cleanBlock });
         }
         messages.push({ role: 'user', content: finalUserTask });
         for (let i = chatIdx + 1; i < orderList.length; i++) {
             const id = orderList[i].identifier;
-            if (DYNAMIC_SLOTS.has(id)) continue;
+            if (stripActiveCharFromPreset && DYNAMIC_SLOTS.has(id)) continue;
             const p = byId.get(id);
             if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-            messages.push({ role: p.role || 'user', content: p.content });
+            const cleanBlock = sanitizePresetPromptContent(p.content);
+            if (!cleanBlock) continue;
+            messages.push({ role: p.role || 'user', content: cleanBlock });
         }
     }
 
     // Always append assistant_prefill if configured and not already identical to the tail message
     if (oai.assistant_prefill && String(oai.assistant_prefill).length > 0) {
-        const prefillStr = String(oai.assistant_prefill);
+        const prefillStr = sanitizePresetPromptContent(oai.assistant_prefill) || String(oai.assistant_prefill);
         const lastMsg = messages[messages.length - 1];
         if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.content !== prefillStr) {
             messages.push({ role: 'assistant', content: prefillStr });
@@ -3121,6 +3895,7 @@ export async function runLlmGeneration({
     jsonSchema = null,
     transportMode = 'prefill_user_msg',
     presetCorrectionPrompt = '',
+    stripActiveCharFromPreset = true,
     signal = null,
 }) {
     const ctx = getTavernContext();
@@ -3148,7 +3923,9 @@ export async function runLlmGeneration({
 
     if (transportMode === 'prefill_user_msg') {
         if (isChatCompletion) {
-            promptPayload = buildPresetAlignedMessages(ctx, user, system, presetCorrectionPrompt);
+            promptPayload = buildPresetAlignedMessages(ctx, user, system, presetCorrectionPrompt, {
+                stripActiveCharFromPreset: stripActiveCharFromPreset !== false,
+            });
             sysPayload = '';
         } else {
             // Text Completion API (Kobold / TextGenWebUI / NovelAI): let Core apply active Text Completion Context & Instruct templates!

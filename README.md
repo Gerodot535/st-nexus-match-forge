@@ -1,8 +1,8 @@
 <div align="center">
 
-# NexusMatch Forge `[BETA v1.4.2]`
+# NexusMatch Forge `[BETA v1.9.1]`
 
-**An Interactive Swipe-Deck, Blitz Quiz, AU Multiverse Adapter, and Safe Character / World / RPG Card V2 Studio for SillyTavern — designed for both Android Mobile and Desktop.**
+**An Interactive Swipe-Deck, Astral Gacha Summoner & Alchemy Card Fusion, Blitz Quiz, AU Multiverse Adapter, and Safe Character / World / RPG Card V2 Studio for SillyTavern — designed for both Android Mobile and Desktop.**
 
 [**English Documentation**](README.md) · [**Русская документация (RU)**](README.ru.md) · [**Changelog**](CHANGELOG.md) · [**MIT License**](LICENSE)
 
