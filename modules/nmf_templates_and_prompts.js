@@ -2,7 +2,7 @@
 // Note (NMF-017): World Sandbox and RPG GM Engine are structured content templates packaged inside standard Character Card V2 (chara_card_v2).
 import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js';
 
-export const SETTINGS_SCHEMA_VERSION = 6;
+export const SETTINGS_SCHEMA_VERSION = 7;
 export const MAX_LIKED_CANDIDATES = 100;
 export const MAX_PASSED_CANDIDATES = 50;
 export const MAX_GACHA_COLLECTION = 80;
@@ -222,9 +222,9 @@ export function buildFlexibleAvatarArtMechanismRule(intake = {}) {
                 : `- For a single character avatar, set "CHARACTERS IN THE IMAGE: yes." and write "FIGURE 1 (NAME):" + "[Figure 1 is styled in: ...]". (If the concept explicitly centers on 2-3 characters or a pure object/vista, adapt CHARACTERS IN THE IMAGE, FIGURE N, INTERACTION, or OBJECT accordingly.)`));
 
     return [
-        `[AVATAR ART MECHANISM FOR image_prompt / IMG BLOCK — STRICTLY MEDIUM-NEUTRAL ENGLISH]`,
+        `[AVATAR ART MECHANISM FOR image_prompt / IMG BLOCK]`,
         `Compose the English visual prompt like a visual director framing a dramatic key avatar/cover shot:`,
-        `- MEDIUM-NEUTRAL LAW: NEVER include art mediums or style words (NO "anime", "manhwa", "oil painting", "photorealistic", "3D", "crisp linework", camera brands, or lens f-stops) so it never clashes with the user's external style preset.`,
+        `- STYLE SOURCE RULE: Do NOT invent or mention any rendering style on your own — rendering style comes strictly from SillyImages or from what the user explicitly wrote (if the user explicitly requested a visual style, preserve the user's exact words; otherwise describe ONLY the scene, lighting, and subject).`,
         `- Prefer bold, dynamic framing (chest-up three-quarter portrait, low-angle waist-up, intimate close-up, or dramatic focal shot) centered cleanly on the subject's head/upper torso or focal object so the avatar never crops off the top of the head. Describe ONLY what physically falls inside the cropped frame.`,
         `- Structure the prompt cleanly in this exact order:`,
         `  1) SCENE: Exact framing boundaries (from top edge cutoff with clear headroom above crown/ears down to bottom edge cutoff), viewing height/angle, foreground/midground depth, visible environment in the gaps around the subject (focused, up to 55 words), directional key light vs secondary rim/ambient light sculpting forms, surface reflections, contrast, and mood color palette.`,
@@ -1612,7 +1612,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             gachaCooldownMinutes: DEFAULT_GACHA_COOLDOWN_MINUTES,
             gachaMaxPullsPerCycle: GACHA_CYCLE_LIMIT,
             gachaLuckMode: 'fair',
-            gachaSacrificeFailEnabled: false,
+            gachaSacrificeFailEnabled: true,
             gachaSacrificeFailChance: 25,
             gachaWallet: createDefaultGachaWallet(),
             savedVault: [],
@@ -1716,7 +1716,9 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             ? Math.round(parsedMaxPulls)
             : GACHA_CYCLE_LIMIT,
         gachaLuckMode: validLuckModes.has(rawCfg.gachaLuckMode) ? rawCfg.gachaLuckMode : 'fair',
-        gachaSacrificeFailEnabled: Boolean(rawCfg.gachaSacrificeFailEnabled),
+        gachaSacrificeFailEnabled: prevVersion < 7
+            ? true
+            : (rawCfg.gachaSacrificeFailEnabled !== undefined ? Boolean(rawCfg.gachaSacrificeFailEnabled) : true),
         gachaSacrificeFailChance: Number.isFinite(parsedFailChance) && parsedFailChance >= 5 && parsedFailChance <= 90
             ? Math.round(parsedFailChance)
             : 25,
@@ -2221,7 +2223,7 @@ export function buildTinderPreviewRequest(session, count = 1, mode = 'prefill_us
             `[[NMF_C_LOOKS]]${worldMode ? 'Key visual aesthetic, landmarks, and atmosphere of the setting' : 'Concise striking visual appearance'}[[/NMF_C_LOOKS]]`,
             `[[NMF_C_QUOTE]]${worldMode ? 'Atmospheric epigraph, world rumor, or System boot line' : 'Characteristic first-impression quote'}[[/NMF_C_QUOTE]]`,
             `[[NMF_C_TAGS]]tag1, tag2, tag3, tag4, tag5[[/NMF_C_TAGS]]`,
-            `[[NMF_C_IMG]]SCENE: ... CHARACTERS IN THE IMAGE: ... FIGURE / OBJECT ... (medium-neutral English prompt)[[/NMF_C_IMG]]`,
+            `[[NMF_C_IMG]]SCENE: ... CHARACTERS IN THE IMAGE: ... FIGURE / OBJECT ...[[/NMF_C_IMG]]`,
             `[[/NMF_CANDIDATE]]`,
         ].join('\n')),
         jsonSchema: null,
@@ -2604,7 +2606,7 @@ export function buildVisualPromptRefinementRequest(entity, userHint = '', intake
     const core = [
         'You are NexusMatch Visual Prompt Director.',
         'Rewrite and upgrade the English visual portrait prompt strictly following the <ART_MECHANISM> specification below (SCENE -> CHARACTERS IN THE IMAGE -> FIGURE / INTERACTION / OBJECT).',
-        'Do NOT include medium/rendering style words (no "anime style", "photorealistic", "8k", "masterpiece").',
+        'Do NOT invent rendering styles on your own — only include style words if the user explicitly wrote them in their direction; otherwise let SillyImages control the style.',
         'Output ONLY the pure English visual prompt inside [[NMF_IMG_PROMPT]]...[[/NMF_IMG_PROMPT]] (or JSON {"image_prompt":"..."} if JSON mode).',
         artMechRule,
     ].join('\n');
@@ -2946,7 +2948,7 @@ export function buildGachaSummonRequest(session, plusTags = [], rarities = [3], 
             `[[NMF_D_LOOKS]]Striking physical appearance, expression, attire, and signature detail[[/NMF_D_LOOKS]]`,
             `[[NMF_D_QUOTE]]Memorable in-character opening voice line[[/NMF_D_QUOTE]]`,
             `[[NMF_D_TAGS]]tag1, tag2, tag3, tag4, tag5[[/NMF_D_TAGS]]`,
-            `[[NMF_D_IMG]]SCENE: ... CHARACTERS IN THE IMAGE: ... FIGURE / OBJECT ... (medium-neutral English prompt)[[/NMF_D_IMG]]`,
+            `[[NMF_D_IMG]]SCENE: ... CHARACTERS IN THE IMAGE: ... FIGURE / OBJECT ...[[/NMF_D_IMG]]`,
             `[[/NMF_DROP]]`,
         ].join('\n')),
         jsonSchema: null,
@@ -3069,7 +3071,7 @@ export function buildGachaFusionRequest(session, donorCards = [], fusionHint = '
             `[[NMF_D_LOOKS]]Cohesive, newly synthesized physical appearance, attire, and signature detail[[/NMF_D_LOOKS]]`,
             `[[NMF_D_QUOTE]]Memorable first-impression voice line[[/NMF_D_QUOTE]]`,
             `[[NMF_D_TAGS]]tag1, tag2, tag3, tag4, tag5[[/NMF_D_TAGS]]`,
-            `[[NMF_D_IMG]]SCENE: ... CHARACTERS IN THE IMAGE: ... FIGURE ... (medium-neutral English prompt)[[/NMF_D_IMG]]`,
+            `[[NMF_D_IMG]]SCENE: ... CHARACTERS IN THE IMAGE: ... FIGURE ...[[/NMF_D_IMG]]`,
             `[[/NMF_DROP]]`,
         ].join('\n')),
         jsonSchema: null,

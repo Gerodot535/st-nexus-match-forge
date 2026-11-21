@@ -2,6 +2,14 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.9.3-beta] - 2026-11-21
+
+### Pure SillyImages/User Art Style (Zero Style Stripping), Default 25% Sacrifice Failure, Sorted/Filtered Card Grids & Altar Synthesis Comet Reveal
+- **Pure SillyImages / User Style Rule (`nmf_templates_and_prompts.js` & `nmf_card_io_and_art.js`)**: Removed all hardcoded style example lists (`anime`, `oil painting`, `photorealistic`, `3D`, etc.) from prompts and removed the regex that stripped user-written style words. Art style now comes strictly from `SillyImages` or explicit user words, while both `SillyImages` negative presets and user custom negatives apply cleanly across all providers (including `NovelAI Medium` and `Naistera`).
+- **Default 25% Sacrifice Failure Risk**: Enabled `gachaSacrificeFailEnabled: true` (`25%`) by default on fresh installs and `v7` settings migration (can be toggled anytime in Point 3).
+- **Organized Card Grids (`filterAndSortGridEntries` & `renderGridSortFilterBar`)**: Added quick filter chips (`All`, `5-Star`, `4+ Star`, `Fused`, `With Art`) and sort options (`By Stars 5 -> 1`, `Art & Shape Grouped`, `Newest`, `By Name A-Z`) across Gacha Collection, Matches, Vault, and Passed so tiles line up cleanly without visual clutter.
+- **Altar Synthesis Reveal Fix**: Completing Fusion while watching the Altar now immediately launches the Comet flight -> 3D Card Flip reveal, while switching tabs or minimizing pins the themed Unpack button into the top Shade.
+
 ## [1.9.2-beta] - 2026-11-21
 
 ### Always Launch on Start Screen, Dual Isolated Questionnaires in Point 1 (With Mode Guidance & High-Random Blank Gacha), and Clean Inner Tabs

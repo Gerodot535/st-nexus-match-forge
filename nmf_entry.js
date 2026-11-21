@@ -153,6 +153,8 @@ export const state = {
     activeTab: 'home', // home | swipe | matches | blitz | create | editor
     discoverSubMode: 'swipe', // swipe | gacha
     matchesSubTab: 'liked', // liked | gacha_collection | vault | passed
+    gridSortMode: 'stars_desc', // stars_desc | art_first | newest | name_asc
+    gridFilterMode: 'all', // all | s5 | s4plus | fused | with_art
     settingsOpenSection: '',
     homeOpenCards: {
         sessions: false,
@@ -2895,6 +2897,80 @@ function renderSwipeTab(sess) {
     </div>`}`;
 }
 
+function filterAndSortGridEntries(items = [], { isGacha = false, isVault = false } = {}) {
+    const sortMode = state.gridSortMode || (isGacha ? 'stars_desc' : 'art_first');
+    const filterMode = state.gridFilterMode || 'all';
+
+    const indexed = items.map((item, origIdx) => {
+        const hasArt = Boolean(resolveEntityDisplayUrl(item));
+        const pSpec = resolvePuzzleTileSpec(item, hasArt);
+        const shapeRank = pSpec.cls === 'nmf-tile-wide' ? 0 : (pSpec.cls === 'nmf-tile-tall' ? 1 : (hasArt ? 2 : 3));
+        return { item, origIdx, hasArt, shapeRank };
+    });
+
+    const filtered = indexed.filter(({ item, hasArt }) => {
+        if (filterMode === 'with_art') return hasArt;
+        if (isGacha) {
+            const st = Number(item?.stars) || 3;
+            if (filterMode === 's5') return st >= 5;
+            if (filterMode === 's4plus') return st >= 4;
+            if (filterMode === 'fused') return Boolean(item?.fusedFromNames?.length);
+        }
+        return true;
+    });
+
+    filtered.sort((a, b) => {
+        if (sortMode === 'stars_desc' && isGacha) {
+            const sd = (Number(b.item?.stars) || 3) - (Number(a.item?.stars) || 3);
+            if (sd !== 0) return sd;
+            if (a.shapeRank !== b.shapeRank) return a.shapeRank - b.shapeRank;
+            return a.origIdx - b.origIdx;
+        }
+        if (sortMode === 'art_first' || (sortMode === 'stars_desc' && !isGacha)) {
+            if (a.hasArt !== b.hasArt) return a.hasArt ? -1 : 1;
+            if (a.shapeRank !== b.shapeRank) return a.shapeRank - b.shapeRank;
+            if (!isVault) {
+                const cd = (Number(b.item?.compatibility) || 0) - (Number(a.item?.compatibility) || 0);
+                if (cd !== 0) return cd;
+            }
+            return a.origIdx - b.origIdx;
+        }
+        if (sortMode === 'name_asc') {
+            return String(a.item?.name || '').localeCompare(String(b.item?.name || ''), getUiLang() === 'en' ? 'en' : 'ru');
+        }
+        // 'newest' keeps natural chronological insertion order, pairing wide tiles cleanly
+        return a.origIdx - b.origIdx;
+    });
+
+    return filtered;
+}
+
+function renderGridSortFilterBar({ isGacha = false, totalCount = 0, shownCount = 0 } = {}) {
+    if (totalCount < 2) return '';
+    const sortVal = state.gridSortMode || (isGacha ? 'stars_desc' : 'art_first');
+    const flt = state.gridFilterMode || 'all';
+    const validForTab = isGacha ? flt : (flt === 'with_art' ? 'with_art' : 'all');
+
+    return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;padding:4px 0 2px">
+        <div class="nmf-chip-wrap" style="gap:4px">
+            <button type="button" class="nmf-chip ${validForTab === 'all' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="all">${esc(tx('Все', 'All'))} (${totalCount})</button>
+            ${isGacha ? `
+            <button type="button" class="nmf-chip ${validForTab === 's5' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="s5">${esc(tx('5 зв.', '5-Star'))}</button>
+            <button type="button" class="nmf-chip ${validForTab === 's4plus' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="s4plus">${esc(tx('4+ зв.', '4+ Star'))}</button>
+            <button type="button" class="nmf-chip ${validForTab === 'fused' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="fused">${esc(tx('Синтез', 'Fused'))}</button>` : ''}
+            <button type="button" class="nmf-chip ${validForTab === 'with_art' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="with_art">${esc(tx('С артом', 'With Art'))}</button>
+        </div>
+        <select class="nmf-select" style="width:auto;max-width:168px;height:27px;font-size:10.5px;padding:0 7px" data-grid-sort="1">
+            ${isGacha ? `<option value="stars_desc" ${sortVal === 'stars_desc' ? 'selected' : ''}>${esc(tx('По звёздам (5 -> 1)', 'By Stars (5 -> 1)'))}</option>` : ''}
+            <option value="art_first" ${(sortVal === 'art_first' || (!isGacha && sortVal === 'stars_desc')) ? 'selected' : ''}>${esc(tx('С артом и по размеру', 'Art & Shape Grouped'))}</option>
+            <option value="newest" ${sortVal === 'newest' ? 'selected' : ''}>${esc(tx('Сначала новые', 'Newest First'))}</option>
+            <option value="name_asc" ${sortVal === 'name_asc' ? 'selected' : ''}>${esc(tx('По имени (А–Я)', 'By Name (A-Z)'))}</option>
+        </select>
+    </div>
+    ${shownCount === 0 ? `<div style="padding:14px;text-align:center;font-size:12px;color:var(--nmf-text-muted);border:1px dashed var(--nmf-border);border-radius:6px">${esc(tx('По выбранному фильтру пока нет карточек.', 'No cards match the selected filter yet.'))}</div>` : ''}`;
+}
+
 // 2. MATCHES, GACHA COLLECTION (+ SACRIFICE & ALCHEMY), SAVED VAULT & PASSED ARCHIVE
 function renderGachaCollectionView(sess) {
     const gc = sess.gacha || (sess.gacha = createDefaultSession(1).gacha);
@@ -2982,9 +3058,12 @@ function renderGachaCollectionView(sess) {
         <div style="color:var(--nmf-accent)">${NMF_ICONS.primogem}</div>
         <div style="font-family:var(--nmf-font-title);font-size:16px;font-weight:700">${esc(tx('Коллекция Гачи пока пуста', 'Gacha Collection is empty'))}</div>
         <button type="button" class="nmf-btn-primary" data-act="go-to-gacha-banner">${NMF_ICONS.primogem} ${esc(tx('Перейти к Баннеру Гачи', 'Go to Gacha Banner'))}</button>
-    </div>` : `
+    </div>` : (() => {
+        const sortedCol = filterAndSortGridEntries(col, { isGacha: true });
+        return `
+    ${renderGridSortFilterBar({ isGacha: true, totalCount: col.length, shownCount: sortedCol.length })}
     <div class="nmf-mosaic-grid">
-        ${col.map((c, idx) => {
+        ${sortedCol.map(({ item: c, origIdx: idx }) => {
             const thumbUrl = safeImgSrc(resolveEntityDisplayUrl(c));
             const isLoading = state.loadingArtIds.has(c.id);
             const fSpec = resolveDisplayOrCoverSpec(c, thumbUrl, isLoading, state.artErrors.get(c.id) || '');
@@ -3037,7 +3116,8 @@ function renderGachaCollectionView(sess) {
             </div>
         </div>`;
         }).join('')}
-    </div>`}`;
+    </div>`;
+    })()}`;
 }
 
 function renderSavedVaultView(sess) {
@@ -3055,9 +3135,12 @@ function renderSavedVaultView(sess) {
         </div>`;
     }
 
+    const sortedVault = filterAndSortGridEntries(vault, { isGacha: false, isVault: true });
+
     return `
+    ${renderGridSortFilterBar({ isGacha: false, totalCount: vault.length, shownCount: sortedVault.length })}
     <div class="nmf-mosaic-grid">
-        ${vault.map((v, idx) => {
+        ${sortedVault.map(({ item: v, origIdx: idx }) => {
             const thumbUrl = safeImgSrc(resolveEntityDisplayUrl(v));
             const fSpec = resolveDisplayOrCoverSpec(v, thumbUrl, false, '');
             const pSpec = resolvePuzzleTileSpec(v, Boolean(thumbUrl));
@@ -3107,6 +3190,7 @@ function renderMatchesTab(sess) {
 
     const isPassedView = sub === 'passed';
     const items = isPassedView ? passed : liked;
+    const sortedItems = filterAndSortGridEntries(items, { isGacha: false });
 
     return `
     ${topNav}
@@ -3115,8 +3199,9 @@ function renderMatchesTab(sess) {
         <div style="color:var(--nmf-accent)">${isPassedView ? NMF_ICONS.undo : NMF_ICONS.heart}</div>
         <div style="font-family:var(--nmf-font-title);font-size:16px;font-weight:700">${isPassedView ? 'В архиве «Мимо» пусто' : 'Пока нет сохранённых Мэтчей'}</div>
     </div>` : `
+    ${renderGridSortFilterBar({ isGacha: false, totalCount: items.length, shownCount: sortedItems.length })}
     <div class="nmf-mosaic-grid">
-        ${items.map((c, idx) => {
+        ${sortedItems.map(({ item: c, origIdx: idx }) => {
             const thumbUrl = safeImgSrc(resolveEntityDisplayUrl(c));
             const isLoading = state.loadingArtIds.has(c.id);
             const fSpec = resolveDisplayOrCoverSpec(c, thumbUrl, isLoading, state.artErrors.get(c.id) || '');
@@ -4677,6 +4762,11 @@ function bindWindowDelegation(win) {
             }
             return;
         }
+        if (el.dataset.gridSort) {
+            state.gridSortMode = el.value;
+            renderWindow();
+            return;
+        }
         if (el.dataset.blitzCand && sess) {
             sess.blitz.selectedCandidateRef = el.value;
             saveSettings();
@@ -4911,6 +5001,10 @@ function bindWindowDelegation(win) {
             }
             return renderWindow();
         }
+        if (act === 'set-grid-filter') {
+            state.gridFilterMode = btn.dataset.flt || 'all';
+            return renderWindow();
+        }
         if (act === 'open-pending-wish-stage') {
             const pw = state.pendingWishReveal;
             state.pendingWishReveal = null;
@@ -4921,8 +5015,13 @@ function bindWindowDelegation(win) {
             }
             const targetSess = getActiveSession();
             targetSess.homeCompleted = true;
-            state.activeTab = 'swipe';
-            state.discoverSubMode = 'gacha';
+            if (pw?.isFusion) {
+                state.activeTab = 'matches';
+                state.matchesSubTab = 'gacha_collection';
+            } else {
+                state.activeTab = 'swipe';
+                state.discoverSubMode = 'gacha';
+            }
             const batch = targetSess.gacha?.lastRevealBatch || [];
             const maxSt = pw?.maxStars || (batch.length ? Math.max(...batch.map((x) => Number(x.stars) || 3)) : 4);
             startWishCometAndFlip(maxSt, Boolean(pw?.isFusion));
@@ -5909,14 +6008,20 @@ function bindWindowDelegation(win) {
                     sess.gacha.fusionHint = '';
                     synthesizedDrop = born;
                     saveSettings();
-                    if (!isForgeDialogVisible() || state.busyMinimized) {
+                    const stillWatchingAltar = isForgeDialogVisible()
+                        && !state.busyMinimized
+                        && state.activeTab === 'matches'
+                        && state.matchesSubTab === 'gacha_collection';
+                    // User is watching the Altar right now -> immediately launch Comet + 3D Card Flip!
+                    if (!stillWatchingAltar) {
                         state.pendingWishReveal = { sessionId: sess.id, maxStars: Number(born.stars) || 5, isFusion: true };
                     } else {
-                        openWishRevealAnimation(Number(born.stars) || 5, true);
+                        startWishCometAndFlip(Number(born.stars) || 5, true);
                     }
                 }, { taskType: 'llm', cancellable: true });
 
                 if (ok && synthesizedDrop && donorRefUrls && donorRefUrls.length > 0 && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+                    // Run silently in background without stealing overlay focus from the Fusion reveal!
                     triggerCandidateArtInBackground(synthesizedDrop, false, donorRefUrls);
                 }
             } finally {

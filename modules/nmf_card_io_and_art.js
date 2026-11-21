@@ -2648,7 +2648,10 @@ function buildNovelAiPayload(imgCfg, fullPrompt, negativePrompt, requestedAspect
         return { base, characters };
     };
     const pos = splitPipes(fullPrompt);
-    const neg = splitPipes(medium ? NOVELAI_MEDIUM_NEGATIVE : negativePrompt);
+    const mergedNegStr = medium
+        ? [NOVELAI_MEDIUM_NEGATIVE, negativePrompt].filter(Boolean).join(', ')
+        : negativePrompt;
+    const neg = splitPipes(mergedNegStr);
     const makeCaption = (base, chars) => ({
         base_caption: base,
         char_captions: chars.map((char_caption) => ({ char_caption, centers: [{ x: 0.5, y: 0.5 }] })),
@@ -3116,10 +3119,8 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const negativePrompt = getEffectiveNegativePromptForConfig(imgCfg, negativePromptId, customNegativePrompt);
     const providerLabel = [apiType || picked.key, model ? String(model).split('/').pop() : ''].filter(Boolean).join(' · ');
 
-    // Keep SCENE/FIGURE prompt medium-neutral if LLM accidentally appended generic medium filler tags at the end
-    const mediumNeutralScenePrompt = cleanPrompt
-        .replace(/,\s*(?:crisp\s+linework|anime\s+style|manhwa\s+style|webtoon\s+style|photorealistic|3d\s+render|octane\s+render|unreal\s+engine)(?=\s*(?:,|$))/gi, '')
-        .trim() || cleanPrompt;
+    // Preserve 100% of user/card prompt words intact — art style comes cleanly from SillyImages or explicit user input!
+    const mediumNeutralScenePrompt = cleanPrompt;
 
     let styleText = '';
     if (styleId !== '__none__') {
@@ -3213,14 +3214,17 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             return `data:image/png;base64,${imageB64.trim()}`;
         }
 
-        // 2. NAISTERA (supports reference_objects in SillyImages v3.0+)
+        // 2. NAISTERA (supports dedicated negative_prompt & reference_objects in SillyImages v3.0+)
         if (apiType === 'naistera') {
             const base = endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.naistera;
             const url = rawEndpointFlag ? base : (base.endsWith('/api/generate') ? base : `${base}/api/generate`);
             const isNaiSubModel = /^novelai(?:-|$)/i.test(String(model || ''));
             const canUseNaisteraRefs = !isNaiSubModel && imageRefs.length > 0;
+            const naisteraPosPrompt = (canUseNaisteraRefs && effectiveRefInstruction)
+                ? `${effectiveRefInstruction}\n\n${promptWithRefOnly}`
+                : promptWithRefOnly;
             const body = {
-                prompt: buildConditionedPrompt(canUseNaisteraRefs),
+                prompt: naisteraPosPrompt,
                 model: model || undefined,
                 steps: Math.round(Number(imgCfg.naisteraSteps) || 23),
                 scale: Number(imgCfg.naisteraCfgScale) || 7,
