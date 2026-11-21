@@ -2,6 +2,18 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.9.5-beta] - 2026-11-22
+
+### Altar Donor Absorption + Altar-Only Regenerate Button & Zero Double-Cropping Everywhere
+- **Altar Donor Absorption + Altar-Only Regenerate (`gacha-run-fusion` & `regen-altar-char`)**: Fusing 2–3 cards on the Altar now permanently consumes and removes the donor cards from Collection while storing their soul snapshot (`fusedFromDonors`) inside the born hero. Added a **Regenerate (`Перегенерировать`)** button **strictly on Altar-synthesized heroes only** (never on regular Gacha pulls, preserving Gacha excitement).
+- **Zero Double-Cropping (`nmf-natural-art` & `backfillMissingNaturalRatios`)**: Uncropped real artworks now always render in their full natural proportions (`width: 100%; height: auto`) across Big Dossiers, Swipes, Gacha, and Profile Editor without secondary `1:1` container clipping, plus legacy cards automatically backfill `artNaturalRatio` on open.
+
+## [1.9.4-beta] - 2026-11-22
+
+### Dense Auto-Packing Mosaic Grid (Zero Side Holes Around 16:9 Cards) & Full-Frame Big Dossier Portraits
+- **Dense CSS Grid Packing (`.nmf-mosaic-grid`)**: Replaced `column-count: 2` with `display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: dense`, automatically pulling subsequent portrait/square cards up to fill any empty half-row beside odd portraits above `16:9` banners.
+- **Full-Frame Aspect Ratio in Big Character Dossier (`resolveDisplayOrCoverSpec`)**: Opening a `16:9` or tall uncropped card in the Big Dossier modal now displays its true natural aspect ratio without clipping edges.
+
 ## [1.9.3-beta] - 2026-11-21
 
 ### Pure SillyImages/User Art Style (Zero Style Stripping), Default 25% Sacrifice Failure, Sorted/Filtered Card Grids & Altar Synthesis Comet Reveal

@@ -2819,3 +2819,41 @@ test('v1.9.2 Start-First Launch, Clean Inner Tabs & 100% Zero Mixing Between Mai
     assert.ok(tinderReq.user.includes('MAIN_ONLY_WITCHER'));
     assert.equal(tinderReq.user.includes('GACHA_ONLY_ASTRA'), false);
 });
+
+test('v1.9.5 Altar Donor Snapshot + Altar-Only Regenerate & Zero Secondary Double-Cropping', async () => {
+    const { parseGachaFusionResponse } = await import('../modules/nmf_templates_and_prompts.js');
+    const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
+    const cssTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../modules/nmf_themes_and_icons.js'), 'utf8');
+
+    // 1. Fusion stores full donor snapshots for Altar-only regeneration
+    const born = parseGachaFusionResponse(
+        JSON.stringify({
+            drops: [{
+                name: 'Hector Varga, 38',
+                epithet: 'Iron Baron',
+                archetype: 'Syndicate Boss',
+                pitch: 'Ruler of the freight piers.',
+                appearance: 'Broad shoulders, scar.',
+                quote: 'Step inside.',
+                tags: ['mafia', 'harbor'],
+                imagePrompt: 'SCENE: harbor rain',
+            }],
+        }),
+        [
+            { id: 'd1', name: 'Giacomo, 37', stars: 3, archetype: 'Boxer', pitch: 'Basement boss' },
+            { id: 'd2', name: 'Lorenzo, 39', stars: 5, archetype: 'Financier', pitch: 'Velvet syndicate' },
+        ],
+        'macro',
+        'Dark harbor syndicate',
+    );
+    assert.equal(born.fusedFromDonors.length, 2);
+    assert.equal(born.fusionHintUsed, 'Dark harbor syndicate');
+
+    // 2. Regenerate button is strictly Altar-only (regen-altar-char, zero regen-gacha-char!)
+    assert.ok(entryTxt.includes('data-act="regen-altar-char"'));
+    assert.equal(entryTxt.includes('regen-gacha-char'), false, 'Regular Gacha cards must NOT have a regenerate button!');
+
+    // 3. Natural uncropped art rule prevents secondary container double-cropping
+    assert.ok(cssTxt.includes('.nmf-hero-visual.nmf-natural-art'));
+    assert.ok(cssTxt.includes('grid-auto-flow: dense'));
+});

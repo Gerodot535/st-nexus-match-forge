@@ -1244,6 +1244,21 @@ function normalizeGachaCardEntry(rawItem, idx = 0) {
         fusedFromNames: Array.isArray(rawItem.fusedFromNames)
             ? rawItem.fusedFromNames.map((n) => String(n).trim()).filter(Boolean).slice(0, 4)
             : [],
+        fusedFromDonors: Array.isArray(rawItem.fusedFromDonors)
+            ? rawItem.fusedFromDonors
+                .filter((d) => d && typeof d === 'object')
+                .slice(0, 3)
+                .map((d) => ({
+                    name: String(d.name || '').slice(0, 80),
+                    epithet: String(d.epithet || '').slice(0, 80),
+                    stars: Math.max(1, Math.min(5, Math.round(Number(d.stars) || 3))),
+                    archetype: String(d.archetype || '').slice(0, 100),
+                    pitch: String(d.pitch || '').slice(0, 450),
+                    appearance: String(d.appearance || '').slice(0, 450),
+                    tags: Array.isArray(d.tags) ? d.tags.map(String).slice(0, 8) : [],
+                }))
+            : [],
+        fusionHintUsed: String(rawItem.fusionHintUsed || '').slice(0, 220),
         imagePrompt: String(rawItem.imagePrompt || rawItem.image_prompt || '').trim(),
         avatarId: String(rawItem.avatarId || ''),
         originalAvatarId: String(rawItem.originalAvatarId || ''),
@@ -3078,7 +3093,7 @@ export function buildGachaFusionRequest(session, donorCards = [], fusionHint = '
     };
 }
 
-export function parseGachaFusionResponse(raw, donorCards = [], playerNameMode = 'macro') {
+export function parseGachaFusionResponse(raw, donorCards = [], playerNameMode = 'macro', fusionHint = '') {
     const avgDonorStars = donorCards.length
         ? Math.min(5, Math.max(3, Math.round(donorCards.reduce((acc, d) => acc + (Number(d?.stars) || 3), 0) / donorCards.length) + 1))
         : 4;
@@ -3088,6 +3103,16 @@ export function parseGachaFusionResponse(raw, donorCards = [], playerNameMode = 
         throw new Error('Не удалось распознать результат Алхимического Слияния.');
     }
     first.fusedFromNames = donorCards.map((d) => String(d?.name || '').split(',')[0].trim()).filter(Boolean).slice(0, 4);
+    first.fusedFromDonors = donorCards.slice(0, 3).map((d) => ({
+        name: String(d?.name || '').slice(0, 80),
+        epithet: String(d?.epithet || '').slice(0, 80),
+        stars: Math.max(1, Math.min(5, Math.round(Number(d?.stars) || 3))),
+        archetype: String(d?.archetype || '').slice(0, 100),
+        pitch: String(d?.pitch || '').slice(0, 450),
+        appearance: String(d?.appearance || '').slice(0, 450),
+        tags: Array.isArray(d?.tags) ? d.tags.map(String).slice(0, 8) : [],
+    }));
+    first.fusionHintUsed = String(fusionHint || '').slice(0, 220);
     return first;
 }
 

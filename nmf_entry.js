@@ -543,6 +543,33 @@ function ensureDialogMounted() {
     return dlg;
 }
 
+async function backfillMissingNaturalRatios(cfg) {
+    if (typeof Image === 'undefined' || !cfg) return false;
+    let updated = false;
+    const visit = async (ent) => {
+        if (!ent || typeof ent !== 'object' || Number(ent.artNaturalRatio) > 0) return;
+        const url = resolveEntityDisplayUrl(ent);
+        if (!url) return;
+        const dims = await probeImageDimensionsFromDataUrl(url);
+        if (dims.w && dims.h) {
+            ent.artNaturalRatio = dims.w / dims.h;
+            updated = true;
+        }
+    };
+    const tasks = [];
+    for (const s of (cfg.sessions || [])) {
+        tasks.push(visit(s?.card));
+        for (const p of ['queue', 'liked', 'passed']) {
+            for (const c of (s?.tinder?.[p] || [])) tasks.push(visit(c));
+        }
+        for (const g of (s?.gacha?.collection || [])) tasks.push(visit(g));
+    }
+    for (const v of (cfg.savedVault || [])) tasks.push(visit(v));
+    await Promise.all(tasks);
+    if (updated) saveSettings();
+    return updated;
+}
+
 export async function openForgeDialog(initialTab = '') {
     if (typeof document === 'undefined') return;
     const dlg = ensureDialogMounted();
@@ -554,6 +581,7 @@ export async function openForgeDialog(initialTab = '') {
         hydrateSessionsMedia(cfg.sessions, [], cfg.savedVault || []),
         refreshBackupsList(),
     ]);
+    await backfillMissingNaturalRatios(cfg).catch(() => {});
     renderWindow();
     if (!dlg.open) {
         dlg.showModal();
@@ -1532,12 +1560,22 @@ function resolveDisplayOrCoverSpec(entity, realDisplayUrl, isLoading, errText) {
     }
     if (cleanReal) {
         const ca = String(entity?.croppedAspect || '').trim();
+        if (ca) {
+            return {
+                src: cleanReal,
+                isReal: true,
+                isCover: false,
+                croppedCls: ' nmf-is-cropped',
+                croppedStyle: `--cropped-ratio:${ca.replace(':', ' / ')};`,
+            };
+        }
+        // Uncropped real art ALWAYS renders in its full natural frame (zero double-cropping!)
         return {
             src: cleanReal,
             isReal: true,
             isCover: false,
-            croppedCls: ca ? ' nmf-is-cropped' : '',
-            croppedStyle: ca ? `--cropped-ratio:${ca.replace(':', ' / ')};` : '',
+            croppedCls: ' nmf-natural-art',
+            croppedStyle: '',
         };
     }
     const coverUrl = buildProceduralCoverDataUrl(entity, {
@@ -1590,7 +1628,6 @@ function renderCandidateDossierModal(sess) {
                             <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
                                 <button type="button" class="nmf-art-chip-btn" data-act="trigger-cand-upload" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}" title="Загрузить свой арт с устройства">${NMF_ICONS.upload} Своё фото</button>
                                 ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" data-act="open-crop-cand" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}" title="Кадрировать арт">${NMF_ICONS.crop} Кадрировать</button>` : ''}
-                                ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" data-act="open-cand-lightbox" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}" title="Осмотр и скачивание арта">${NMF_ICONS.zoom}</button>` : ''}
                                 ${canArt ? (isLoading
                                     ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(cand.id)}">Стоп</button>`
                                     : `<button type="button" class="nmf-art-chip-btn" data-act="gen-dossier-art" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.image} ${fSpec.isReal ? 'Переснять' : 'Сделать арт'}</button>`) : ''}
@@ -1627,6 +1664,7 @@ function renderCandidateDossierModal(sess) {
             <div class="nmf-sheet-foot" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
                 <div class="nmf-btn-row">
                     <button type="button" class="nmf-btn-secondary" data-act="edit-cand" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.editSmall} Править</button>
+                    ${(isGacha && cand.fusedFromNames?.length) ? `<button type="button" class="nmf-btn-secondary" data-act="regen-altar-char" data-id="${esc(cand.id)}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.rework} ${esc(tx('Перегенерировать', 'Regenerate'))}</button>` : ''}
                     ${!isPassed ? `<button type="button" class="nmf-btn-secondary" data-act="send-cand-to-blitz" data-source="${isGacha ? 'gacha' : 'tinder'}" data-ref="${esc(blitzRef)}">${NMF_ICONS.blitz} В Блиц</button>` : ''}
                 </div>
                 <button type="button" class="nmf-btn-primary" style="flex:1;min-width:140px" data-act="expand-from-dossier" ${state.busy || sess.frozen ? 'disabled' : ''}>
@@ -2716,11 +2754,15 @@ function renderWishRevealOverlay(sess) {
                             <div class="nmf-chip-wrap">
                                 ${(colItem.tags || []).map((t) => `<span class="nmf-mini-tag">${esc(t)}</span>`).join('')}
                             </div>
-                            <div class="nmf-btn-row" style="margin-top:2px">
+                            <div class="nmf-btn-row" style="margin-top:2px;flex-wrap:wrap">
+                                ${colItem.fusedFromNames?.length ? `
+                                <button type="button" class="nmf-btn-secondary" data-act="regen-altar-char" data-id="${esc(colItem.id)}" ${state.busy || sess.frozen ? 'disabled' : ''} title="${esc(tx('Перегенерировать героя Алтаря заново', 'Regenerate this Altar-born hero'))}">
+                                    ${NMF_ICONS.rework} ${esc(tx('Перегенерировать', 'Regenerate'))}
+                                </button>` : ''}
                                 <button type="button" class="nmf-btn-secondary" data-act="sacrifice-gacha-id" data-id="${esc(colItem.id)}" title="${esc(tx(`Пожертвовать карту ради +${computeSacrificeWishGain(colItem.stars)} Молитв`, `Sacrifice card for +${computeSacrificeWishGain(colItem.stars)} Prayers`))}">
                                     ${NMF_ICONS.sacrifice} +${computeSacrificeWishGain(colItem.stars)} ${esc(tx('молитв', 'prayers'))}
                                 </button>
-                                <button type="button" class="nmf-btn-primary" style="flex:1" data-act="expand-gacha-id" data-id="${esc(colItem.id)}" ${state.busy ? 'disabled' : ''}>
+                                <button type="button" class="nmf-btn-primary" style="flex:1;min-width:150px" data-act="expand-gacha-id" data-id="${esc(colItem.id)}" ${state.busy ? 'disabled' : ''}>
                                     ${NMF_ICONS.spark} ${esc(tx('Собрать Карточку V2', 'Build Full V2 Card'))}
                                 </button>
                             </div>
@@ -3107,6 +3149,7 @@ function renderGachaCollectionView(sess) {
                     ${canArt ? (isLoading
                         ? `<button type="button" class="nmf-icon-btn" style="flex:1;height:26px;font-size:10px;padding:0 4px;border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(c.id)}">${esc(tx('Стоп', 'Stop'))}</button>`
                         : `<button type="button" class="nmf-icon-btn" style="flex:1;height:26px;font-size:10px;padding:0 4px" data-act="gen-gacha-item-art" data-id="${esc(c.id)}">${NMF_ICONS.image} ${esc(tx('Арт', 'Art'))}</button>`) : ''}
+                    ${c.fusedFromNames?.length ? `<button type="button" class="nmf-icon-btn nmf-sq" style="height:26px;width:26px" data-act="regen-altar-char" data-id="${esc(c.id)}" ${state.busy || sess.frozen ? 'disabled' : ''} title="${esc(tx('Перегенерировать героя Алтаря', 'Regenerate Altar hero'))}">${NMF_ICONS.rework}</button>` : ''}
                     <button type="button" class="nmf-icon-btn" style="height:26px;padding:0 6px;font-size:10px" data-act="sacrifice-gacha-idx" data-idx="${idx}" title="${esc(tx(`Принести карту в жертву ради +${sacGain} Молитв`, `Sacrifice card for +${sacGain} Prayers`))}">
                         ${NMF_ICONS.sacrifice}+${sacGain}
                     </button>
@@ -3529,11 +3572,14 @@ function renderEditorTab(sess) {
                     const edArtKey = sess.id + ':' + sess.activeCardSlot;
                     const edSpec = resolveDisplayOrCoverSpec(c, cardAvatarUrl, state.editorArtLoading, state.editorArtError);
                     const sealedEd = edSpec.isReal && isArtWaitingToOpen(edArtKey);
-                    const boxRatio = c.croppedAspect ? c.croppedAspect.replace(':', ' / ') : cssRatio;
+                    const hasManualCrop = Boolean(c.croppedAspect);
+                    const boxStyle = (edSpec.isReal && !hasManualCrop)
+                        ? 'position:relative;border:1px solid var(--nmf-border-active);border-radius:var(--nmf-radius);background:var(--nmf-bg);overflow:hidden;display:block'
+                        : `position:relative;aspect-ratio:${hasManualCrop ? c.croppedAspect.replace(':', ' / ') : '1 / 1'};border:1px solid var(--nmf-border-active);border-radius:var(--nmf-radius);background:var(--nmf-bg);overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--nmf-text-muted);text-align:center`;
                     return `
-                <div class="${(edSpec.isReal && !sealedEd) ? 'nmf-tappable-photo' : ''}" data-act="${(edSpec.isReal && !sealedEd) ? 'open-editor-lightbox' : ''}" style="position:relative;aspect-ratio:${boxRatio};border:1px solid var(--nmf-border-active);border-radius:var(--nmf-radius);background:var(--nmf-bg);overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--nmf-text-muted);text-align:center">
+                <div class="${(edSpec.isReal && !sealedEd) ? 'nmf-tappable-photo' : ''}" data-act="${(edSpec.isReal && !sealedEd) ? 'open-editor-lightbox' : ''}" style="${boxStyle}">
                     ${edSpec.src
-                        ? `<img class="${edSpec.isReal ? consumeFreshArtClass(edArtKey).trim() : ''}" src="${esc(edSpec.src)}" style="width:100%;height:100%;object-fit:cover;object-position:${c.croppedAspect ? '50% 50%' : 'var(--nmf-art-pos,50% 6%)'}" alt="Avatar"/>
+                        ? `<img class="${edSpec.isReal ? consumeFreshArtClass(edArtKey).trim() : ''}" src="${esc(edSpec.src)}" style="${(edSpec.isReal && !hasManualCrop) ? 'width:100%;height:auto;display:block' : 'width:100%;height:100%;object-fit:cover;object-position:50% 50%'}" alt="Avatar"/>
                            ${edSpec.isReal ? renderSealedArtVeilHtml(edArtKey) : ''}
                            ${(edSpec.isReal && !sealedEd) ? `<span style="position:absolute;right:4px;bottom:4px;padding:2px 4px;border-radius:3px;background:rgba(5,7,12,0.82);border:1px solid var(--nmf-border-active);color:var(--nmf-accent);display:inline-flex">${NMF_ICONS.zoom}</span>` : ''}`
                         : `<span style="font-family:var(--nmf-font-mono);font-size:9.5px;color:var(--nmf-accent)">${esc(tx('Рендер...', 'Rendering...'))}</span>`}
@@ -5989,7 +6035,8 @@ function bindWindowDelegation(win) {
 
             try {
                 const ok = await withBusy(tx('Синтез Алтаря: рождение героя', 'Altar Synthesis: forging new hero'), async (signal) => {
-                    const req = buildGachaFusionRequest(sess, donors, sess.gacha.fusionHint, cfg.transportMode);
+                    const hintUsed = sess.gacha.fusionHint || '';
+                    const req = buildGachaFusionRequest(sess, donors, hintUsed, cfg.transportMode);
                     const raw = await runLlmGeneration({
                         ...req,
                         transportMode: cfg.transportMode,
@@ -5997,12 +6044,19 @@ function bindWindowDelegation(win) {
                         stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
                         signal,
                     });
-                    const born = parseGachaFusionResponse(raw, donors, sess.intake.playerNameMode || 'macro');
+                    const born = parseGachaFusionResponse(raw, donors, sess.intake.playerNameMode || 'macro', hintUsed);
+                    // True Altar Absorption: consume & permanently remove donor cards now that the new hero is born!
+                    const consumedIds = new Set(donors.map((d) => d.id));
+                    sess.gacha.collection = (sess.gacha.collection || []).filter((x) => !consumedIds.has(x.id));
+                    sess.gacha.lastRevealBatch = (sess.gacha.lastRevealBatch || []).filter((x) => !consumedIds.has(x.id));
+                    if (sess.blitz?.selectedCandidateRef && [...consumedIds].some((id) => sess.blitz.selectedCandidateRef === `gacha:${id}`)) {
+                        sess.blitz.selectedCandidateRef = '';
+                    }
                     sess.gacha.collection.unshift(born);
                     if (sess.gacha.collection.length > MAX_GACHA_COLLECTION) {
                         sess.gacha.collection.length = MAX_GACHA_COLLECTION;
-                        await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                     }
+                    await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                     sess.gacha.lastRevealBatch = [born];
                     sess.gacha.fusionSlotIds = [];
                     sess.gacha.fusionHint = '';
@@ -6029,6 +6083,57 @@ function bindWindowDelegation(win) {
                 state.altarDonorSnapshot = [];
                 renderWindow();
             }
+            return;
+        }
+        if (act === 'regen-altar-char') {
+            if (sess.frozen || !sess.gacha) return;
+            const cid = String(btn.dataset.id || '');
+            const colIdx = (sess.gacha.collection || []).findIndex((x) => x.id === cid);
+            const target = colIdx >= 0
+                ? sess.gacha.collection[colIdx]
+                : (sess.gacha.lastRevealBatch || []).find((x) => x.id === cid);
+            if (!target || !target.fusedFromNames?.length) return;
+
+            const savedDonors = Array.isArray(target.fusedFromDonors) && target.fusedFromDonors.length >= 2
+                ? target.fusedFromDonors
+                : target.fusedFromNames.map((nm) => ({
+                    name: nm,
+                    stars: target.stars || 4,
+                    archetype: target.archetype || '',
+                    pitch: '',
+                    appearance: '',
+                    tags: target.tags || [],
+                }));
+            const savedHint = [
+                target.fusionHintUsed || '',
+                `IMPORTANT: Create a COMPLETELY DIFFERENT character and concept from "${target.name}" while fusing these donor souls anew!`,
+            ].filter(Boolean).join(' — ');
+
+            await withBusy(tx('Перерождение героя на Алтаре', 'Reforging Altar hero'), async (signal) => {
+                const req = buildGachaFusionRequest(sess, savedDonors, savedHint, cfg.transportMode);
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const reborn = parseGachaFusionResponse(raw, savedDonors, sess.intake.playerNameMode || 'macro', target.fusionHintUsed || '');
+                reborn.id = target.id;
+                reborn.stars = target.stars || reborn.stars;
+                reborn.fusedFromNames = [...target.fusedFromNames];
+                reborn.fusedFromDonors = savedDonors;
+                reborn.fusionHintUsed = target.fusionHintUsed || '';
+
+                state.unseenArtIds.delete(String(target.id));
+                if (colIdx >= 0) sess.gacha.collection[colIdx] = reborn;
+                const revIdx = (sess.gacha.lastRevealBatch || []).findIndex((x) => x.id === cid);
+                if (revIdx >= 0) sess.gacha.lastRevealBatch[revIdx] = reborn;
+
+                await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+                saveSettings();
+                notifySuccessToast(tx(`Алтарь переродил героя: «${reborn.name}»!`, `Altar reforged hero: "${reborn.name}"!`));
+            }, { taskType: 'llm', cancellable: true });
             return;
         }
         if (act === 'gen-gacha-item-art') {

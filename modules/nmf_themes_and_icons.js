@@ -694,6 +694,38 @@ export const NMF_FULL_CSS = `
     object-fit: cover !important;
     object-position: 50% 6% !important;
 }
+/* Uncropped real artworks ALWAYS display their full natural frame with ZERO secondary cropping! */
+#nmf-window .nmf-hero-visual.nmf-natural-art {
+    aspect-ratio: auto !important;
+    min-height: 150px !important;
+    max-height: none !important;
+    padding: 0 !important;
+    display: block !important;
+}
+#nmf-window .nmf-hero-visual.nmf-natural-art img.nmf-hero-photo {
+    position: relative !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    object-fit: contain !important;
+    display: block !important;
+}
+#nmf-window .nmf-hero-visual.nmf-natural-art .nmf-hero-topbadges {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 3;
+}
+#nmf-window .nmf-hero-visual.nmf-natural-art .nmf-hero-scrim {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+    padding: 28px 14px 12px;
+    background: linear-gradient(to top, rgba(4, 6, 11, 0.92) 0%, rgba(4, 6, 11, 0.44) 68%, transparent 100%);
+}
 /* Cropped artworks ALWAYS fill their exact chosen aspect frame with zero side/top bars! */
 #nmf-window .nmf-hero-visual.nmf-is-cropped {
     aspect-ratio: var(--cropped-ratio, 1 / 1) !important;
@@ -810,23 +842,24 @@ export const NMF_FULL_CSS = `
     filter: brightness(1.06);
 }
 
-/* SMART PUZZLE / BENTO MOSAIC GRID FOR MIXED ASPECT RATIOS */
+/* SMART PUZZLE / BENTO MOSAIC GRID FOR MIXED ASPECT RATIOS (DENSE AUTO-PACK — ZERO EMPTY SIDE HOLES!) */
 .nmf-mosaic-grid {
-    column-count: 2;
-    column-gap: 10px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-flow: dense;
+    gap: 10px;
     width: 100%;
+    align-items: start;
 }
 .nmf-mosaic-grid > .nmf-match-tile {
-    break-inside: avoid;
-    page-break-inside: avoid;
-    margin-bottom: 10px;
     width: 100%;
-    display: inline-flex;
+    min-width: 0;
+    margin: 0;
+    display: flex;
     flex-direction: column;
 }
 .nmf-mosaic-grid > .nmf-match-tile.nmf-tile-wide {
-    column-span: all;
-    display: flex;
+    grid-column: 1 / -1;
 }
 #nmf-window .nmf-match-tile.nmf-tile-wide .nmf-match-thumb {
     aspect-ratio: var(--tile-aspect, 16 / 9) !important;
