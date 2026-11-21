@@ -2052,28 +2052,31 @@ function renderIntakeSheetModal(sess) {
 
                 <div class="nmf-warn-box" style="font-size:11px">
                     ${NMF_ICONS.gear}
-                    <span>Выбор <strong>Шаблона структуры карточки</strong>, объёма слов и режима отправки (Пресет / JSON) находится на <strong>Домашнем экране</strong> (иконка домика в шапке).</span>
+                    <span>${tx(
+                        'Выбор <strong>Шаблона структуры карточки</strong>, объёма слов и режима отправки (Пресет / JSON) находится на <strong>Домашнем экране</strong> (иконка домика в шапке).',
+                        '<strong>Card Structure Template</strong>, word count, and AI delivery mode (Preset / JSON) are configured on the <strong>Home Screen</strong> (house icon in the header).',
+                    )}</span>
                 </div>
 
                 <div class="nmf-field">
-                    <label class="nmf-label">Стиль Первого сообщения</label>
+                    <label class="nmf-label">${esc(tx('Стиль Первого сообщения', 'Opening Scene Writing Style'))}</label>
                     <select class="nmf-select" data-intake="greetingStyle" ${sess.frozen ? 'disabled' : ''}>
-                        ${GREETING_STYLES.map((s) => `<option value="${s.id}" ${(it.greetingStyle || 'fanfic') === s.id ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
+                        ${GREETING_STYLES.map((s) => `<option value="${s.id}" ${(it.greetingStyle || 'fanfic') === s.id ? 'selected' : ''}>${esc(localizeOptionLabel('greetingStyle', s.id, s.label))}</option>`).join('')}
                     </select>
                 </div>
 
                 <div class="nmf-grid-2-compact">
                     <div class="nmf-field">
-                        <label class="nmf-label">Лицо (POV)</label>
+                        <label class="nmf-label">${esc(tx('Лицо (POV)', 'Point of View (POV)'))}</label>
                         <select class="nmf-select" data-intake="greetingPov" ${sess.frozen ? 'disabled' : ''}>
-                            ${GREETING_POVS.map((p) => `<option value="${p.id}" ${(it.greetingPov || 'third') === p.id ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+                            ${GREETING_POVS.map((p) => `<option value="${p.id}" ${(it.greetingPov || 'third') === p.id ? 'selected' : ''}>${esc(localizeOptionLabel('greetingPov', p.id, p.label))}</option>`).join('')}
                         </select>
                     </div>
                     <div class="nmf-field">
-                        <label class="nmf-label">Имя игрока</label>
+                        <label class="nmf-label">${esc(tx('Имя игрока', 'Player Name'))}</label>
                         <select class="nmf-select" data-intake="playerNameMode" ${sess.frozen ? 'disabled' : ''}>
-                            <option value="macro" ${(it.playerNameMode || 'macro') === 'macro' ? 'selected' : ''}>Макрос {{user}}</option>
-                            <option value="persona" ${it.playerNameMode === 'persona' ? 'selected' : ''}>Персона${personaName ? ` (${esc(personaName)})` : ''}</option>
+                            <option value="macro" ${(it.playerNameMode || 'macro') === 'macro' ? 'selected' : ''}>${esc(tx('Макрос {{user}}', 'Macro {{user}}'))}</option>
+                            <option value="persona" ${it.playerNameMode === 'persona' ? 'selected' : ''}>${esc(tx('Персона', 'Persona'))}${personaName ? ` (${esc(personaName)})` : ''}</option>
                         </select>
                     </div>
                 </div>
@@ -2165,7 +2168,7 @@ function renderSettingsSheetModal(sess) {
                 </details>
             </div>
             <div class="nmf-sheet-foot">
-                <button type="button" class="nmf-btn-primary" style="width:100%" data-act="close-settings-modal">Готово</button>
+                <button type="button" class="nmf-btn-primary" style="width:100%" data-act="close-settings-modal">${esc(tx('Готово', 'Done'))}</button>
             </div>
         </div>
     </div>`;
@@ -3466,7 +3469,7 @@ function renderCreateTab(sess) {
                 <button type="button" class="nmf-chip" data-act="refresh-roster">Обновить</button>
             </label>
             <select class="nmf-select" data-rework="sourceAvatar" ${sess.frozen ? 'disabled' : ''}>
-                <option value="">— Выберите карточку (${state.rosterChars.length}) —</option>
+                <option value="">${esc(tx(`— Выберите карточку (${state.rosterChars.length}) —`, `— Select Tavern Card (${state.rosterChars.length}) —`))}</option>
                 ${state.rosterChars.map((c) => `<option value="${esc(c.avatar)}" ${rw.sourceAvatar === c.avatar ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
             </select>
         </div>
@@ -3974,6 +3977,7 @@ function ensureLiveGachaCooldownTicker() {
     if (typeof document === 'undefined') return;
     if (gachaCooldownTickId) return;
     gachaCooldownTickId = setInterval(() => {
+        if (typeof document === 'undefined') return;
         const el = document.getElementById('nmf-gacha-cd-live');
         if (!el) return;
         const cfg = getSettings();

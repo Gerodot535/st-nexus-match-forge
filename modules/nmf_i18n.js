@@ -391,6 +391,11 @@ const OPTION_LABELS_EN = Object.freeze({
     },
     cardFormatShort: {
         dossier_19: 'Full Dossier (19 pts)',
+        jed_hybrid: 'JED Hybrid',
+        behavioral_prose: 'Behavioral Prose',
+        xml_sheet: 'XML Blocks (Token-Light)',
+        plist_alichat: 'PList + Ali:Chat',
+        cast_hub: 'Multi-Char Cast (2-4)',
         vivid_prose: 'Literary Portrait',
         compact_token: 'Compact (Token-Light)',
         wpp_plist: 'Attributes / PList',
@@ -401,6 +406,11 @@ const OPTION_LABELS_EN = Object.freeze({
     },
     cardFormatName: {
         dossier_19: '1. Full Character Dossier (19 Sections)',
+        jed_hybrid: '2. JED Hybrid (Chub / JanitorAI Standard)',
+        behavioral_prose: '3. Behavioral & Literary Prose Portrait',
+        xml_sheet: '4. Token-Efficient XML Character Sheet',
+        plist_alichat: '5. PList Traits + Ali:Chat Dialogue Examples',
+        cast_hub: '6. Multi-Character Ensemble Cast (2-4 Characters)',
         vivid_prose: '2. Literary Prose Portrait',
         compact_token: '3. Compact Token-Efficient Card',
         wpp_plist: '4. Structured Attributes (PList / W++)',
@@ -411,6 +421,11 @@ const OPTION_LABELS_EN = Object.freeze({
     },
     cardFormatExplain: {
         dossier_19: 'Deep structured breakdown: appearance, attire, psychology, habits, speech mannerisms, secrets, backstory, and chemistry with {{user}}.',
+        jed_hybrid: 'Crisp bullet lists for appearance and core traits paired with rich natural prose for backstory, habits, and speech.',
+        behavioral_prose: 'Flowing novel-like character portrait focused on living reactions, body language, and emotional nuance without dry lists.',
+        xml_sheet: 'Clean semantic XML tags that keep token usage low while giving modern LLMs crystal-clear field boundaries.',
+        plist_alichat: 'Compact bracketed trait summary reinforced by vivid dialogue scenes so the AI locks onto the exact voice.',
+        cast_hub: 'Balanced multi-character card for 2-4 distinct personalities sharing scenes, chemistry, and individual voices.',
         vivid_prose: 'Smooth atmospheric prose without dry bullet lists — reads like a novel character study.',
         compact_token: 'High-signal concise profile (~350-500 words) leaving maximum context memory for long roleplays.',
         wpp_plist: 'Crisp bracketed trait blocks for rigid adherence to appearance and personality tags.',
@@ -420,6 +435,10 @@ const OPTION_LABELS_EN = Object.freeze({
         rpg_gm_engine: 'Turns AI into a tabletop narrator tracking quests, world consequences, and atmosphere.',
     },
     wordBudget: {
+        '300': 'Compact (~300 words)',
+        '600': 'Balanced (~600 words)',
+        '1100': 'Detailed (~1100 words)',
+        '1800': 'Maximum (~1800 words)',
         compact_400: 'Compact (~400 words)',
         balanced_750: 'Balanced (~750 words)',
         detailed_1200: 'Detailed (~1200 words)',
@@ -428,6 +447,9 @@ const OPTION_LABELS_EN = Object.freeze({
         custom: 'Custom Word Count...',
     },
     greetingBudget: {
+        '140': 'Short (~140 words)',
+        '280': 'Medium (~280 words)',
+        '500': 'Literary Scene (~500 words)',
         short_150: 'Short (~150 words)',
         medium_300: 'Medium (~300 words)',
         long_550: 'Literary Scene (~550 words)',
@@ -475,6 +497,10 @@ const OPTION_LABELS_EN = Object.freeze({
         world_rpg: 'Miniature World / RPG Scenario',
     },
     greetingStyle: {
+        fanfic: 'Book Prose ("Dialogue" & clean paragraphs)',
+        classic_rp: 'Classic RP (*actions in asterisks* & speech)',
+        manhwa: 'Dynamic Manhwa / Paced Scene Beats',
+        preserve: 'Keep Original Card Style (for AU)',
         novel_quotes: 'Book Prose ("Dialogue" & clean paragraphs)',
         classic_asterisks: 'Classic RP (*actions in asterisks* & speech)',
         manhwa_dynamic: 'Dynamic Manhwa / Paced Scene Beats',
@@ -483,12 +509,16 @@ const OPTION_LABELS_EN = Object.freeze({
         custom: 'Custom Formatting Rules...',
     },
     greetingPov: {
+        third: 'Third Person ("He/She looked..." / World)',
+        first: 'First Person ("I looked..." from Character)',
+        auto: 'Automatic for Selected Card Format',
         third_char: 'Third Person (Focused on Character)',
         first_char: 'First Person ("I" from Character)',
-        second_gm: 'Second Person / Narrator ("You...")',
+        second_gm: 'Second Person / Narrator ("Before you...")',
     },
     aspect: {
         sillyimages_default: 'SillyImages Default (Untouched)',
+        auto: 'Auto Mosaic (Keep Native Art Size)',
         native: 'Auto Mosaic (Keep Native Art Size)',
         '1:1': '1:1 Square Avatar',
         '2:3': '2:3 Collectible Portrait Card',
@@ -501,6 +531,7 @@ const OPTION_LABELS_EN = Object.freeze({
     cropFocus: {
         top: 'Focus on Face / Upper Frame',
         center: 'Center Crop',
+        contain: 'Fit Full Image Without Cropping (With Margins)',
     },
     styleWrap: {
         plain_prefix: 'Clean Prefix at Start of Prompt',
@@ -916,6 +947,8 @@ function translateTextChunkEn(raw) {
         .replace(/^(\d+) слов · Перевод: (.+)$/, '$1 words · Translated: $2')
         .replace(/^Перевод \((.+)\)$/, 'Translation ($1)')
         .replace(/^— Выберите карточку \((\d+)\) —$/, '— Select Tavern Card ($1) —')
+        .replace(/Профиль:\s*/g, 'Profile: ')
+        .replace(/Выключено/g, 'Off')
         .replace(/^(\d+) вопр\.$/, '$1 Qs')
         .replace(/^Решений AU: (\d+) \/ (\d+)$/, 'AU Answers: $1 / $2')
         .replace(/^Отвечено: (\d+) \/ (\d+)$/, 'Answered: $1 / $2')

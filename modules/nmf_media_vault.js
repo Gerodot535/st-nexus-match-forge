@@ -44,6 +44,10 @@ function revokeCachedObjectUrl(mediaId) {
 const memoryBackupList = [];
 let dbOpenPromise = null;
 let activeDbInstance = null;
+let activeIdbProvider = null;
+let dbConnEpoch = 0;
+let vaultEpoch = 0;
+let inFlightEntityDataUrl = new WeakMap();
 let activeMigrationChain = Promise.resolve({
     changed: false,
     migratedCount: 0,
@@ -143,16 +147,43 @@ export function isValidNonEmptyPngBytes(bytes) {
     return sawIhdr && sawIdat && sawIend;
 }
 
+function resetActiveDbConnection({ closeExisting = false } = {}) {
+    dbConnEpoch += 1;
+    if (closeExisting && activeDbInstance) {
+        try {
+            activeDbInstance.close?.();
+        } catch {
+            // ignore
+        }
+    }
+    activeDbInstance = null;
+    activeIdbProvider = null;
+    dbOpenPromise = null;
+}
+
 function openVaultDb() {
-    if (!hasIndexedDb()) return Promise.resolve(null);
+    if (!hasIndexedDb()) {
+        if (activeDbInstance || dbOpenPromise) {
+            resetActiveDbConnection({ closeExisting: false });
+        }
+        return Promise.resolve(null);
+    }
+    if (activeIdbProvider && activeIdbProvider !== indexedDB) {
+        resetActiveDbConnection({ closeExisting: true });
+    }
     if (activeDbInstance) return Promise.resolve(activeDbInstance);
     if (dbOpenPromise) return dbOpenPromise;
 
-    dbOpenPromise = new Promise((resolve) => {
+    const openEpoch = dbConnEpoch;
+    const providerRef = indexedDB;
+    let pendingPromise = null;
+
+    pendingPromise = new Promise((resolve) => {
         try {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            const req = providerRef.open(DB_NAME, DB_VERSION);
             req.onupgradeneeded = () => {
                 const db = req.result;
+                if (!db) return;
                 if (!db.objectStoreNames.contains(MEDIA_STORE)) {
                     db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
                 }
@@ -163,28 +194,68 @@ function openVaultDb() {
                 }
             };
             req.onsuccess = () => {
-                activeDbInstance = req.result;
-                if (activeDbInstance && typeof activeDbInstance.onclose === 'undefined') {
-                    // no-op for minimal shims
+                const dbConn = req.result || null;
+                if (
+                    openEpoch !== dbConnEpoch ||
+                    !hasIndexedDb() ||
+                    providerRef !== indexedDB
+                ) {
+                    try {
+                        dbConn?.close?.();
+                    } catch {
+                        // ignore stale handle close errors
+                    }
+                    if (dbOpenPromise === pendingPromise) {
+                        dbOpenPromise = null;
+                    }
+                    resolve(null);
+                    return;
+                }
+                activeDbInstance = dbConn;
+                activeIdbProvider = providerRef;
+                if (dbConn) {
+                    const detachClosedConn = () => {
+                        if (activeDbInstance === dbConn) {
+                            activeDbInstance = null;
+                            activeIdbProvider = null;
+                            dbOpenPromise = null;
+                        }
+                    };
+                    try {
+                        dbConn.onclose = detachClosedConn;
+                        dbConn.onversionchange = () => {
+                            try { dbConn.close?.(); } catch {}
+                            detachClosedConn();
+                        };
+                    } catch {
+                        // minimal shims with non-writable handlers
+                    }
                 }
                 resolve(activeDbInstance);
             };
             req.onblocked = () => {
-                dbOpenPromise = null;
+                if (dbOpenPromise === pendingPromise) {
+                    dbOpenPromise = null;
+                }
                 resolve(null);
             };
             req.onerror = () => {
-                dbOpenPromise = null;
+                if (dbOpenPromise === pendingPromise) {
+                    dbOpenPromise = null;
+                }
                 console.warn('[NexusMatch Forge] IndexedDB unavailable:', req.error);
                 resolve(null);
             };
         } catch (err) {
-            dbOpenPromise = null;
+            if (dbOpenPromise === pendingPromise) {
+                dbOpenPromise = null;
+            }
             console.warn('[NexusMatch Forge] IndexedDB open exception:', err);
             resolve(null);
         }
     });
-    return dbOpenPromise;
+    dbOpenPromise = pendingPromise;
+    return pendingPromise;
 }
 
 function idbPut(db, storeName, record) {
@@ -349,23 +420,44 @@ export async function saveMediaDataUrl(dataUrl, existingId = '') {
         if (existingId) await deleteMediaById(existingId);
         return '';
     }
+    const opVaultEpoch = vaultEpoch;
+    const opConnEpoch = dbConnEpoch;
+    const opProvider = hasIndexedDb() ? indexedDB : null;
     const id = existingId && String(existingId).startsWith('nmf_img_') ? String(existingId) : makeMediaId();
     revokeCachedObjectUrl(id);
     memoryMediaCache.set(id, clean);
     durablyPersistedMediaIds.delete(id);
 
     const db = await openVaultDb();
-    if (db) {
+    if (
+        db &&
+        opVaultEpoch === vaultEpoch &&
+        opConnEpoch === dbConnEpoch &&
+        hasIndexedDb() &&
+        opProvider === indexedDB
+    ) {
         try {
             await idbPut(db, MEDIA_STORE, { id, dataUrl: clean, updatedAt: Date.now() });
             const readback = await idbGet(db, MEDIA_STORE, id);
-            if (readback && readback.id === id && readback.dataUrl === clean) {
+            if (
+                opVaultEpoch === vaultEpoch &&
+                opConnEpoch === dbConnEpoch &&
+                hasIndexedDb() &&
+                opProvider === indexedDB &&
+                readback &&
+                readback.id === id &&
+                readback.dataUrl === clean
+            ) {
+                memoryMediaCache.set(id, clean);
                 durablyPersistedMediaIds.add(id);
-            } else {
+            } else if (opVaultEpoch === vaultEpoch) {
+                durablyPersistedMediaIds.delete(id);
                 console.warn('[NexusMatch Forge] Media readback mismatch in IndexedDB for', id);
             }
         } catch (err) {
-            durablyPersistedMediaIds.delete(id);
+            if (opVaultEpoch === vaultEpoch) {
+                durablyPersistedMediaIds.delete(id);
+            }
             console.warn('[NexusMatch Forge] Failed to persist image in IndexedDB:', err);
         }
     }
@@ -492,11 +584,22 @@ export async function loadMediaDataUrl(mediaId) {
     if (!id) return '';
     if (memoryMediaCache.has(id)) return memoryMediaCache.get(id) || '';
 
+    const opVaultEpoch = vaultEpoch;
+    const opConnEpoch = dbConnEpoch;
+    const opProvider = hasIndexedDb() ? indexedDB : null;
     const db = await openVaultDb();
-    if (!db) return '';
+    if (!db || opVaultEpoch !== vaultEpoch || opConnEpoch !== dbConnEpoch || !hasIndexedDb() || opProvider !== indexedDB) {
+        return '';
+    }
     try {
         const rec = await idbGet(db, MEDIA_STORE, id);
-        if (rec?.dataUrl) {
+        if (
+            rec?.dataUrl &&
+            opVaultEpoch === vaultEpoch &&
+            opConnEpoch === dbConnEpoch &&
+            hasIndexedDb() &&
+            opProvider === indexedDB
+        ) {
             const val = String(rec.dataUrl);
             memoryMediaCache.set(id, val);
             durablyPersistedMediaIds.add(id);
@@ -588,6 +691,7 @@ export function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])
     }
 
     // Synchronous snapshot BEFORE any await so concurrent saveSettings() cannot race ahead
+    const migEpoch = vaultEpoch;
     const snapshotItems = [];
     const seenEntities = new Set();
     let cleanedGarbage = 0;
@@ -597,6 +701,10 @@ export function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])
         seenEntities.add(ent);
         const raw = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';
         if (raw.startsWith('data:')) {
+            if (inFlightEntityDataUrl.get(ent) === raw) {
+                return;
+            }
+            inFlightEntityDataUrl.set(ent, raw);
             snapshotItems.push({
                 ent,
                 rawDataUrl: raw,
@@ -639,29 +747,72 @@ export function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])
         for (const v of savedVault) collectEntity(v);
     }
 
+    if (snapshotItems.length === 0 && cleanedGarbage === 0) {
+        return activeMigrationChain.catch(() => ({
+            changed: false,
+            migratedCount: 0,
+            failedCount: 0,
+            complete: true,
+        }));
+    }
+
     const runStep = async () => {
         let migratedCount = 0;
         let failedCount = 0;
 
-        for (const item of snapshotItems) {
-            const { ent, rawDataUrl, existingId } = item;
-            // Skip if user already replaced this entity's image with a completely different inline Data URL
-            const currentInline = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';
-            if (currentInline && currentInline !== rawDataUrl) {
-                continue;
+        try {
+            if (migEpoch !== vaultEpoch) {
+                return {
+                    changed: cleanedGarbage > 0,
+                    migratedCount: 0,
+                    failedCount: 0,
+                    complete: true,
+                };
             }
 
-            const id = await saveMediaDataUrl(rawDataUrl, ent.avatarId || existingId);
-            if (id && isMediaDurablyPersisted(id)) {
-                ent.avatarId = id;
-                ent.avatarDataUrl = '';
-                delete ent._nmfEmergencyInlineTs;
-                migratedCount += 1;
-            } else {
-                // Durable IDB write/readback did NOT succeed — preserve inline Base64 so reload never loses user art!
-                if (id) ent.avatarId = id;
-                ent.avatarDataUrl = rawDataUrl;
-                failedCount += 1;
+            for (const item of snapshotItems) {
+                if (migEpoch !== vaultEpoch) break;
+                const { ent, rawDataUrl, existingId } = item;
+                try {
+                    // Skip if user already replaced or explicitly cleared this entity's image
+                    const currentInline = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';
+                    if (currentInline && currentInline !== rawDataUrl) {
+                        continue;
+                    }
+                    if (!currentInline) {
+                        if (ent.avatarId && isMediaDurablyPersisted(ent.avatarId)) {
+                            continue;
+                        }
+                        if (!ent.avatarId) {
+                            continue;
+                        }
+                    }
+
+                    const id = await saveMediaDataUrl(rawDataUrl, ent.avatarId || existingId);
+                    if (migEpoch !== vaultEpoch) break;
+
+                    if (id && isMediaDurablyPersisted(id)) {
+                        ent.avatarId = id;
+                        ent.avatarDataUrl = '';
+                        delete ent._nmfEmergencyInlineTs;
+                        migratedCount += 1;
+                    } else {
+                        // Durable IDB write/readback did NOT succeed — preserve inline Base64 so reload never loses user art!
+                        if (id) ent.avatarId = id;
+                        ent.avatarDataUrl = rawDataUrl;
+                        failedCount += 1;
+                    }
+                } finally {
+                    if (inFlightEntityDataUrl.get(ent) === rawDataUrl) {
+                        inFlightEntityDataUrl.delete(ent);
+                    }
+                }
+            }
+        } finally {
+            for (const { ent, rawDataUrl } of snapshotItems) {
+                if (inFlightEntityDataUrl.get(ent) === rawDataUrl) {
+                    inFlightEntityDataUrl.delete(ent);
+                }
             }
         }
 
@@ -872,16 +1023,27 @@ export async function getCardBackupById(backupId) {
 }
 
 export function clearMemoryVaultForTests({ closeDb = true } = {}) {
+    vaultEpoch += 1;
+    inFlightEntityDataUrl = new WeakMap();
+    for (const key of [...memoryObjectUrlCache.keys()]) {
+        revokeCachedObjectUrl(key);
+    }
+    for (const hit of inlineObjectUrlCache.values()) {
+        if (hit?.blobUrl?.startsWith('blob:') && typeof URL?.revokeObjectURL === 'function') {
+            try { URL.revokeObjectURL(hit.blobUrl); } catch {}
+        }
+    }
+    inlineObjectUrlCache.clear();
     memoryMediaCache.clear();
     durablyPersistedMediaIds.clear();
     memoryBackupList.length = 0;
+    activeMigrationChain = Promise.resolve({
+        changed: false,
+        migratedCount: 0,
+        failedCount: 0,
+        complete: true,
+    });
     if (closeDb) {
-        try {
-            activeDbInstance?.close?.();
-        } catch {
-            // ignore
-        }
-        activeDbInstance = null;
-        dbOpenPromise = null;
+        resetActiveDbConnection({ closeExisting: true });
     }
 }

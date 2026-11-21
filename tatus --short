@@ -1,0 +1,356 @@
+[1mdiff --git a/modules/nmf_media_vault.js b/modules/nmf_media_vault.js[m
+[1mindex 416c480..dbbe95a 100644[m
+[1m--- a/modules/nmf_media_vault.js[m
+[1m+++ b/modules/nmf_media_vault.js[m
+[36m@@ -44,6 +44,10 @@[m [mfunction revokeCachedObjectUrl(mediaId) {[m
+ const memoryBackupList = [];[m
+ let dbOpenPromise = null;[m
+ let activeDbInstance = null;[m
+[32m+[m[32mlet activeIdbProvider = null;[m
+[32m+[m[32mlet dbConnEpoch = 0;[m
+[32m+[m[32mlet vaultEpoch = 0;[m
+[32m+[m[32mlet inFlightEntityDataUrl = new WeakMap();[m
+ let activeMigrationChain = Promise.resolve({[m
+     changed: false,[m
+     migratedCount: 0,[m
+[36m@@ -143,16 +147,43 @@[m [mexport function isValidNonEmptyPngBytes(bytes) {[m
+     return sawIhdr && sawIdat && sawIend;[m
+ }[m
+ [m
+[32m+[m[32mfunction resetActiveDbConnection({ closeExisting = false } = {}) {[m
+[32m+[m[32m    dbConnEpoch += 1;[m
+[32m+[m[32m    if (closeExisting && activeDbInstance) {[m
+[32m+[m[32m        try {[m
+[32m+[m[32m            activeDbInstance.close?.();[m
+[32m+[m[32m        } catch {[m
+[32m+[m[32m            // ignore[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m[32m    activeDbInstance = null;[m
+[32m+[m[32m    activeIdbProvider = null;[m
+[32m+[m[32m    dbOpenPromise = null;[m
+[32m+[m[32m}[m
+[32m+[m
+ function openVaultDb() {[m
+[31m-    if (!hasIndexedDb()) return Promise.resolve(null);[m
+[32m+[m[32m    if (!hasIndexedDb()) {[m
+[32m+[m[32m        if (activeDbInstance || dbOpenPromise) {[m
+[32m+[m[32m            resetActiveDbConnection({ closeExisting: false });[m
+[32m+[m[32m        }[m
+[32m+[m[32m        return Promise.resolve(null);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (activeIdbProvider && activeIdbProvider !== indexedDB) {[m
+[32m+[m[32m        resetActiveDbConnection({ closeExisting: true });[m
+[32m+[m[32m    }[m
+     if (activeDbInstance) return Promise.resolve(activeDbInstance);[m
+     if (dbOpenPromise) return dbOpenPromise;[m
+ [m
+[31m-    dbOpenPromise = new Promise((resolve) => {[m
+[32m+[m[32m    const openEpoch = dbConnEpoch;[m
+[32m+[m[32m    const providerRef = indexedDB;[m
+[32m+[m[32m    let pendingPromise = null;[m
+[32m+[m
+[32m+[m[32m    pendingPromise = new Promise((resolve) => {[m
+         try {[m
+[31m-            const req = indexedDB.open(DB_NAME, DB_VERSION);[m
+[32m+[m[32m            const req = providerRef.open(DB_NAME, DB_VERSION);[m
+             req.onupgradeneeded = () => {[m
+                 const db = req.result;[m
+[32m+[m[32m                if (!db) return;[m
+                 if (!db.objectStoreNames.contains(MEDIA_STORE)) {[m
+                     db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });[m
+                 }[m
+[36m@@ -163,28 +194,68 @@[m [mfunction openVaultDb() {[m
+                 }[m
+             };[m
+             req.onsuccess = () => {[m
+[31m-                activeDbInstance = req.result;[m
+[31m-                if (activeDbInstance && typeof activeDbInstance.onclose === 'undefined') {[m
+[31m-                    // no-op for minimal shims[m
+[32m+[m[32m                const dbConn = req.result || null;[m
+[32m+[m[32m                if ([m
+[32m+[m[32m                    openEpoch !== dbConnEpoch ||[m
+[32m+[m[32m                    !hasIndexedDb() ||[m
+[32m+[m[32m                    providerRef !== indexedDB[m
+[32m+[m[32m                ) {[m
+[32m+[m[32m                    try {[m
+[32m+[m[32m                        dbConn?.close?.();[m
+[32m+[m[32m                    } catch {[m
+[32m+[m[32m                        // ignore stale handle close errors[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                    if (dbOpenPromise === pendingPromise) {[m
+[32m+[m[32m                        dbOpenPromise = null;[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                    resolve(null);[m
+[32m+[m[32m                    return;[m
+[32m+[m[32m                }[m
+[32m+[m[32m                activeDbInstance = dbConn;[m
+[32m+[m[32m                activeIdbProvider = providerRef;[m
+[32m+[m[32m                if (dbConn) {[m
+[32m+[m[32m                    const detachClosedConn = () => {[m
+[32m+[m[32m                        if (activeDbInstance === dbConn) {[m
+[32m+[m[32m                            activeDbInstance = null;[m
+[32m+[m[32m                            activeIdbProvider = null;[m
+[32m+[m[32m                            dbOpenPromise = null;[m
+[32m+[m[32m                        }[m
+[32m+[m[32m                    };[m
+[32m+[m[32m                    try {[m
+[32m+[m[32m                        dbConn.onclose = detachClosedConn;[m
+[32m+[m[32m                        dbConn.onversionchange = () => {[m
+[32m+[m[32m                            try { dbConn.close?.(); } catch {}[m
+[32m+[m[32m                            detachClosedConn();[m
+[32m+[m[32m                        };[m
+[32m+[m[32m                    } catch {[m
+[32m+[m[32m                        // minimal shims with non-writable handlers[m
+[32m+[m[32m                    }[m
+                 }[m
+                 resolve(activeDbInstance);[m
+             };[m
+             req.onblocked = () => {[m
+[31m-                dbOpenPromise = null;[m
+[32m+[m[32m                if (dbOpenPromise === pendingPromise) {[m
+[32m+[m[32m                    dbOpenPromise = null;[m
+[32m+[m[32m                }[m
+                 resolve(null);[m
+             };[m
+             req.onerror = () => {[m
+[31m-                dbOpenPromise = null;[m
+[32m+[m[32m                if (dbOpenPromise === pendingPromise) {[m
+[32m+[m[32m                    dbOpenPromise = null;[m
+[32m+[m[32m                }[m
+                 console.warn('[NexusMatch Forge] IndexedDB unavailable:', req.error);[m
+                 resolve(null);[m
+             };[m
+         } catch (err) {[m
+[31m-            dbOpenPromise = null;[m
+[32m+[m[32m            if (dbOpenPromise === pendingPromise) {[m
+[32m+[m[32m                dbOpenPromise = null;[m
+[32m+[m[32m            }[m
+             console.warn('[NexusMatch Forge] IndexedDB open exception:', err);[m
+             resolve(null);[m
+         }[m
+     });[m
+[31m-    return dbOpenPromise;[m
+[32m+[m[32m    dbOpenPromise = pendingPromise;[m
+[32m+[m[32m    return pendingPromise;[m
+ }[m
+ [m
+ function idbPut(db, storeName, record) {[m
+[36m@@ -349,23 +420,44 @@[m [mexport async function saveMediaDataUrl(dataUrl, existingId = '') {[m
+         if (existingId) await deleteMediaById(existingId);[m
+         return '';[m
+     }[m
+[32m+[m[32m    const opVaultEpoch = vaultEpoch;[m
+[32m+[m[32m    const opConnEpoch = dbConnEpoch;[m
+[32m+[m[32m    const opProvider = hasIndexedDb() ? indexedDB : null;[m
+     const id = existingId && String(existingId).startsWith('nmf_img_') ? String(existingId) : makeMediaId();[m
+     revokeCachedObjectUrl(id);[m
+     memoryMediaCache.set(id, clean);[m
+     durablyPersistedMediaIds.delete(id);[m
+ [m
+     const db = await openVaultDb();[m
+[31m-    if (db) {[m
+[32m+[m[32m    if ([m
+[32m+[m[32m        db &&[m
+[32m+[m[32m        opVaultEpoch === vaultEpoch &&[m
+[32m+[m[32m        opConnEpoch === dbConnEpoch &&[m
+[32m+[m[32m        hasIndexedDb() &&[m
+[32m+[m[32m        opProvider === indexedDB[m
+[32m+[m[32m    ) {[m
+         try {[m
+             await idbPut(db, MEDIA_STORE, { id, dataUrl: clean, updatedAt: Date.now() });[m
+             const readback = await idbGet(db, MEDIA_STORE, id);[m
+[31m-            if (readback && readback.id === id && readback.dataUrl === clean) {[m
+[32m+[m[32m            if ([m
+[32m+[m[32m                opVaultEpoch === vaultEpoch &&[m
+[32m+[m[32m                opConnEpoch === dbConnEpoch &&[m
+[32m+[m[32m                hasIndexedDb() &&[m
+[32m+[m[32m                opProvider === indexedDB &&[m
+[32m+[m[32m                readback &&[m
+[32m+[m[32m                readback.id === id &&[m
+[32m+[m[32m                readback.dataUrl === clean[m
+[32m+[m[32m            ) {[m
+[32m+[m[32m                memoryMediaCache.set(id, clean);[m
+                 durablyPersistedMediaIds.add(id);[m
+[31m-            } else {[m
+[32m+[m[32m            } else if (opVaultEpoch === vaultEpoch) {[m
+[32m+[m[32m                durablyPersistedMediaIds.delete(id);[m
+                 console.warn('[NexusMatch Forge] Media readback mismatch in IndexedDB for', id);[m
+             }[m
+         } catch (err) {[m
+[31m-            durablyPersistedMediaIds.delete(id);[m
+[32m+[m[32m            if (opVaultEpoch === vaultEpoch) {[m
+[32m+[m[32m                durablyPersistedMediaIds.delete(id);[m
+[32m+[m[32m            }[m
+             console.warn('[NexusMatch Forge] Failed to persist image in IndexedDB:', err);[m
+         }[m
+     }[m
+[36m@@ -492,11 +584,22 @@[m [mexport async function loadMediaDataUrl(mediaId) {[m
+     if (!id) return '';[m
+     if (memoryMediaCache.has(id)) return memoryMediaCache.get(id) || '';[m
+ [m
+[32m+[m[32m    const opVaultEpoch = vaultEpoch;[m
+[32m+[m[32m    const opConnEpoch = dbConnEpoch;[m
+[32m+[m[32m    const opProvider = hasIndexedDb() ? indexedDB : null;[m
+     const db = await openVaultDb();[m
+[31m-    if (!db) return '';[m
+[32m+[m[32m    if (!db || opVaultEpoch !== vaultEpoch || opConnEpoch !== dbConnEpoch || !hasIndexedDb() || opProvider !== indexedDB) {[m
+[32m+[m[32m        return '';[m
+[32m+[m[32m    }[m
+     try {[m
+         const rec = await idbGet(db, MEDIA_STORE, id);[m
+[31m-        if (rec?.dataUrl) {[m
+[32m+[m[32m        if ([m
+[32m+[m[32m            rec?.dataUrl &&[m
+[32m+[m[32m            opVaultEpoch === vaultEpoch &&[m
+[32m+[m[32m            opConnEpoch === dbConnEpoch &&[m
+[32m+[m[32m            hasIndexedDb() &&[m
+[32m+[m[32m            opProvider === indexedDB[m
+[32m+[m[32m        ) {[m
+             const val = String(rec.dataUrl);[m
+             memoryMediaCache.set(id, val);[m
+             durablyPersistedMediaIds.add(id);[m
+[36m@@ -588,6 +691,7 @@[m [mexport function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])[m
+     }[m
+ [m
+     // Synchronous snapshot BEFORE any await so concurrent saveSettings() cannot race ahead[m
+[32m+[m[32m    const migEpoch = vaultEpoch;[m
+     const snapshotItems = [];[m
+     const seenEntities = new Set();[m
+     let cleanedGarbage = 0;[m
+[36m@@ -597,6 +701,10 @@[m [mexport function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])[m
+         seenEntities.add(ent);[m
+         const raw = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';[m
+         if (raw.startsWith('data:')) {[m
+[32m+[m[32m            if (inFlightEntityDataUrl.get(ent) === raw) {[m
+[32m+[m[32m                return;[m
+[32m+[m[32m            }[m
+[32m+[m[32m            inFlightEntityDataUrl.set(ent, raw);[m
+             snapshotItems.push({[m
+                 ent,[m
+                 rawDataUrl: raw,[m
+[36m@@ -639,29 +747,72 @@[m [mexport function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])[m
+         for (const v of savedVault) collectEntity(v);[m
+     }[m
+ [m
+[32m+[m[32m    if (snapshotItems.length === 0 && cleanedGarbage === 0) {[m
+[32m+[m[32m        return activeMigrationChain.catch(() => ({[m
+[32m+[m[32m            changed: false,[m
+[32m+[m[32m            migratedCount: 0,[m
+[32m+[m[32m            failedCount: 0,[m
+[32m+[m[32m            complete: true,[m
+[32m+[m[32m        }));[m
+[32m+[m[32m    }[m
+[32m+[m
+     const runStep = async () => {[m
+         let migratedCount = 0;[m
+         let failedCount = 0;[m
+ [m
+[31m-        for (const item of snapshotItems) {[m
+[31m-            const { ent, rawDataUrl, existingId } = item;[m
+[31m-            // Skip if user already replaced this entity's image with a completely different inline Data URL[m
+[31m-            const currentInline = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';[m
+[31m-            if (currentInline && currentInline !== rawDataUrl) {[m
+[31m-                continue;[m
+[32m+[m[32m        try {[m
+[32m+[m[32m            if (migEpoch !== vaultEpoch) {[m
+[32m+[m[32m                return {[m
+[32m+[m[32m                    changed: cleanedGarbage > 0,[m
+[32m+[m[32m                    migratedCount: 0,[m
+[32m+[m[32m                    failedCount: 0,[m
+[32m+[m[32m                    complete: true,[m
+[32m+[m[32m                };[m
+             }[m
+ [m
+[31m-            const id = await saveMediaDataUrl(rawDataUrl, ent.avatarId || existingId);[m
+[31m-            if (id && isMediaDurablyPersisted(id)) {[m
+[31m-                ent.avatarId = id;[m
+[31m-                ent.avatarDataUrl = '';[m
+[31m-                delete ent._nmfEmergencyInlineTs;[m
+[31m-                migratedCount += 1;[m
+[31m-            } else {[m
+[31m-                // Durable IDB write/readback did NOT succeed — preserve inline Base64 so reload never loses user art![m
+[31m-                if (id) ent.avatarId = id;[m
+[31m-                ent.avatarDataUrl = rawDataUrl;[m
+[31m-                failedCount += 1;[m
+[32m+[m[32m            for (const item of snapshotItems) {[m
+[32m+[m[32m                if (migEpoch !== vaultEpoch) break;[m
+[32m+[m[32m                const { ent, rawDataUrl, existingId } = item;[m
+[32m+[m[32m                try {[m
+[32m+[m[32m                    // Skip if user already replaced or explicitly cleared this entity's image[m
+[32m+[m[32m                    const currentInline = typeof ent.avatarDataUrl === 'string' ? ent.avatarDataUrl.trim() : '';[m
+[32m+[m[32m                    if (currentInline && currentInline !== rawDataUrl) {[m
+[32m+[m[32m                        continue;[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                    if (!currentInline) {[m
+[32m+[m[32m                        if (ent.avatarId && isMediaDurablyPersisted(ent.avatarId)) {[m
+[32m+[m[32m                            continue;[m
+[32m+[m[32m                        }[m
+[32m+[m[32m                        if (!ent.avatarId) {[m
+[32m+[m[32m                            continue;[m
+[32m+[m[32m                        }[m
+[32m+[m[32m                    }[m
+[32m+[m
+[32m+[m[32m                    const id = await saveMediaDataUrl(rawDataUrl, ent.avatarId || existingId);[m
+[32m+[m[32m                    if (migEpoch !== vaultEpoch) break;[m
+[32m+[m
+[32m+[m[32m                    if (id && isMediaDurablyPersisted(id)) {[m
+[32m+[m[32m                        ent.avatarId = id;[m
+[32m+[m[32m                        ent.avatarDataUrl = '';[m
+[32m+[m[32m                        delete ent._nmfEmergencyInlineTs;[m
+[32m+[m[32m                        migratedCount += 1;[m
+[32m+[m[32m                    } else {[m
+[32m+[m[32m                        // Durable IDB write/readback did NOT succeed — preserve inline Base64 so reload never loses user art![m
+[32m+[m[32m                        if (id) ent.avatarId = id;[m
+[32m+[m[32m                        ent.avatarDataUrl = rawDataUrl;[m
+[32m+[m[32m                        failedCount += 1;[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                } finally {[m
+[32m+[m[32m                    if (inFlightEntityDataUrl.get(ent) === rawDataUrl) {[m
+[32m+[m[32m                        inFlightEntityDataUrl.delete(ent);[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                }[m
+[32m+[m[32m            }[m
+[32m+[m[32m        } finally {[m
+[32m+[m[32m            for (const { ent, rawDataUrl } of snapshotItems) {[m
+[32m+[m[32m                if (inFlightEntityDataUrl.get(ent) === rawDataUrl) {[m
+[32m+[m[32m                    inFlightEntityDataUrl.delete(ent);[m
+[32m+[m[32m                }[m
+             }[m
+         }[m
+ [m
+[36m@@ -872,16 +1023,27 @@[m [mexport async function getCardBackupById(backupId) {[m
+ }[m
+ [m
+ export function clearMemoryVaultForTests({ closeDb = true } = {}) {[m
+[32m+[m[32m    vaultEpoch += 1;[m
+[32m+[m[32m    inFlightEntityDataUrl = new WeakMap();[m
+[32m+[m[32m    for (const key of [...memoryObjectUrlCache.keys()]) {[m
+[32m+[m[32m        revokeCachedObjectUrl(key);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    for (const hit of inlineObjectUrlCache.values()) {[m
+[32m+[m[32m        if (hit?.blobUrl?.startsWith('blob:') && typeof URL?.revokeObjectURL === 'function') {[m
+[32m+[m[32m            try { URL.revokeObjectURL(hit.blobUrl); } catch {}[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m[32m    inlineObjectUrlCache.clear();[m
+     memoryMediaCache.clear();[m
+     durablyPersistedMediaIds.clear();[m
+     memoryBackupList.length = 0;[m
+[32m+[m[32m    activeMigrationChain = Promise.resolve({[m
+[32m+[m[32m        changed: false,[m
+[32m+[m[32m        migratedCount: 0,[m
+[32m+[m[32m        failedCount: 0,[m
+[32m+[m[32m        complete: true,[m
+[32m+[m[32m    });[m
+     if (closeDb) {[m
+[31m-        try {[m
+[31m-            activeDbInstance?.close?.();[m
+[31m-        } catch {[m
+[31m-            // ignore[m
+[31m-        }[m
+[31m-        activeDbInstance = null;[m
+[31m-        dbOpenPromise = null;[m
+[32m+[m[32m        resetActiveDbConnection({ closeExisting: true });[m
+     }[m
+ }[m
