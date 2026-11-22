@@ -2,6 +2,15 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [1.9.6-beta] - 2026-11-22
+
+### Dual-Mode Card V2 Regeneration & Surgical Anti-Slop Editor, Donor Lorebook Toggle & Always-On Sacrifice Confirmation
+- **Dual-Prompt Card Regeneration & Surgical Anti-Slop Editor (`buildSurgicalCardEditRequest`, `applySurgicalCardEditResult` & `buildFullCardRegenerateRequest`)**: Added a unified Regeneration & AI Edit panel directly inside **Create (`From Idea` & `AU Rework`)** and **Profile Editor** with two distinct prompts:
+  1. **Surgical Fix (Preserve Integrity)** — rewrites ONLY the disliked point/section or purges AI slop while keeping the rest of the card verbatim (with optional hard field-scope locking and isolated Art-prompt toggle so visual tags never enter card prose).
+  2. **Full Rewrite (With Feedback)** — regenerates the entire card fresh from scratch (including full AU transplant re-runs) while strictly honoring user corrections, plus instant 1-tap **Undo AI Edit**.
+- **AU Donor Lorebook Inheritance Toggle (`inheritLorebook`)**: Added an explicit toggle in **Create -> AU Rework** (*OFF by default*) so adapted characters start clean in their new universe without dragging old-world Lorebooks (`world` & embedded `character_book`), unless opted in.
+- **Always-On Irreversible Sacrifice Warning**: Sacrifice confirmation ritual modal now triggers on **every** card sacrifice attempt so no collectible card can ever be destroyed by an accidental tap.
+
 ## [1.9.5-beta] - 2026-11-22
 
 ### Altar Donor Absorption + Altar-Only Regenerate Button, Zero Double-Cropping & Live Tavern Stress-Audit Fixes

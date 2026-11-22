@@ -162,6 +162,10 @@ export const NMF_FULL_CSS = `
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
 }
+body:has(#nmf-dialog[open]) #toast-container,
+body:has(#nmf-dialog[open]) #toast-container > div {
+    pointer-events: none !important;
+}
 #nmf-window svg { flex-shrink: 0; }
 
 /* 13 FORGE THEMES */

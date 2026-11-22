@@ -87,6 +87,10 @@ import {
     buildCleanBriefFromEntity,
     listBlitzSelectableCandidates,
     resolveBlitzSeedCandidate,
+    CARD_REFINEMENT_SCOPES,
+    buildSurgicalCardEditRequest,
+    applySurgicalCardEditResult,
+    buildFullCardRegenerateRequest,
 } from './modules/nmf_templates_and_prompts.js';
 import {
     ALL_EDITABLE_CARD_FIELDS,
@@ -200,6 +204,11 @@ export const state = {
     lightboxInfo: null, // { name, imageUrl, appearance, imagePrompt }
     overwriteConfirmInfo: null, // { targetAvatar, diff, externalWarning }
     lastOverwriteAlert: null, // { code, message, backupId, targetAvatar }
+    cardRefineMode: 'surgical', // 'surgical' | 'full_regen'
+    cardRefineScope: 'auto',
+    cardRefinePrompt: '',
+    cardRefineUpdateArt: false,
+    cardUndoSnapshots: new Map(), // `${sessId}:${slotId}` -> cloned card before AI edit
     recentBackups: [],
     busy: false,
     busyMinimized: false,
@@ -457,16 +466,16 @@ function notifyToast(msg, isError = false) {
     if (typeof globalThis.window === 'undefined') return;
     const safeMsg = String(msg ?? '');
     if (isError) {
-        if (window.toastr?.error) window.toastr.error(safeMsg, 'NexusMatch', { escapeHtml: true });
+        if (window.toastr?.error) window.toastr.error(safeMsg, 'NexusMatch', { timeOut: 2800, preventDuplicates: true, escapeHtml: true });
     } else if (window.toastr?.info) {
-        window.toastr.info(safeMsg, 'NexusMatch', { timeOut: 2200, escapeHtml: true });
+        window.toastr.info(safeMsg, 'NexusMatch', { timeOut: 1700, preventDuplicates: true, escapeHtml: true });
     }
 }
 
 function notifySuccessToast(msg) {
     if (typeof globalThis.window === 'undefined') return;
     if (window.toastr?.success) {
-        window.toastr.success(String(msg ?? ''), 'NexusMatch', { escapeHtml: true });
+        window.toastr.success(String(msg ?? ''), 'NexusMatch', { timeOut: 1800, preventDuplicates: true, escapeHtml: true });
     }
 }
 
@@ -3411,7 +3420,104 @@ function renderBlitzTab(sess) {
 
     <button type="button" class="nmf-btn-primary" style="width:100%" data-act="build-from-blitz" ${state.busy || sess.frozen ? 'disabled' : ''}>
         ${NMF_ICONS.spark} ${seedEntity ? `Собрать карточку «${esc(seedEntity.name)}» по ответам` : 'Собрать карточку в слот «Блиц»'}
-    </button>` : ''}`;
+    </button>` : ''}
+    ${renderCardAiRegenAndEditBox(sess, { targetSlot: 'blitz', originKind: 'blitz', inSpoiler: false })}`;
+}
+
+function renderCardAiRegenAndEditBox(sess, { targetSlot = 'architect', originKind = 'idea', inSpoiler = false } = {}) {
+    syncSessionActiveSlot(sess);
+    const slotKey = targetSlot || sess.activeCardSlot || 'manual';
+    const targetCard = sess.cardSlots?.[slotKey] || sess.card;
+    const hasCard = Boolean(targetCard && (targetCard.name || targetCard.description || targetCard.first_mes));
+    if (!hasCard) {
+        if (inSpoiler) return '';
+        return `
+        <div class="nmf-panel nmf-panel-sub" style="padding:9px 11px;font-size:11.5px;color:var(--nmf-text-muted);line-height:1.42">
+            <strong style="color:var(--nmf-accent)">${esc(tx('Перегенерация и точечная правка без слопа:', 'Regenerate & Surgical Anti-Slop Edit:'))}</strong>
+            ${esc(tx(
+                ' сразу после первой сборки карточки здесь и в «Профиле» откроется панель перегенерации — 1) обновить отдельный пункт/деталь с сохранением целостности или 2) пересобрать карточку полностью с учётом ваших правок.',
+                ' right after building your first draft, a panel appears here and in Profile to either 1) surgically fix specific points while keeping card integrity, or 2) regenerate the whole card from scratch with your feedback.',
+            ))}
+        </div>`;
+    }
+
+    const rMode = state.cardRefineMode === 'full_regen' ? 'full_regen' : 'surgical';
+    const undoKey = `${sess.id}:${slotKey}`;
+    const hasUndo = state.cardUndoSnapshots.has(undoKey);
+
+    const innerHtml = `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
+            <span class="nmf-label" style="color:var(--nmf-accent)">
+                ${NMF_ICONS.rework} ${esc(tx(`Перегенерировать · «${targetCard.name || 'Черновик'}»`, `Regenerate · "${targetCard.name || 'Draft'}"`))}
+            </span>
+            <div class="nmf-btn-row">
+                ${hasUndo ? `<button type="button" class="nmf-chip" data-act="undo-card-ai-refine" data-slot="${esc(slotKey)}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.undo} ${esc(tx('Вернуть до правки', 'Undo AI Edit'))}</button>` : ''}
+                ${!inSpoiler ? `<button type="button" class="nmf-chip" data-act="jump-to-slot-editor" data-slot="${esc(slotKey)}">${esc(tx('Открыть в Профиле', 'View in Profile'))}</button>` : ''}
+            </div>
+        </div>
+
+        <div class="nmf-seg-bar">
+            <button type="button" class="nmf-seg-btn ${rMode === 'surgical' ? 'nmf-active' : ''}" data-act="set-card-refine-mode" data-rmode="surgical">
+                ${esc(tx('1. Пункт / с правкой (целостность)', '1. Surgical Fix (Keep Integrity)'))}
+            </button>
+            <button type="button" class="nmf-seg-btn ${rMode === 'full_regen' ? 'nmf-active' : ''}" data-act="set-card-refine-mode" data-rmode="full_regen">
+                ${esc(tx('2. Полностью заново (с правками)', '2. Full Rewrite (With Edits)'))}
+            </button>
+        </div>
+
+        <div style="font-size:11px;color:var(--nmf-text-muted);line-height:1.4">
+            ${esc(rMode === 'surgical'
+                ? tx('ИИ перепишет только то, что не понравилось (уберёт типичный слоп, поправит пункт анкеты или сцену), сохранив остальную карточку и структуру нетронутыми.', 'AI rewrites ONLY what you disliked (purges AI slop, fixes a specific point or scene) while keeping the rest of the card verbatim.')
+                : tx('ИИ полностью перепишет всю карточку с нуля свежим языком, но строго учтёт ваши замечания и правки ниже.', 'AI rewrites the entire card completely from scratch with fresh prose while strictly following your feedback below.'))}
+        </div>
+
+        ${rMode === 'surgical' ? `
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(tx('Какой раздел обновлять', 'Target Section to Update'))}</label>
+            <select class="nmf-select" data-card-refine-scope="1" ${sess.frozen ? 'disabled' : ''}>
+                ${CARD_REFINEMENT_SCOPES.map((sc) => `<option value="${sc.id}" ${(state.cardRefineScope || 'auto') === sc.id ? 'selected' : ''}>${esc(isEn() ? sc.labelEn : sc.label)}</option>`).join('')}
+            </select>
+        </div>` : ''}
+
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(rMode === 'surgical'
+                ? tx('Что именно исправить, убрать или переписать?', 'What should AI fix, remove, or rewrite?')
+                : tx('Ваши правки и пожелания для полной пересборки (по желанию)', 'Your feedback & corrections for the full rewrite (optional)'))}</label>
+            <textarea class="nmf-textarea" style="min-height:68px" data-card-refine-prompt="1" placeholder="${esc(rMode === 'surgical'
+                ? tx('Например: убери пафосный слоп про «хищный взгляд», сделай манеру речи суше и перепиши пункт 15 без клише...', 'e.g. Remove melodramatic slop, make dialogue drier, and rewrite point 15 without clichés...')
+                : tx('Например: сделай героя старше и спокойнее, а встречу перенеси из бара в ночной поезд (или оставьте пустым для нового дубля)...', 'e.g. Make the character older and calmer, move the opening scene to a night train (or leave blank for a fresh take)...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(state.cardRefinePrompt || '')}</textarea>
+        </div>
+
+        ${rMode === 'surgical' ? `
+        <div class="nmf-toggle-line" data-act="toggle-card-refine-art">
+            <span style="font-size:11.5px;font-weight:600">${esc(tx('Также обновить отдельный промпт Арта (не попадает в текст карточки)', 'Also update separate Art prompt (never enters card text)'))}</span>
+            <div class="nmf-switch ${state.cardRefineUpdateArt ? 'nmf-on' : ''}"></div>
+        </div>` : ''}
+
+        <button type="button" class="nmf-btn-primary" style="width:100%" data-act="run-card-ai-refine" data-slot="${esc(slotKey)}" data-origin="${esc(originKind)}" ${state.busy || sess.frozen ? 'disabled' : ''}>
+            ${NMF_ICONS.spark} ${esc(rMode === 'surgical'
+                ? tx('Применить правку (сохранить целостность)', 'Apply Surgical Fix (Keep Integrity)')
+                : tx('Перегенерировать карточку полностью', 'Regenerate Entire Card Fresh'))}
+        </button>
+    `;
+
+    if (inSpoiler) {
+        return `
+        <details class="nmf-spoiler">
+            <summary>
+                <span style="display:inline-flex;align-items:center;gap:6px">
+                    <span style="color:var(--nmf-accent)">${NMF_ICONS.rework}</span>
+                    <span>${esc(tx('Перегенерировать / Исправить ИИ (точечно или полностью)', 'Regenerate / AI Fix (Surgical or Full Rewrite)'))}</span>
+                </span>
+                ${NMF_ICONS.chevronDown}
+            </summary>
+            <div class="nmf-spoiler-body" style="display:flex;flex-direction:column;gap:8px">
+                ${innerHtml}
+            </div>
+        </details>`;
+    }
+
+    return `<div class="nmf-panel" style="display:flex;flex-direction:column;gap:8px;border-color:var(--nmf-border-active)">${innerHtml}</div>`;
 }
 
 // 4. CREATE FROM IDEA OR MULTIVERSE AU SHIFT (100% ISOLATED FROM TINDER & GACHA)
@@ -3461,7 +3567,8 @@ function renderCreateTab(sess) {
         <button type="button" class="nmf-btn-primary" style="width:100%" data-act="build-from-architect" ${state.busy || sess.frozen ? 'disabled' : ''}>
             ${NMF_ICONS.spark} ${sess.architect.useIntake !== false ? 'Собрать (Задумка + Анкета)' : 'Собрать только по задумке'}
         </button>
-    </div>` : `
+    </div>
+    ${renderCardAiRegenAndEditBox(sess, { targetSlot: 'architect', originKind: 'idea', inSpoiler: false })}` : `
     <div class="nmf-panel">
         <div class="nmf-field">
             <label class="nmf-label">
@@ -3535,7 +3642,8 @@ function renderCreateTab(sess) {
             <button type="button" class="nmf-btn-secondary" data-act="load-char-to-editor" ${state.busy || sess.frozen ? 'disabled' : ''}>Открыть в Профиле</button>
             <button type="button" class="nmf-btn-primary" style="flex:1" data-act="run-rework" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.rework} Перенести в новый мир</button>
         </div>
-    </div>`}`;
+    </div>
+    ${renderCardAiRegenAndEditBox(sess, { targetSlot: 'architect', originKind: 'au_rework', inSpoiler: false })}`}`;
 }
 
 // 5. PROFILE EDITOR (5 INDEPENDENT METHOD SLOTS + TRANSLATE AI + SAVE TO VAULT)
@@ -3700,6 +3808,18 @@ function renderEditorTab(sess) {
         <span class="nmf-label" style="color:var(--nmf-accent)">Слот: ${esc(CARD_SLOT_DEFS.find((d) => d.id === sess.activeCardSlot)?.label || 'Профиль')}${canOverwriteOriginal ? ` · ${esc(c.sourceAvatarId)}` : ''}</span>
         <span style="font-family:var(--nmf-font-mono);font-size:10.5px;color:var(--nmf-text-muted)">${totalWords} слов (~${approxTokens} ток.)</span>
     </div>
+
+    ${renderCardAiRegenAndEditBox(sess, {
+        targetSlot: sess.activeCardSlot || 'manual',
+        originKind: sess.activeCardSlot === 'blitz'
+            ? 'blitz'
+            : (sess.activeCardSlot === 'gacha'
+                ? 'gacha'
+                : (sess.activeCardSlot === 'swipe'
+                    ? 'swipe'
+                    : ((sess.activeCardSlot === 'architect' && sess.architect?.subMode === 'rework') ? 'au_rework' : 'idea'))),
+        inSpoiler: true,
+    })}
 
     <div class="nmf-seg-bar nmf-seg-3">
         <button type="button" class="nmf-seg-btn ${state.editorSubTab === 'main' ? 'nmf-active' : ''}" data-act="editor-sub" data-sub="main">1. Описание</button>
@@ -4739,6 +4859,10 @@ function bindWindowDelegation(win) {
             state.artRefineHint = el.value;
             return;
         }
+        if (el.dataset.cardRefinePrompt) {
+            state.cardRefinePrompt = el.value;
+            return;
+        }
         if (el.dataset.gacha) {
             if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
             const gk = el.dataset.gacha;
@@ -4872,6 +4996,11 @@ function bindWindowDelegation(win) {
         }
         if (el.dataset.gridSort) {
             state.gridSortMode = el.value;
+            renderWindow();
+            return;
+        }
+        if (el.dataset.cardRefineScope) {
+            state.cardRefineScope = el.value || 'auto';
             renderWindow();
             return;
         }
@@ -6785,6 +6914,195 @@ function bindWindowDelegation(win) {
                 state.activeTab = 'editor';
                 state.editorSubTab = 'main';
                 saveSettings();
+            }, { taskType: 'llm', cancellable: true });
+            return;
+        }
+
+        // CARD V2 AI REGENERATION & SURGICAL ANTI-SLOP REFINEMENT (DUAL PROMPTS)
+        if (act === 'set-card-refine-mode') {
+            state.cardRefineMode = btn.dataset.rmode === 'full_regen' ? 'full_regen' : 'surgical';
+            return renderWindow();
+        }
+        if (act === 'toggle-card-refine-art') {
+            state.cardRefineUpdateArt = !Boolean(state.cardRefineUpdateArt);
+            return renderWindow();
+        }
+        if (act === 'jump-to-slot-editor') {
+            syncSessionActiveSlot(sess, btn.dataset.slot || 'architect');
+            state.activeTab = 'editor';
+            state.editorSubTab = 'main';
+            return renderWindow();
+        }
+        if (act === 'undo-card-ai-refine') {
+            if (sess.frozen) return;
+            const slotKey = btn.dataset.slot || sess.activeCardSlot || 'architect';
+            const undoKey = `${sess.id}:${slotKey}`;
+            const prevSnap = state.cardUndoSnapshots.get(undoKey);
+            if (!prevSnap) return;
+            assignCardIntoSessionSlot(sess, slotKey, structuredClone(prevSnap));
+            state.cardUndoSnapshots.delete(undoKey);
+            saveSettings();
+            notifySuccessToast(tx('Возвращён предыдущий вариант карточки до правки ИИ!', 'Restored previous card version before AI edit!'));
+            return renderWindow();
+        }
+        if (act === 'run-card-ai-refine') {
+            if (sess.frozen) return;
+            const domRefineTxt = win.querySelector('textarea[data-card-refine-prompt]');
+            if (domRefineTxt) state.cardRefinePrompt = domRefineTxt.value;
+            const domScopeSel = win.querySelector('select[data-card-refine-scope]');
+            if (domScopeSel && domScopeSel.value) state.cardRefineScope = domScopeSel.value;
+            const domBlitzTopic = win.querySelector('input[data-blitz="topic"]');
+            if (domBlitzTopic) sess.blitz.topic = domBlitzTopic.value;
+            win.querySelectorAll('input[data-blitz-ans]').forEach((inp) => {
+                const qIdx = Number(inp.dataset.blitzAns);
+                if (sess.blitz.questions[qIdx]) sess.blitz.questions[qIdx].answer = inp.value;
+            });
+
+            const slotKey = btn.dataset.slot || sess.activeCardSlot || 'architect';
+            const originKind = btn.dataset.origin || 'idea';
+            syncSessionActiveSlot(sess);
+            const curCard = sess.cardSlots?.[slotKey] || sess.card;
+            if (!curCard || (!curCard.name && !curCard.description && !curCard.first_mes)) {
+                notifyToast(tx('Сначала соберите базовый черновик карточки.', 'Build an initial card draft first.'), true);
+                return;
+            }
+
+            const rMode = state.cardRefineMode === 'full_regen' ? 'full_regen' : 'surgical';
+            const instruction = String(state.cardRefinePrompt || '').trim();
+            if (rMode === 'surgical' && !instruction) {
+                notifyToast(
+                    tx(
+                        'Впишите, какой пункт или фразу исправить (или переключите на «2. Полностью заново»).',
+                        'Enter what point or phrasing to fix (or switch to "2. Full Rewrite").',
+                    ),
+                    true,
+                );
+                return;
+            }
+
+            const undoKey = `${sess.id}:${slotKey}`;
+            const preEditSnapshot = structuredClone(curCard);
+            const scope = state.cardRefineScope || 'auto';
+            const updateArt = Boolean(state.cardRefineUpdateArt);
+
+            if (rMode === 'surgical') {
+                await withBusy(tx(`Точечная ИИ-правка «${curCard.name || 'Карточки'}»`, `Surgical AI fix on "${curCard.name || 'Card'}"`), async (signal) => {
+                    const req = buildSurgicalCardEditRequest(sess, curCard, instruction, {
+                        scope,
+                        updateArtPrompt: updateArt,
+                        mode: cfg.transportMode,
+                    });
+                    const raw = await runLlmGeneration({
+                        ...req,
+                        transportMode: cfg.transportMode,
+                        presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                        stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                        signal,
+                    });
+                    const parsed = parseFullCardResponse(
+                        raw,
+                        cfg.transportMode,
+                        sess.intake.playerNameMode || 'macro',
+                        { fallbackName: curCard.name || 'Character' },
+                    );
+                    const updatedCard = applySurgicalCardEditResult(curCard, parsed, {
+                        scope,
+                        updateArtPrompt: updateArt,
+                    });
+                    for (const f of ['name', 'description', 'personality', 'scenario', 'first_mes', 'alternate_greetings', 'mes_example', 'system_prompt', 'post_history_instructions', 'creator_notes', 'tags', 'imagePrompt']) {
+                        if (JSON.stringify(updatedCard[f]) !== JSON.stringify(curCard[f])) {
+                            markCardFieldDirty(updatedCard, f);
+                        }
+                    }
+                    state.cardUndoSnapshots.set(undoKey, preEditSnapshot);
+                    assignCardIntoSessionSlot(sess, slotKey, updatedCard);
+                    state.activeTab = 'editor';
+                    if (scope === 'first_mes') state.editorSubTab = 'greet';
+                    else if (scope === 'personality_scenario' || scope === 'mes_example') state.editorSubTab = 'meta';
+                    else state.editorSubTab = 'main';
+                    saveSettings();
+                    notifySuccessToast(tx('Точечная правка применена с сохранением целостности карточки!', 'Surgical edit applied while preserving card integrity!'));
+                }, { taskType: 'llm', cancellable: true });
+                return;
+            }
+
+            // rMode === 'full_regen': Complete fresh regeneration from scratch honoring user feedback!
+            await withBusy(tx(`Полная пересборка «${curCard.name || 'Карточки'}» с учётом правок`, `Full fresh rewrite of "${curCard.name || 'Card'}"`), async (signal) => {
+                const chosenAuAvatar = originKind === 'au_rework'
+                    ? String(sess.rework?.sourceAvatar || curCard.sourceAvatarId || '').trim()
+                    : '';
+
+                if (originKind === 'au_rework' && chosenAuAvatar) {
+                    const { fullChar, rawCardObject, snapshotHash } = await fetchFullTavernCharacter(chosenAuAvatar, { signal });
+                    const baseState = createCardStateFromTavernChar(fullChar);
+                    const req = buildFullCardRegenerateRequest(sess, curCard, instruction, {
+                        originKind: 'au_rework',
+                        sourceCard: baseState,
+                        mode: cfg.transportMode,
+                    });
+                    const raw = await runLlmGeneration({
+                        ...req,
+                        transportMode: cfg.transportMode,
+                        presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                        stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                        signal,
+                    });
+                    const parsed = parseFullCardResponse(
+                        raw,
+                        cfg.transportMode,
+                        sess.intake.playerNameMode || 'macro',
+                        { fallbackName: baseState.name },
+                    );
+                    const rebuiltAu = applyReworkResultToTavernBase(baseState, parsed, {
+                        avatarId: curCard.avatarId || '',
+                        sourceAvatarId: chosenAuAvatar,
+                        snapshotHash,
+                        rawCardObject,
+                        inheritLorebook: Boolean(sess.rework?.inheritLorebook),
+                    });
+                    if (curCard.avatarDataUrl) rebuiltAu.avatarDataUrl = curCard.avatarDataUrl;
+                    if (curCard.originalAvatarId) rebuiltAu.originalAvatarId = curCard.originalAvatarId;
+                    if (curCard.croppedAspect) rebuiltAu.croppedAspect = curCard.croppedAspect;
+                    if (curCard.artNaturalRatio) rebuiltAu.artNaturalRatio = curCard.artNaturalRatio;
+                    state.cardUndoSnapshots.set(undoKey, preEditSnapshot);
+                    assignCardIntoSessionSlot(sess, slotKey, rebuiltAu);
+                } else {
+                    const req = buildFullCardRegenerateRequest(sess, curCard, instruction, {
+                        originKind,
+                        useIntake: sess.architect?.useIntake !== false,
+                        mode: cfg.transportMode,
+                    });
+                    const raw = await runLlmGeneration({
+                        ...req,
+                        transportMode: cfg.transportMode,
+                        presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                        stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                        signal,
+                    });
+                    const parsed = parseFullCardResponse(
+                        raw,
+                        cfg.transportMode,
+                        sess.intake.playerNameMode || 'macro',
+                        { fallbackName: curCard.name || '' },
+                    );
+                    const rebuiltIdea = createCardStateFromGeneratedDraft(parsed, {
+                        avatarId: curCard.avatarId || '',
+                        fallbackName: curCard.name || '',
+                        fallbackImagePrompt: curCard.imagePrompt || '',
+                    });
+                    if (curCard.avatarDataUrl) rebuiltIdea.avatarDataUrl = curCard.avatarDataUrl;
+                    if (curCard.originalAvatarId) rebuiltIdea.originalAvatarId = curCard.originalAvatarId;
+                    if (curCard.croppedAspect) rebuiltIdea.croppedAspect = curCard.croppedAspect;
+                    if (curCard.artNaturalRatio) rebuiltIdea.artNaturalRatio = curCard.artNaturalRatio;
+                    if (curCard.world) rebuiltIdea.world = curCard.world;
+                    state.cardUndoSnapshots.set(undoKey, preEditSnapshot);
+                    assignCardIntoSessionSlot(sess, slotKey, rebuiltIdea);
+                }
+
+                state.activeTab = 'editor';
+                state.editorSubTab = 'main';
+                saveSettings();
+                notifySuccessToast(tx('Карточка полностью пересобрана с учётом ваших правок!', 'Card completely regenerated with your feedback!'));
             }, { taskType: 'llm', cancellable: true });
             return;
         }

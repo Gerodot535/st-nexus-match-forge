@@ -2857,3 +2857,95 @@ test('v1.9.5 Altar Donor Snapshot + Altar-Only Regenerate & Zero Secondary Doubl
     assert.ok(cssTxt.includes('.nmf-hero-visual.nmf-natural-art'));
     assert.ok(cssTxt.includes('grid-auto-flow: dense'));
 });
+
+test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite), Donor Lorebook Toggle & Always-On Sacrifice Confirm', async () => {
+    const {
+        buildSurgicalCardEditRequest,
+        applySurgicalCardEditResult,
+        buildFullCardRegenerateRequest,
+    } = await import('../modules/nmf_templates_and_prompts.js');
+    const { applyReworkResultToTavernBase, buildV2CardObject } = await import('../modules/nmf_card_io_and_art.js');
+
+    const sess = createDefaultSession(1);
+    sess.architect.freeConcept = 'Gritty harbor detective';
+    const card = {
+        name: 'Clifford',
+        description: '1. Identity: Detective.\n15. Sloppy cliché paragraph.',
+        personality: 'Dry wit, observant.',
+        scenario: 'Rainy pier at midnight.',
+        first_mes: 'Original opening scene untouched.',
+        alternate_greetings: ['Alt 1'],
+        mes_example: '<START>\n{{user}}: Hi\n{{char}}: Evening.',
+        creator_notes: 'Keep notes intact.',
+        tags: 'detective, noir',
+        imagePrompt: 'SCENE: Original coat portrait',
+    };
+
+    // 1. Prompt #1 (Surgical Edit): demands verbatim preservation + anti-slop + freezes locked scopes & separate imagePrompt!
+    const surgReq = buildSurgicalCardEditRequest(sess, card, 'Убери слоп в пункте 15 и сделай речь суше', {
+        scope: 'description',
+        updateArtPrompt: false,
+        mode: 'json_schema',
+    });
+    assert.ok(surgReq.system.includes('SURGICAL COHESION & INTEGRITY LAW'));
+    assert.ok(surgReq.system.includes('ANTI-SLOP'));
+    assert.ok(surgReq.user.includes('Убери слоп в пункте 15'));
+
+    const appliedLocked = applySurgicalCardEditResult(
+        card,
+        {
+            name: 'MutatedNameShouldBeIgnored',
+            description: '1. Identity: Detective.\n15. Crisp grounded rewrite.',
+            first_mes: 'MutatedFirstMesShouldBeIgnored',
+            imagePrompt: 'SCENE: MutatedArtShouldBeIgnored',
+        },
+        { scope: 'description', updateArtPrompt: false },
+    );
+    assert.equal(appliedLocked.name, 'Clifford', 'Locked scope must freeze Name');
+    assert.equal(appliedLocked.description, '1. Identity: Detective.\n15. Crisp grounded rewrite.');
+    assert.equal(appliedLocked.first_mes, 'Original opening scene untouched.', 'Locked scope must freeze First Message');
+    assert.equal(appliedLocked.imagePrompt, 'SCENE: Original coat portrait', 'Art prompt stays isolated when toggle is OFF');
+
+    // 2. Prompt #2 (Full Rewrite): demands fresh rewrite from scratch while honoring user feedback!
+    const fullRegenReq = buildFullCardRegenerateRequest(sess, card, 'Сделай героя старше и перенеси встречу в архив', {
+        originKind: 'idea',
+        mode: 'prefill_user_msg',
+    });
+    assert.ok(fullRegenReq.user.includes('PREVIOUS DRAFT TO DISCARD & REWRITE COMPLETELY FROM SCRATCH'));
+    assert.ok(fullRegenReq.user.includes('Сделай героя старше и перенеси встречу в архив'));
+
+    // 2B. Blitz full regeneration preserves checked Blitz answers + topic + user feedback!
+    sess.blitz.topic = 'Ночной библиотекарь';
+    sess.blitz.questions = [
+        { id: 'q1', question: 'Какая тайна?', options: ['Древний ключ', 'Шифр'], selectedOptions: ['Древний ключ'], answer: 'Прячет в часах', skipped: false },
+    ];
+    const blitzRegenReq = buildFullCardRegenerateRequest(sess, card, 'Убери лишний пафос в диалоге', {
+        originKind: 'blitz',
+        mode: 'prefill_user_msg',
+    });
+    assert.ok(blitzRegenReq.user.includes('Ночной библиотекарь'));
+    assert.ok(blitzRegenReq.user.includes('Древний ключ'));
+    assert.ok(blitzRegenReq.user.includes('Прячет в часах'));
+    assert.ok(blitzRegenReq.user.includes('Убери лишний пафос в диалоге'));
+
+    // 3. AU Donor Lorebook Inheritance toggle (OFF strips world + character_book; ON preserves both)
+    const donorRaw = {
+        name: 'Donor',
+        description: 'Old',
+        first_mes: 'Hi',
+        data: {
+            name: 'Donor',
+            description: 'Old',
+            first_mes: 'Hi',
+            character_book: { name: 'OldWorldBook', entries: [{ id: 1, keys: ['a'], content: 'b' }] },
+            extensions: { world: 'OldExternalWorld' },
+        },
+    };
+    const baseDonor = createCardStateFromTavernChar(donorRaw);
+    const cleanAu = buildV2CardObject(
+        applyReworkResultToTavernBase(baseDonor, { name: 'Donor AU', description: 'New', first_mes: 'Yo' }, { rawCardObject: donorRaw, inheritLorebook: false }),
+    );
+    assert.equal(cleanAu.data.extensions.world, '');
+    assert.equal('character_book' in cleanAu.data, false);
+});
+

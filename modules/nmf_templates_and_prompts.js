@@ -3304,3 +3304,274 @@ export function buildCleanBriefFromEntity(entity) {
         entity.imagePrompt ? `Visual Portrait Direction: ${entity.imagePrompt}` : '',
     ].filter(Boolean).join('\n');
 }
+
+export const CARD_REFINEMENT_SCOPES = Object.freeze([
+    { id: 'auto', label: 'Умно по запросу (только нужный пункт / деталь)', labelEn: 'Smart by Instruction (Only Requested Point)' },
+    { id: 'description', label: 'Только Описание (Description / пункт анкеты)', labelEn: 'Description Only (Specific Section / Point)' },
+    { id: 'first_mes', label: 'Только Первое сообщение (Стартовая сцена)', labelEn: 'Opening Scene (First Message) Only' },
+    { id: 'personality_scenario', label: 'Только Характер и Сценарий', labelEn: 'Personality & Scenario Only' },
+    { id: 'mes_example', label: 'Только Примеры диалогов (Голос)', labelEn: 'Example Dialogue (Voice) Only' },
+]);
+
+const ANTI_SLOP_WRITING_LAW = [
+    'ANTI-SLOP & AUTHENTIC PROSE LAW (STRICTLY MANDATORY):',
+    '- Purge generic AI clichés, melodramatic filler, and stock phrases (e.g., "shivers down spine", "predatory gaze", "a dangerous game", "mix of fear and desire", "little did they know", "testament to", "unspoken tension", or robotic summary conclusions).',
+    '- Write concrete, grounded, character-specific details, natural dialogue, and crisp behavioral traits without bloated filler.',
+].join('\n');
+
+/**
+ * PROMPT #1: Surgical / Targeted Card V2 Edit — rewrites ONLY what the user disliked or asked to change
+ * while preserving maximum structural, stylistic, and lore cohesion across the rest of the card.
+ */
+export function buildSurgicalCardEditRequest(
+    session,
+    currentCard,
+    userInstruction = '',
+    { scope = 'auto', updateArtPrompt = false, mode = 'prefill_user_msg' } = {},
+) {
+    const it = session?.intake || createDefaultSession(1).intake;
+    const cardLangSpec = resolveCardLanguageSpec(it);
+    const userLangSpec = resolveUserLanguageSpec(it);
+    const pMode = it.playerNameMode || 'macro';
+    const macroRule = buildUniversalMacroRule(pMode);
+    const greetStyleBlock = buildGreetingStyleDirective(it);
+    const artMechRule = updateArtPrompt ? buildFlexibleAvatarArtMechanismRule(it) : '';
+    const cleanInstruction = String(userInstruction || '').trim()
+        || 'Remove generic AI clichés/slop, sharpen repetitive phrasing, and improve weak expressions while preserving 100% of existing lore, structure, and character identity.';
+
+    const scopeDirectiveMap = {
+        auto: 'TARGET SCOPE: Smart Surgical Edit — modify ONLY the specific numbered point(s), paragraph(s), phrasing, or field(s) directly relevant to the user instruction below. Leave EVERY other section, heading, paragraph, and field 100% verbatim and untouched!',
+        description: 'TARGET SCOPE LOCK [DESCRIPTION ONLY]: Modify ONLY the relevant point(s) or paragraph(s) inside Description while keeping the rest of Description intact. Copy Name, Personality, Scenario, First Message, Alternate Greetings, Example Dialogue, and Creator Notes 100% unchanged!',
+        first_mes: 'TARGET SCOPE LOCK [OPENING SCENE ONLY]: Rewrite or polish ONLY First Message (Opening Scene) according to the user instruction. Keep Name, Description, Personality, Scenario, Example Dialogue, and Creator Notes 100% unchanged!',
+        personality_scenario: 'TARGET SCOPE LOCK [PERSONALITY & SCENARIO ONLY]: Update ONLY Personality and/or Scenario according to the user instruction. Keep Name, Description, First Message, and all other fields 100% unchanged!',
+        mes_example: 'TARGET SCOPE LOCK [EXAMPLE DIALOGUE ONLY]: Rewrite or refine ONLY Example Dialogue (mes_example) to nail the character voice according to the user instruction. Keep Description, First Message, and all other fields 100% unchanged!',
+    };
+    const scopeRule = scopeDirectiveMap[scope] || scopeDirectiveMap.auto;
+
+    const altDump = Array.isArray(currentCard?.alternate_greetings) && currentCard.alternate_greetings.filter(Boolean).length
+        ? currentCard.alternate_greetings.filter(Boolean).join('\n===NMF_ALT_SEP===\n')
+        : '';
+
+    const currentCardDump = shieldMacrosForPrompt([
+        `[EXISTING CHARACTER CARD V2 — PRESERVE COHESION, STRUCTURE & ALL UNTOUCHED PARTS VERBATIM]`,
+        `Name: ${currentCard?.name || ''}`,
+        `Description:\n${currentCard?.description || ''}`,
+        `Personality:\n${currentCard?.personality || ''}`,
+        `Scenario:\n${currentCard?.scenario || ''}`,
+        `First Message:\n${currentCard?.first_mes || ''}`,
+        altDump ? `Alternate Greetings:\n${altDump}` : '',
+        currentCard?.mes_example ? `Example Dialogue:\n${currentCard.mes_example}` : '',
+        currentCard?.system_prompt ? `System Prompt:\n${currentCard.system_prompt}` : '',
+        currentCard?.post_history_instructions ? `Post-History Instructions:\n${currentCard.post_history_instructions}` : '',
+        currentCard?.creator_notes ? `Creator Notes:\n${currentCard.creator_notes}` : '',
+        currentCard?.tags ? `Tags: ${currentCard.tags}` : '',
+        (updateArtPrompt && currentCard?.imagePrompt) ? `Current Separate Avatar Prompt:\n${currentCard.imagePrompt}` : '',
+    ].filter(Boolean).join('\n\n'));
+
+    const coreRules = [
+        `You are NexusMatch Surgical Card Editor — a precision literary editor for SillyTavern Character Card V2.`,
+        `SURGICAL COHESION & INTEGRITY LAW (STRICTLY MANDATORY):`,
+        `1) Do NOT regenerate the card from scratch! Preserve 100% of the existing formatting template (numbered headings, Markdown, XML tags, PList brackets), established lore, personality core, and every paragraph/field the user did NOT ask to change.`,
+        `2) Apply the user's exact edit/fix seamlessly so the updated part matches the surrounding card tone, tense, and continuity with zero seams.`,
+        `3) ${scopeRule}`,
+        ANTI_SLOP_WRITING_LAW,
+        `Never write actions, thoughts, or dialogue for the player inside the opening scene.`,
+        `Card Fields Language: ${cardLangSpec.directive}. Creator Notes Language: ${userLangSpec.shortLabel}.`,
+        `SEPARATE ART PROMPT RULE: NEVER put visual art tags or SCENE/FIGURE prompts inside Description, First Message, or Tags! ${updateArtPrompt ? 'Update ONLY the separate image_prompt / [[NMF_IMG_PROMPT]] slot to reflect visual changes.' : 'Leave image_prompt empty or unchanged.'}`,
+        macroRule,
+        greetStyleBlock,
+        CARD_META_PURITY_RULE,
+        artMechRule,
+    ].filter(Boolean).join('\n');
+
+    const instructionBlock = shieldMacrosForPrompt(
+        `[USER SURGICAL EDIT INSTRUCTION — APPLY ACCURATELY WHILE KEEPING CARD INTEGRITY]\n${cleanInstruction}`,
+    );
+
+    if (mode === 'json_schema') {
+        return {
+            system: shieldMacrosForPrompt(`${coreRules}\nOutput ONLY valid JSON with the complete card object (preserving untouched fields verbatim): {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1"],"image_prompt":""}`),
+            user: `${currentCardDump}\n\n${instructionBlock}`,
+            jsonSchema: FULL_CARD_JSON_SCHEMA,
+        };
+    }
+
+    return {
+        system: '',
+        user: shieldMacrosForPrompt([
+            `[NEXUSMATCH FORGE // SURGICAL CARD V2 EDIT (PRESERVE INTEGRITY)]`,
+            coreRules,
+            ``,
+            currentCardDump,
+            ``,
+            instructionBlock,
+            ``,
+            `[STRICT INDEXED OUTPUT FORMAT — OUTPUT COMPLETE CARD WITH UNTOUCHED SECTIONS KEPT VERBATIM]`,
+            `[[NMF_NAME]]${currentCard?.name || 'Character Name'}[[/NMF_NAME]]`,
+            `[[NMF_DESC]]Updated or preserved Description[[/NMF_DESC]]`,
+            `[[NMF_PERSONALITY]]Updated or preserved Personality[[/NMF_PERSONALITY]]`,
+            `[[NMF_SCENARIO]]Updated or preserved Scenario[[/NMF_SCENARIO]]`,
+            `[[NMF_FIRST_MES]]Updated or preserved First Message[[/NMF_FIRST_MES]]`,
+            `[[NMF_ALT_GREETING]]Updated or preserved Alternate Greeting[[/NMF_ALT_GREETING]]`,
+            `[[NMF_MES_EXAMPLE]]Updated or preserved Example Dialogue[[/NMF_MES_EXAMPLE]]`,
+            `[[NMF_SYS_PROMPT]]${currentCard?.system_prompt ? 'Updated or preserved System Prompt' : ''}[[/NMF_SYS_PROMPT]]`,
+            `[[NMF_POST_HISTORY]]${currentCard?.post_history_instructions ? 'Updated or preserved Post-History' : ''}[[/NMF_POST_HISTORY]]`,
+            `[[NMF_CREATOR_NOTES]]Updated or preserved Creator Notes[[/NMF_CREATOR_NOTES]]`,
+            `[[NMF_TAGS]]comma-separated tags[[/NMF_TAGS]]`,
+            `[[NMF_IMG_PROMPT]]${updateArtPrompt ? 'Updated English visual prompt' : ''}[[/NMF_IMG_PROMPT]]`,
+        ].join('\n')),
+        jsonSchema: null,
+    };
+}
+
+/**
+ * Applies parsed surgical edit onto a cloned card while strictly freezing any fields outside the locked scope
+ * and keeping imagePrompt isolated unless updateArtPrompt === true.
+ */
+export function applySurgicalCardEditResult(
+    currentCard,
+    parsed = {},
+    { scope = 'auto', updateArtPrompt = false } = {},
+) {
+    const next = structuredClone(currentCard || createBlankCardSlot());
+    const pickIfNonEmpty = (val, prev) => (val !== undefined && val !== null && String(val).trim() !== '' ? String(val) : String(prev ?? ''));
+
+    if (scope === 'description') {
+        next.description = pickIfNonEmpty(parsed.description, currentCard.description);
+    } else if (scope === 'first_mes') {
+        next.first_mes = pickIfNonEmpty(parsed.first_mes, currentCard.first_mes);
+    } else if (scope === 'personality_scenario') {
+        next.personality = pickIfNonEmpty(parsed.personality, currentCard.personality);
+        next.scenario = pickIfNonEmpty(parsed.scenario, currentCard.scenario);
+    } else if (scope === 'mes_example') {
+        next.mes_example = pickIfNonEmpty(parsed.mes_example, currentCard.mes_example);
+    } else {
+        // 'auto': smart surgical update across relevant text fields
+        next.name = pickIfNonEmpty(parsed.name, currentCard.name);
+        next.description = pickIfNonEmpty(parsed.description, currentCard.description);
+        next.personality = pickIfNonEmpty(parsed.personality, currentCard.personality);
+        next.scenario = pickIfNonEmpty(parsed.scenario, currentCard.scenario);
+        next.first_mes = pickIfNonEmpty(parsed.first_mes, currentCard.first_mes);
+        if (Array.isArray(parsed.alternate_greetings) && parsed.alternate_greetings.filter(Boolean).length > 0) {
+            next.alternate_greetings = parsed.alternate_greetings.filter(Boolean);
+        }
+        if (String(parsed.mes_example || '').trim()) next.mes_example = parsed.mes_example;
+        if (String(parsed.system_prompt || '').trim()) next.system_prompt = parsed.system_prompt;
+        if (String(parsed.post_history_instructions || '').trim()) next.post_history_instructions = parsed.post_history_instructions;
+        if (String(parsed.creator_notes || '').trim()) next.creator_notes = parsed.creator_notes;
+        if (String(parsed.tags || '').trim()) next.tags = parsed.tags;
+    }
+
+    if (updateArtPrompt && String(parsed.imagePrompt || '').trim()) {
+        next.imagePrompt = String(parsed.imagePrompt).trim();
+    } else {
+        next.imagePrompt = String(currentCard?.imagePrompt || '');
+    }
+    return next;
+}
+
+/**
+ * PROMPT #2: Full Card V2 Regeneration with User Feedback — rewrites the ENTIRE card completely from scratch
+ * (for Idea / Architect, AU Rework, or any Profile card) while strictly honoring the user's critique & edits.
+ */
+export function buildFullCardRegenerateRequest(
+    session,
+    currentCard,
+    userInstruction = '',
+    {
+        originKind = 'idea', // 'idea' | 'au_rework'
+        sourceCard = null,
+        useIntake = true,
+        mode = 'prefill_user_msg',
+    } = {},
+) {
+    const cleanInstruction = String(userInstruction || '').trim();
+    const prevDraftContext = [
+        `[PREVIOUS DRAFT TO DISCARD & REWRITE COMPLETELY FROM SCRATCH — DO NOT COPY ITS SENTENCES]`,
+        currentCard?.name ? `Previous Name: ${currentCard.name}` : '',
+        currentCard?.description ? `Previous Description Excerpt:\n${String(currentCard.description).slice(0, 2200)}` : '',
+        currentCard?.first_mes ? `Previous Opening Scene Excerpt:\n${String(currentCard.first_mes).slice(0, 1200)}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const feedbackDirective = cleanInstruction
+        ? [
+            `[MANDATORY USER REWRITE FEEDBACK & CORRECTIONS — HIGHEST PRIORITY LAW]`,
+            cleanInstruction,
+            ``,
+            `FULL REBUILD DIRECTIVE:`,
+            `- Rewrite 100% of the Character Card V2 from scratch with fresh phrasing, fresh scene dynamics, and deeper characterization.`,
+            `- Strictly eliminate everything the user disliked above and incorporate every single requested change/fix across all fields.`,
+            ANTI_SLOP_WRITING_LAW,
+            `- Keep visual art tags strictly inside image_prompt / [[NMF_IMG_PROMPT]] — NEVER inside Description or First Message.`,
+        ].join('\n')
+        : [
+            `[FULL FRESH REGENERATION DIRECTIVE]`,
+            `- Generate a 100% fresh, superior take on this card from scratch — use brand-new phrasing, stronger characterization, and a fresh Opening Scene without repeating sentences from the previous draft.`,
+            ANTI_SLOP_WRITING_LAW,
+            `- Keep visual art tags strictly inside image_prompt / [[NMF_IMG_PROMPT]] — NEVER inside Description or First Message.`,
+        ].join('\n');
+
+    if (originKind === 'au_rework' && sourceCard) {
+        const baseAuReq = buildReworkCardRequest(session, sourceCard, mode);
+        const extraBlock = shieldMacrosForPrompt(`\n\n${prevDraftContext}\n\n${feedbackDirective}`);
+        return {
+            system: baseAuReq.system,
+            user: baseAuReq.user + extraBlock,
+            jsonSchema: baseAuReq.jsonSchema,
+        };
+    }
+
+    if (originKind === 'blitz') {
+        const seedHit = resolveBlitzSeedCandidate(session);
+        const seedEntity = seedHit?.entity || null;
+        const answered = Array.isArray(session?.blitz?.questions)
+            ? session.blitz.questions
+                .map((q, i) => {
+                    const dec = formatQuestionUserDecision(q);
+                    return dec ? `Q${i + 1}: ${q.question}\nA${i + 1}: ${dec}` : '';
+                })
+                .filter(Boolean)
+                .join('\n\n')
+            : '';
+
+        const blitzCoreBrief = seedEntity
+            ? [
+                `[BASE CHARACTER DOSSIER FROM ${seedHit.source === 'gacha' ? 'GACHA' : 'TINDER'} — MANDATORY SUBJECT, KEEP THIS EXACT PERSON & NAME]`,
+                buildCleanBriefFromEntity(seedEntity),
+                session?.blitz?.topic ? `\n[ADDITIONAL FOCUS]: ${session.blitz.topic}` : '',
+                answered ? `\n[USER BLITZ ANSWERS DEEPENING "${seedEntity.name}" — MANDATORY CANON]\n${answered}` : '',
+            ].filter(Boolean).join('\n')
+            : [
+                `[BLITZ QUESTIONNAIRE TOPIC]`,
+                session?.blitz?.topic || currentCard?.name || 'Matchmaking & Character Design',
+                answered
+                    ? `\n[USER BLITZ ANSWERS — MANDATORY CANON (Incorporate EVERY checked option and custom answer faithfully)]\n${answered}`
+                    : '',
+            ].filter(Boolean).join('\n');
+
+        const gachaOnlyNoSeed = !seedHit && session?.blitz?.useTinderContext === false && Boolean(session?.blitz?.useGachaContext);
+        const blitzCtxMode = (seedHit?.source === 'gacha' || gachaOnlyNoSeed) ? 'gacha' : 'blitz';
+        const combinedBlitzBrief = [blitzCoreBrief, prevDraftContext, feedbackDirective].filter(Boolean).join('\n\n');
+        return buildFullCardRequest(session, combinedBlitzBrief, mode, {
+            modeContext: blitzCtxMode,
+        });
+    }
+
+    const baseConcept = originKind === 'idea'
+        ? (String(session?.architect?.freeConcept || '').trim()
+            || (currentCard?.name ? `Core Subject: ${currentCard.name}\n${String(currentCard.scenario || currentCard.personality || '').slice(0, 600)}` : ''))
+        : (currentCard?.name ? `Core Subject: ${currentCard.name}\n${String(currentCard.scenario || currentCard.personality || '').slice(0, 600)}` : '');
+
+    const combinedBrief = [
+        baseConcept ? `[ORIGINAL CORE CONCEPT]\n${baseConcept}` : '',
+        prevDraftContext,
+        feedbackDirective,
+    ].filter(Boolean).join('\n\n');
+
+    const effectiveModeCtx = originKind === 'gacha' ? 'gacha' : (originKind === 'swipe' ? 'swipe' : 'architect');
+    return buildFullCardRequest(session, combinedBrief, mode, {
+        modeContext: effectiveModeCtx,
+        useIntake: effectiveModeCtx === 'architect' ? useIntake : true,
+    });
+}
+
