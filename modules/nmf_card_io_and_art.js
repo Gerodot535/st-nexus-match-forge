@@ -317,7 +317,7 @@ export function createCardStateFromGeneratedDraft(
 export function applyReworkResultToTavernBase(
     baseState,
     parsed = {},
-    { avatarId = '', sourceAvatarId = '', snapshotHash = '', rawCardObject = null } = {}
+    { avatarId = '', sourceAvatarId = '', snapshotHash = '', rawCardObject = null, inheritLorebook = true } = {}
 ) {
     if (!baseState || typeof baseState !== 'object') {
         throw new Error('Не загружена исходная карточка оригинала для AU Rework.');
@@ -351,11 +351,12 @@ export function applyReworkResultToTavernBase(
         tags: pickNonEmptyOrBase(parsedTagsStr, baseState.tags),
         creator: String(baseState.creator ?? ''),
         character_version: String(baseState.character_version ?? '1.0') || '1.0',
-        world: String(baseState.world ?? ''),
+        world: inheritLorebook ? String(baseState.world ?? '') : '',
         imagePrompt: pickNonEmptyOrBase(parsed?.imagePrompt, baseState.imagePrompt).trim(),
         avatarId: String(avatarId || baseState.avatarId || ''),
         avatarDataUrl: '',
         avatarDirty: false,
+        stripInheritedCharacterBook: !inheritLorebook,
         sourceAvatarId: String(sourceAvatarId || baseState.sourceAvatarId || ''),
         sourceLoadedFromTavern: Boolean(sourceAvatarId || baseState.sourceAvatarId),
         sourceSnapshotHash: String(snapshotHash || baseState.sourceSnapshotHash || ''),
@@ -500,6 +501,15 @@ export function buildV2CardObject(card) {
         const fieldsToApply = Array.isArray(card.dirtyFields) ? card.dirtyFields : ALL_EDITABLE_CARD_FIELDS;
         for (const f of fieldsToApply) {
             applySingleFieldToCardObject(cloned, f, card);
+        }
+        if (card.stripInheritedCharacterBook) {
+            delete cloned.character_book;
+            if (cloned.data && typeof cloned.data === 'object') {
+                delete cloned.data.character_book;
+                if (cloned.data.extensions && typeof cloned.data.extensions === 'object') {
+                    cloned.data.extensions.world = String(card.world || '').trim();
+                }
+            }
         }
         return cloned;
     }
@@ -2445,8 +2455,9 @@ function getEffectiveNegativePromptForConfig(imgCfg, requestedNegId = '', custom
     if (requestedNegId !== '__none__') {
         const chosenNeg = (requestedNegId && negArr.find((n) => n && n.id === requestedNegId))
             || negArr.find((n) => n && n.id === imgCfg.activeNegativePromptId);
-        if (chosenNeg && typeof chosenNeg.value === 'string' && chosenNeg.value.trim()) {
-            presetVal = chosenNeg.value.trim();
+        const negStr = String(chosenNeg?.value ?? chosenNeg?.prompt ?? '').trim();
+        if (negStr) {
+            presetVal = negStr;
         } else if (!requestedNegId) {
             if (imgCfg.apiType === 'novelai') presetVal = String(imgCfg.novelaiNegativePrompt || '').trim();
             else if (imgCfg.apiType === 'naistera') presetVal = String(imgCfg.naisteraNegativePrompt || '').trim();
@@ -3127,7 +3138,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         const stylesArr = Array.isArray(imgCfg.styles) ? imgCfg.styles : [];
         const chosenStyle = (styleId && stylesArr.find((s) => s && s.id === styleId))
             || stylesArr.find((s) => s && s.id === imgCfg.activeStyleId);
-        styleText = String(chosenStyle?.value ?? chosenStyle?.style ?? chosenStyle?.promptPrefix ?? '').trim();
+        styleText = String(chosenStyle?.value ?? chosenStyle?.prompt ?? chosenStyle?.style ?? chosenStyle?.promptPrefix ?? '').trim();
         if (!styleText && !styleId && imgCfg.slayStyle) {
             styleText = String(imgCfg.slayStyle).trim();
         }

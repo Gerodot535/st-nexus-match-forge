@@ -4,9 +4,11 @@ All notable changes to **NexusMatch Forge** are documented in this file.
 
 ## [1.9.5-beta] - 2026-11-22
 
-### Altar Donor Absorption + Altar-Only Regenerate Button & Zero Double-Cropping Everywhere
+### Altar Donor Absorption + Altar-Only Regenerate Button, Zero Double-Cropping & Live Tavern Stress-Audit Fixes
 - **Altar Donor Absorption + Altar-Only Regenerate (`gacha-run-fusion` & `regen-altar-char`)**: Fusing 2–3 cards on the Altar now permanently consumes and removes the donor cards from Collection while storing their soul snapshot (`fusedFromDonors`) inside the born hero. Added a **Regenerate (`Перегенерировать`)** button **strictly on Altar-synthesized heroes only** (never on regular Gacha pulls, preserving Gacha excitement).
 - **Zero Double-Cropping (`nmf-natural-art` & `backfillMissingNaturalRatios`)**: Uncropped real artworks now always render in their full natural proportions (`width: 100%; height: auto`) across Big Dossiers, Swipes, Gacha, and Profile Editor without secondary `1:1` container clipping, plus legacy cards automatically backfill `artNaturalRatio` on open.
+- **Epoch-Guarded IndexedDB Vault (`nmf_media_vault.js`)**: Isolated `openVaultDb()`, `saveMediaDataUrl()`, and background `migrateInlineSessionMediaToVault()` by connection/vault epoch so stale background operations never pollute emergency inline fallbacks when IndexedDB is unavailable or hits quota limits.
+- **Mobile Touch, `<select>` Bindings, Persistent Spoilers & Prompt Polish**: Wired AU character/mode `<select>` and Swipe batch `<select>` into `change` listeners with live DOM fallback, preserved open `<details>` spoilers across re-renders on touch devices, aligned all `EN` dropdown labels, and refined Blitz Gacha-toggle, AU Rework, 19-Point Dossier, and Card Translator prompts.
 
 ## [1.9.4-beta] - 2026-11-22
 

@@ -158,8 +158,9 @@ export const NMF_FULL_CSS = `
 #nmf-window *, #nmf-window *::before, #nmf-window *::after {
     box-sizing: border-box;
 }
-#nmf-window button, #nmf-window summary, #nmf-window label, #nmf-window select, #nmf-window input {
+#nmf-window button, #nmf-window summary, #nmf-window label, #nmf-window select, #nmf-window input, #nmf-window [data-act] {
     touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 #nmf-window svg { flex-shrink: 0; }
 

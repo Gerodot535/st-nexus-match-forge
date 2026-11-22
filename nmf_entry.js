@@ -1433,7 +1433,7 @@ function renderFilterSummaryBanner(sess) {
 
 function renderGachaFilterBanner(sess) {
     const it = sess.intake;
-    const wp = normalizeGachaWishPrefs(sess.gacha?.wishPrefs, it);
+    const wp = normalizeGachaWishPrefs(sess.gacha?.wishPrefs);
     const targetShort = {
         oc: 'Гача: OC по тегам',
         fandom_oc: 'Гача: OC в фандоме',
@@ -1872,8 +1872,8 @@ function renderSacrificeConfirmModal() {
             <div class="nmf-warn-box" style="border-color:#e63950;font-size:11.5px">
                 ${NMF_ICONS.warn}
                 <span>${tx(
-                    `<strong>Необратимый ритуал (показывается только в первый раз):</strong> жертва навсегда удаляется из Таверны и Коллекции без архива «Мимо» и без возможности восстановления.${cfg.gachaSacrificeFailEnabled ? ` <strong>Внимание: включён риск провала Жертвы (${cfg.gachaSacrificeFailChance}%) — Алтарь может поглотить карту и дать 0 Молитв!</strong>` : ` Вы получите <strong>+${lore.wishGain} Молитв</strong> (${pending.stars} зв.).`}`,
-                    `<strong>Irreversible ritual (shown only once):</strong> this card is permanently erased from Collection and Tavern with no archive or recovery.${cfg.gachaSacrificeFailEnabled ? ` <strong>Warning: Sacrifice Failure Risk (${cfg.gachaSacrificeFailChance}%) is active — the Altar may devour the card for 0 Prayers!</strong>` : ` You will receive <strong>+${lore.wishGain} Prayers</strong> (${pending.stars} stars).`}`,
+                    `<strong>Необратимый ритуал:</strong> карточка «${esc(pending.name)}» навсегда уничтожается из Коллекции без архива «Мимо» и без возможности восстановления.${cfg.gachaSacrificeFailEnabled ? ` <strong>Внимание: включён риск провала Жертвы (${cfg.gachaSacrificeFailChance}%) — Алтарь может поглотить карту и дать 0 Молитв!</strong>` : ` Вы получите <strong>+${lore.wishGain} Молитв</strong> (${pending.stars} зв.).`}`,
+                    `<strong>Irreversible ritual:</strong> "${esc(pending.name)}" will be permanently destroyed from your Collection with no archive or recovery.${cfg.gachaSacrificeFailEnabled ? ` <strong>Warning: Sacrifice Failure Risk (${cfg.gachaSacrificeFailChance}%) is active — the Altar may devour the card for 0 Prayers!</strong>` : ` You will receive <strong>+${lore.wishGain} Prayers</strong> (${pending.stars} stars).`}`,
                 )}</span>
             </div>
 
@@ -3472,6 +3472,10 @@ function renderCreateTab(sess) {
                 <option value="">${esc(tx(`— Выберите карточку (${state.rosterChars.length}) —`, `— Select Tavern Card (${state.rosterChars.length}) —`))}</option>
                 ${state.rosterChars.map((c) => `<option value="${esc(c.avatar)}" ${rw.sourceAvatar === c.avatar ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
             </select>
+            <div class="nmf-toggle-line" style="margin-top:6px" data-act="toggle-rework-lorebook">
+                <span style="font-size:11.5px;font-weight:600">${esc(tx('Унаследовать прикреплённый Лорбук исходного персонажа', 'Inherit source character\'s attached Lorebook'))}</span>
+                <div class="nmf-switch ${rw.inheritLorebook ? 'nmf-on' : ''}"></div>
+            </div>
         </div>
 
         <div class="nmf-grid-2-compact">
@@ -4001,6 +4005,14 @@ export function renderWindow() {
     const prevBody = win.querySelector('.nmf-body');
     const prevScrollTop = prevBody ? prevBody.scrollTop : 0;
     const prevTab = win.dataset.renderedTab || '';
+    const prevSheetBody = typeof win.querySelector === 'function' ? win.querySelector('.nmf-sheet-body') : null;
+    const prevSheetScrollTop = prevSheetBody ? prevSheetBody.scrollTop : 0;
+    const prevOpenBodySpoilers = typeof win.querySelectorAll === 'function'
+        ? [...win.querySelectorAll('.nmf-body details.nmf-spoiler')].map((d) => Boolean(d.open))
+        : [];
+    const prevOpenSheetSpoilers = typeof win.querySelectorAll === 'function'
+        ? [...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')].map((d) => Boolean(d.open))
+        : [];
 
     const cfg = getSettings();
     const sess = getActiveSession();
@@ -4116,9 +4128,31 @@ export function renderWindow() {
         applyEnglishDomTranslation(win);
     }
 
-    if (prevTab === state.activeTab && prevScrollTop > 0) {
-        const nextBody = win.querySelector('.nmf-body');
-        if (nextBody) nextBody.scrollTop = prevScrollTop;
+    if (prevTab === state.activeTab) {
+        if (typeof win.querySelectorAll === 'function' && prevOpenBodySpoilers.length > 0) {
+            const nextSpoilers = [...win.querySelectorAll('.nmf-body details.nmf-spoiler')];
+            if (nextSpoilers.length === prevOpenBodySpoilers.length) {
+                nextSpoilers.forEach((d, idx) => {
+                    if (prevOpenBodySpoilers[idx]) d.open = true;
+                });
+            }
+        }
+        if (prevScrollTop > 0) {
+            const nextBody = win.querySelector('.nmf-body');
+            if (nextBody) nextBody.scrollTop = prevScrollTop;
+        }
+    }
+    if (typeof win.querySelectorAll === 'function' && prevOpenSheetSpoilers.length > 0) {
+        const nextSheetSpoilers = [...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')];
+        if (nextSheetSpoilers.length === prevOpenSheetSpoilers.length) {
+            nextSheetSpoilers.forEach((d, idx) => {
+                if (prevOpenSheetSpoilers[idx]) d.open = true;
+            });
+        }
+    }
+    if (prevSheetScrollTop > 0 && typeof win.querySelector === 'function') {
+        const nextSheet = win.querySelector('.nmf-sheet-body');
+        if (nextSheet) nextSheet.scrollTop = prevSheetScrollTop;
     }
 
     if (state.cropModalInfo) {
@@ -4263,7 +4297,7 @@ function attachSwipeCardGestures(win) {
     let lockedHorizontal = null;
 
     cardEl.addEventListener('pointerdown', (e) => {
-        if (e.target.closest('button, input, textarea, select')) return;
+        if (e.target.closest('button, input, textarea, select, summary, label')) return;
         startX = e.clientX;
         startY = e.clientY;
         dx = 0;
@@ -4696,7 +4730,7 @@ function bindWindowDelegation(win) {
         }
         if (el.dataset.gachaPref) {
             if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
-            if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs(sess.intake);
+            if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs();
             sess.gacha.wishPrefs[el.dataset.gachaPref] = el.value;
             scheduleSaveSettings();
             return;
@@ -4773,12 +4807,36 @@ function bindWindowDelegation(win) {
                     sess.intake.cardFormat = 'rpg_gm_engine';
                     sess.intake.greetingStyle = 'rpg_hud';
                     sess.intake.greetingPov = 'second_gm';
+                } else if (el.value === 'duo_group') {
+                    sess.intake.cardFormat = 'cast_hub';
                 } else if (['world_sandbox', 'rpg_gm_engine'].includes(sess.intake.cardFormat)) {
                     sess.intake.cardFormat = 'dossier_19';
                 }
             }
             saveSettings();
-            if (['originType', 'cardFormat', 'rating', 'wordBudgetId', 'greetingBudgetId', 'userGender', 'targetGender', 'userLanguage', 'cardLanguage', 'language'].includes(k)) {
+            if (['originType', 'cardFormat', 'rating', 'wordBudgetId', 'greetingBudgetId', 'userGender', 'targetGender', 'userLanguage', 'cardLanguage', 'language', 'greetingStyle', 'greetingPov', 'playerNameMode'].includes(k)) {
+                renderWindow();
+            }
+            return;
+        }
+        if (el.dataset.tinder && sess) {
+            const k = el.dataset.tinder;
+            sess.tinder[k] = (el.type === 'number' || k === 'batchSize') ? Number(el.value) : el.value;
+            saveSettings();
+            if (el.tagName === 'SELECT') {
+                renderWindow();
+            }
+            return;
+        }
+        if (el.dataset.rework && sess) {
+            const rk = el.dataset.rework;
+            const prevAvatar = sess.rework.sourceAvatar;
+            sess.rework[rk] = el.value;
+            if (rk === 'sourceAvatar' && el.value !== prevAvatar) {
+                sess.rework.questions = [];
+            }
+            saveSettings();
+            if (el.tagName === 'SELECT') {
                 renderWindow();
             }
             return;
@@ -4969,6 +5027,10 @@ function bindWindowDelegation(win) {
         }
         if (e.target?.id === 'nmf-cropper-backdrop') {
             if (!state.cropSaving) state.cropModalInfo = null;
+            return renderWindow();
+        }
+        if (e.target?.id === 'nmf-sacrifice-ritual-backdrop') {
+            state.pendingSacrifice = null;
             return renderWindow();
         }
 
@@ -5296,8 +5358,10 @@ function bindWindowDelegation(win) {
                 sess.card.alternate_greetings = [...tr.alternate_greetings];
             }
             if (tr.mes_example) sess.card.mes_example = tr.mes_example;
+            if (tr.system_prompt) sess.card.system_prompt = tr.system_prompt;
+            if (tr.post_history_instructions) sess.card.post_history_instructions = tr.post_history_instructions;
             if (tr.creator_notes) sess.card.creator_notes = tr.creator_notes;
-            for (const f of ['name', 'description', 'personality', 'scenario', 'first_mes', 'alternate_greetings', 'mes_example', 'creator_notes']) {
+            for (const f of ['name', 'description', 'personality', 'scenario', 'first_mes', 'alternate_greetings', 'mes_example', 'system_prompt', 'post_history_instructions', 'creator_notes']) {
                 markCardFieldDirty(sess.card, f);
             }
             state.translateModalOpen = false;
@@ -5333,6 +5397,8 @@ function bindWindowDelegation(win) {
                 clone.first_mes = tr.first_mes || clone.first_mes;
                 if (tr.alternate_greetings?.length) clone.alternate_greetings = [...tr.alternate_greetings];
                 if (tr.mes_example) clone.mes_example = tr.mes_example;
+                if (tr.system_prompt) clone.system_prompt = tr.system_prompt;
+                if (tr.post_history_instructions) clone.post_history_instructions = tr.post_history_instructions;
                 if (tr.creator_notes) clone.creator_notes = tr.creator_notes;
             }
             const curImg = resolveEntityAvatarUrl(srcCard);
@@ -5894,16 +5960,13 @@ function bindWindowDelegation(win) {
             const gain = computeSacrificeWishGain(target.stars);
 
             reconcileGachaWalletFromLocalStorage(cfg);
-            if (!cfg.gachaWallet?.firstSacrificeConfirmed) {
-                state.pendingSacrifice = {
-                    id: target.id,
-                    name: target.name || tx('Незнакомец', 'Stranger'),
-                    stars: Number(target.stars) || 3,
-                    wishGain: gain,
-                };
-                return renderWindow();
-            }
-            await executePermanentSacrifice(target.id);
+            // Always show irreversible destruction confirmation modal on EVERY sacrifice!
+            state.pendingSacrifice = {
+                id: target.id,
+                name: target.name || tx('Незнакомец', 'Stranger'),
+                stars: Number(target.stars) || 3,
+                wishGain: gain,
+            };
             return renderWindow();
         }
         if (act === 'gacha-wish') {
@@ -6574,6 +6637,8 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
         if (act === 'gen-blitz-10') {
+            const domTopic = win.querySelector('input[data-blitz="topic"]');
+            if (domTopic) sess.blitz.topic = domTopic.value;
             const targetCnt = Math.min(25, Math.max(3, Number(sess.blitz.questionCount) || 10));
             await withBusy(`Готовим список из ${targetCnt} вопросов Блиц-теста`, async (signal) => {
                 const req = buildBlitzQuestionsRequest(sess, -1, cfg.transportMode);
@@ -6614,6 +6679,8 @@ function bindWindowDelegation(win) {
             return;
         }
         if (act === 'blitz-regen-one') {
+            const domTopic = win.querySelector('input[data-blitz="topic"]');
+            if (domTopic) sess.blitz.topic = domTopic.value;
             const idx = Number(btn.dataset.idx);
             await withBusy(`Меняем вопрос #${idx + 1}`, async (signal) => {
                 const req = buildBlitzQuestionsRequest(sess, idx, cfg.transportMode);
@@ -6632,6 +6699,14 @@ function bindWindowDelegation(win) {
             return;
         }
         if (act === 'build-from-blitz') {
+            const domTopic = win.querySelector('input[data-blitz="topic"]');
+            if (domTopic) sess.blitz.topic = domTopic.value;
+            win.querySelectorAll('input[data-blitz-ans]').forEach((inp) => {
+                const qIdx = Number(inp.dataset.blitzAns);
+                if (sess.blitz.questions[qIdx]) {
+                    sess.blitz.questions[qIdx].answer = inp.value;
+                }
+            });
             const seedHit = resolveBlitzSeedCandidate(sess);
             const seedEntity = seedHit?.entity || null;
             const answered = sess.blitz.questions
@@ -6649,14 +6724,21 @@ function bindWindowDelegation(win) {
                     sess.blitz.topic ? `\n[ADDITIONAL FOCUS]: ${sess.blitz.topic}` : '',
                     answered ? `\n[USER BLITZ ANSWERS DEEPENING "${seedEntity.name}" — MANDATORY CANON]\n${answered}` : '',
                 ].filter(Boolean).join('\n')
-                : `Blitz Topic: ${sess.blitz.topic || 'Matchmaking'}\n\n${answered || 'Synthesize creatively from Topic & Intake.'}`;
+                : [
+                    `[BLITZ QUESTIONNAIRE TOPIC]`,
+                    sess.blitz.topic || 'Matchmaking & Character Design',
+                    answered
+                        ? `\n[USER BLITZ ANSWERS — MANDATORY CANON (Incorporate EVERY checked option and custom answer below faithfully; creatively fill in any skipped angles)]\n${answered}`
+                        : `\nSynthesize creatively from Topic & Intake.`,
+                ].join('\n');
 
             const busyLabel = seedEntity
                 ? `Собираем полную карточку «${seedEntity.name}» по ответам Блица`
                 : 'Собираем карточку в слот «Блиц»';
 
             await withBusy(busyLabel, async (signal) => {
-                const blitzCtxMode = seedHit?.source === 'gacha' ? 'gacha' : 'blitz';
+                const gachaOnlyNoSeed = !seedHit && sess.blitz?.useTinderContext === false && Boolean(sess.blitz?.useGachaContext);
+                const blitzCtxMode = (seedHit?.source === 'gacha' || gachaOnlyNoSeed) ? 'gacha' : 'blitz';
                 const req = buildFullCardRequest(sess, brief, cfg.transportMode, { modeContext: blitzCtxMode });
                 const raw = await runLlmGeneration({
                     ...req,
@@ -6775,6 +6857,14 @@ function bindWindowDelegation(win) {
             return;
         }
         if (act === 'gen-au-questions' || act === 'au-q-regen-one') {
+            const domAvatarSel = win.querySelector('select[data-rework="sourceAvatar"]');
+            if (domAvatarSel && domAvatarSel.value && !sess.rework.sourceAvatar) {
+                sess.rework.sourceAvatar = domAvatarSel.value;
+            }
+            const domEraInp = win.querySelector('input[data-rework="targetSettingEra"]');
+            if (domEraInp && domEraInp.value && !sess.rework.targetSettingEra) {
+                sess.rework.targetSettingEra = domEraInp.value;
+            }
             const chosenAvatar = String(sess.rework.sourceAvatar || '').trim();
             if (!chosenAvatar) {
                 notifyToast('Сначала выберите исходную карточку персонажа.', true);
@@ -6814,7 +6904,25 @@ function bindWindowDelegation(win) {
             return;
         }
 
+        if (act === 'toggle-rework-lorebook') {
+            if (sess.frozen) return;
+            sess.rework.inheritLorebook = !Boolean(sess.rework.inheritLorebook);
+            saveSettings();
+            return renderWindow();
+        }
         if (act === 'load-char-to-editor' || act === 'run-rework') {
+            const domAvatarSel = win.querySelector('select[data-rework="sourceAvatar"]');
+            if (domAvatarSel && domAvatarSel.value && !sess.rework.sourceAvatar) {
+                sess.rework.sourceAvatar = domAvatarSel.value;
+            }
+            const domEraInp = win.querySelector('input[data-rework="targetSettingEra"]');
+            if (domEraInp && domEraInp.value && !sess.rework.targetSettingEra) {
+                sess.rework.targetSettingEra = domEraInp.value;
+            }
+            const domModeSel = win.querySelector('select[data-rework="reworkMode"]');
+            if (domModeSel && domModeSel.value) {
+                sess.rework.reworkMode = domModeSel.value;
+            }
             const chosenAvatar = String(sess.rework.sourceAvatar || '').trim();
             if (!chosenAvatar) {
                 notifyToast('Сначала выберите карточку из списка.', true);
@@ -6825,13 +6933,18 @@ function bindWindowDelegation(win) {
                 await withBusy('Загружаем полную карточку из SillyTavern', async (signal) => {
                     const { fullChar } = await fetchFullTavernCharacter(chosenAvatar, { signal });
                     let previewAvatarId = '';
+                    let naturalRatio = 0;
                     try {
                         const srcDataUrl = await urlToDataUrl(`/characters/${encodeURIComponent(chosenAvatar)}`, signal);
+                        const dims = await probeImageDimensionsFromDataUrl(srcDataUrl);
+                        if (dims.w && dims.h) naturalRatio = dims.w / dims.h;
                         previewAvatarId = await saveMediaDataUrl(srcDataUrl);
                     } catch {
                         previewAvatarId = '';
                     }
-                    assignCardIntoSessionSlot(sess, 'manual', createCardStateFromTavernChar(fullChar, { avatarId: previewAvatarId }));
+                    const nextCard = createCardStateFromTavernChar(fullChar, { avatarId: previewAvatarId });
+                    if (naturalRatio > 0) nextCard.artNaturalRatio = naturalRatio;
+                    assignCardIntoSessionSlot(sess, 'manual', nextCard);
                     state.lastOverwriteAlert = null;
                     await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                     state.activeTab = 'editor';
@@ -6859,6 +6972,8 @@ function bindWindowDelegation(win) {
                     scenario: baseState.scenario,
                     first_mes: baseState.first_mes,
                     mes_example: baseState.mes_example,
+                    system_prompt: baseState.system_prompt,
+                    post_history_instructions: baseState.post_history_instructions,
                 }, cfg.transportMode);
 
                 const raw = await runLlmGeneration({
@@ -6875,12 +6990,14 @@ function bindWindowDelegation(win) {
                     { fallbackName: baseState.name }
                 );
                 // Strictly applies parsed result onto baseState of chosen character A — NEVER reads previous sess.card B! (fixes P1-A)
-                assignCardIntoSessionSlot(sess, 'architect', applyReworkResultToTavernBase(baseState, parsed, {
+                const reBuilt = applyReworkResultToTavernBase(baseState, parsed, {
                     avatarId: previewAvatarId,
                     sourceAvatarId: chosenAvatar,
                     snapshotHash,
                     rawCardObject,
-                }));
+                    inheritLorebook: Boolean(sess.rework.inheritLorebook),
+                });
+                assignCardIntoSessionSlot(sess, 'architect', reBuilt);
                 state.lastOverwriteAlert = null;
                 await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                 state.activeTab = 'editor';

@@ -300,7 +300,7 @@ export const CARD_FORMATS = [
 ### [INTERACTIVE DYNAMICS]
 14. World & Environment | 15. Dynamic with { {user} } | 16. SFW Habits & Hobbies | 17. Intimacy / Boundaries (matching selected Rating)
 ### [SCENARIO CONTEXT]
-18. Active Situation`,
+18. Active Situation | 19. Roleplay & Voice Anchors`,
     },
     {
         id: 'jed_hybrid',
@@ -1049,6 +1049,7 @@ export function createDefaultSession(index = 1) {
             encounterIdea: '',
             moodTone: '',
             keepFormatting: true,
+            inheritLorebook: false,
             questionCount: 5,
             includeChoices: true,
             questions: [],
@@ -1349,6 +1350,7 @@ function normalizeSingleCardSlotObject(rawCard) {
         artNaturalRatio: Number.isFinite(Number(rc.artNaturalRatio)) ? Number(rc.artNaturalRatio) : 0,
         avatarDataUrl: inlineCardAvatar,
         avatarDirty: Boolean(rc.avatarDirty),
+        stripInheritedCharacterBook: Boolean(rc.stripInheritedCharacterBook),
         sourceAvatarId: String(rc.sourceAvatarId ?? ''),
         sourceLoadedFromTavern: Boolean(rc.sourceLoadedFromTavern ?? Boolean(rc.sourceAvatarId)),
         sourceSnapshotHash: String(rc.sourceSnapshotHash ?? ''),
@@ -1491,6 +1493,7 @@ export function normalizeSession(rawSession, index = 1) {
         encounterIdea: String(rawRework.encounterIdea ?? ''),
         moodTone: String(rawRework.moodTone ?? ''),
         keepFormatting: rawRework.keepFormatting !== false,
+        inheritLorebook: Boolean(rawRework.inheritLorebook),
         questionCount: Number.isFinite(parsedAuQCount) && parsedAuQCount >= 3 && parsedAuQCount <= 20
             ? Math.round(parsedAuQCount)
             : 5,
@@ -1828,8 +1831,15 @@ export function summarizeIntakeBlock(session, { modeContext = 'swipe' } = {}) {
         if (seed?.source === 'gacha') {
             return summarizeGachaWishPrefsBlock(session);
         }
-        if (session?.blitz?.useTinderContext === false && !seed) {
-            return summarizeMinimalDirectIdeaBlock(session);
+        if (!seed) {
+            const wantTinder = session?.blitz?.useTinderContext !== false;
+            const wantGacha = Boolean(session?.blitz?.useGachaContext);
+            if (!wantTinder && wantGacha) {
+                return summarizeGachaWishPrefsBlock(session);
+            }
+            if (!wantTinder && !wantGacha) {
+                return summarizeMinimalDirectIdeaBlock(session);
+            }
         }
     }
     const it = session?.intake || createDefaultSession(1).intake;
@@ -1884,6 +1894,9 @@ export function summarizeIntakeBlock(session, { modeContext = 'swipe' } = {}) {
         `- Content Rating: ${ratingMap[it.rating] || ratingMap.sfw}`,
         `- Target Output Language for AI Card Fields (Description, Personality, Scenario, First Message, Dialogue): ${cardLangSpec.directive}`,
         `- Target Language for Human-Facing Creator Notes & Summaries: ${userLangSpec.directive}`,
+        (modeContext === 'blitz' && !resolveBlitzSeedCandidate(session) && session?.blitz?.useTinderContext !== false && session?.blitz?.useGachaContext)
+            ? `\n${summarizeGachaWishPrefsBlock(session)}`
+            : '',
     ].filter(Boolean).join('\n');
 
     return (it.playerNameMode || 'macro') === 'macro' ? shieldMacrosForPrompt(rawText) : rawText;
@@ -2337,7 +2350,8 @@ export function resolveBlitzSeedCandidate(session) {
 export function buildBlitzQuestionsRequest(session, singleIndexToReplace = -1, mode = 'prefill_user_msg') {
     const seedHit = resolveBlitzSeedCandidate(session);
     const seedEntity = seedHit?.entity || null;
-    const effectiveModeContext = seedHit?.source === 'gacha' ? 'gacha' : 'blitz';
+    const gachaOnlyNoSeed = !seedHit && session?.blitz?.useTinderContext === false && Boolean(session?.blitz?.useGachaContext);
+    const effectiveModeContext = (seedHit?.source === 'gacha' || gachaOnlyNoSeed) ? 'gacha' : 'blitz';
     const intakeSummary = summarizeIntakeBlock(session, { modeContext: effectiveModeContext });
     const worldMode = effectiveModeContext === 'gacha'
         ? (session.gacha?.wishPrefs?.targetType === 'world_rpg' || session.gacha?.wishPrefs?.targetType === 'artifact')
@@ -2456,15 +2470,18 @@ export function buildAuReworkQuestionsRequest(session, sourceCard, singleIndexTo
         sourceCard.scenario ? `Scenario:\n${String(sourceCard.scenario).slice(0, 1000)}` : '',
     ].filter(Boolean).join('\n\n'));
 
+    const charLabel = sourceCard.name ? `"${sourceCard.name}"` : 'the character';
+    const naturalQuestionToneRule = `Write questions in clean, natural human language in ${langSpec.shortLabel} — address the player naturally and refer to ${charLabel} by name; do NOT put raw technical curly-brace macros like {{char}} or {{user}} inside the question text itself.`;
+
     const sysCore = [
         `You are NexusMatch Multiverse AU Consultant.`,
         `Analyze the Source Character and the Target Universe ("${targetEra}")${rw.moodTone ? ` [Mood: ${rw.moodTone}]` : ''}${rw.encounterIdea ? ` [Encounter hint: ${rw.encounterIdea}]` : ''}.`,
         `Generate ${count} sharp, concrete AU adaptation question(s) in ${langSpec.shortLabel} for the user BEFORE rewriting the card.`,
+        naturalQuestionToneRule,
         `Focus specifically on:`,
         `1) How to convert setting-locked elements from the original card (e.g., royal titles, magic/powers, fantasy factions/druids/orders, medieval weapons/armor, past wars) into 100% authentic equivalents of "${targetEra}" with zero anachronisms;`,
-        `2) Exact social status, occupation, and power base of { {char} } in "${targetEra}";`,
-        `3) Who { {user} } is to { {char} } in this new world and what sparks their opening encounter.`,
-        macroRule,
+        `2) Exact social status, occupation, and power base of ${charLabel} in "${targetEra}";`,
+        `3) Who the player's character is to ${charLabel} in this new world and what sparks their opening encounter.`,
     ].join('\n');
 
     if (mode === 'json_schema') {
@@ -2505,8 +2522,11 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
     const greetWords = resolveGreetingTarget(session.intake);
     const intakeSummary = summarizeIntakeBlock(session, { modeContext: 'rework' });
     const langSpec = resolveOutputLanguageSpec(session.intake);
+    const userLangSpec = resolveUserLanguageSpec(session.intake);
     const macroRule = buildUniversalMacroRule(session.intake.playerNameMode || 'macro');
     const greetStyleBlock = buildGreetingStyleDirective(session.intake);
+    const artMechRule = buildFlexibleAvatarArtMechanismRule(session.intake);
+    const fmt = CARD_FORMATS.find((f) => f.id === session.intake.cardFormat) || CARD_FORMATS[0];
 
     const answeredAuDecisions = Array.isArray(rw.questions)
         ? rw.questions
@@ -2541,7 +2561,8 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
         ].join('\n')
         : [
             `MODE: FULL AU REWORK & STRUCTURAL REBUILD INTO "${targetEra}".`,
-            `- Rebuild the character from the ground up using the chosen NexusMatch Format (${session.intake.cardFormat}), target length (~${descWords} words), and User Intake preferences while keeping { {char} }'s recognizable personality core.`,
+            `- Rebuild the character from the ground up using the chosen NexusMatch Format (${fmt.name}), target length (~${descWords} words), and User Intake preferences while keeping { {char} }'s recognizable personality core.`,
+            `Formatting Standard: ${fmt.name}\n${fmt.instructions}`,
             zeroAnachronismLaw,
             `- Write a vivid brand-new First Message (~${greetWords} words) set in "${targetEra}"${rw.encounterIdea ? ` using premise: "${rw.encounterIdea}"` : ''}${rw.moodTone ? ` with mood/tone: "${rw.moodTone}"` : ''}.`,
         ].join('\n');
@@ -2554,11 +2575,15 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
         sourceCard.scenario ? `Scenario:\n${sourceCard.scenario}` : '',
         sourceCard.first_mes ? `Original First Message (for voice & formatting structure reference ONLY — replace all old-world lore!):\n${sourceCard.first_mes}` : '',
         sourceCard.mes_example ? `Example Dialogue (adapt any old-world terms to "${targetEra}"):\n${sourceCard.mes_example}` : '',
+        sourceCard.system_prompt ? `Original System Prompt (adapt any old-world terms to "${targetEra}"):\n${sourceCard.system_prompt}` : '',
+        sourceCard.post_history_instructions ? `Original Post-History Instructions:\n${sourceCard.post_history_instructions}` : '',
     ].filter(Boolean).join('\n\n'));
+
+    const notesLangRule = `Write human-facing Creator Notes (creator_notes / [[NMF_CREATOR_NOTES]]) in ${userLangSpec.shortLabel}.`;
 
     if (mode === 'json_schema') {
         return {
-            system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\n${macroRule}\n${greetStyleBlock}\n${CARD_META_PURITY_RULE}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
+            system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\nTarget Output Language: ${langSpec.directive}.\n${notesLangRule}\nNever write actions, thoughts, or dialogue for the player inside the opening scene.\n${macroRule}\n${greetStyleBlock}\n${CARD_META_PURITY_RULE}\n${artMechRule}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
             user: `${intakeSummary}${userAuDecisionsBlock}\n\n${srcDump}`,
             jsonSchema: FULL_CARD_JSON_SCHEMA,
         };
@@ -2569,10 +2594,13 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
         user: shieldMacrosForPrompt([
             `[NEXUSMATCH FORGE // MULTIVERSE & REWORK TASK]`,
             auDirective,
+            `Never write actions, thoughts, or dialogue for the player inside the opening scene.`,
             macroRule,
             greetStyleBlock,
             CARD_META_PURITY_RULE,
             `Target Output Language: ${langSpec.directive}.`,
+            notesLangRule,
+            artMechRule,
             ``,
             intakeSummary,
             userAuDecisionsBlock,
@@ -3124,7 +3152,7 @@ export const CARD_TRANSLATION_JSON_SCHEMA = Object.freeze({
     value: {
         type: 'object',
         additionalProperties: false,
-        required: ['name', 'description', 'personality', 'scenario', 'first_mes', 'alternate_greetings', 'mes_example', 'creator_notes'],
+        required: ['name', 'description', 'personality', 'scenario', 'first_mes', 'alternate_greetings', 'mes_example', 'system_prompt', 'post_history_instructions', 'creator_notes'],
         properties: {
             name: { type: 'string' },
             description: { type: 'string' },
@@ -3133,6 +3161,8 @@ export const CARD_TRANSLATION_JSON_SCHEMA = Object.freeze({
             first_mes: { type: 'string' },
             alternate_greetings: { type: 'array', items: { type: 'string' } },
             mes_example: { type: 'string' },
+            system_prompt: { type: 'string' },
+            post_history_instructions: { type: 'string' },
             creator_notes: { type: 'string' },
         },
     },
@@ -3147,7 +3177,8 @@ export function buildCardTranslationRequest(card, targetLangLabel = 'Русск�
     const coreRules = [
         `You are an elite literary & roleplay translator for SillyTavern Character Card V2.`,
         `Translate all provided card fields faithfully and artistically into ${targetLang}.`,
-        `- Preserve 100% of Markdown headings, XML tags, bullet lists, dialogue formatting, and SillyTavern macros ({ {char} }, { {user} }, <START>).`,
+        `- Preserve 100% of Markdown headings, XML tag names, bullet lists, dialogue formatting, and <START> markers.`,
+        `- Whenever you encounter { {user} } or { {char} } (spaced in the input only to prevent client macro expansion), output the exact unspaced SillyTavern macros {{user}} and {{char}} without translating the words user or char inside braces.`,
         `- Do NOT summarize, censor, or omit details — translate every paragraph completely.`,
         CARD_META_PURITY_RULE,
     ].join('\n');
@@ -3161,12 +3192,14 @@ export function buildCardTranslationRequest(card, targetLangLabel = 'Русск�
         card.first_mes ? `First Message:\n${card.first_mes}` : '',
         altDump ? `Alternate Greetings:\n${altDump}` : '',
         card.mes_example ? `Example Dialogue:\n${card.mes_example}` : '',
+        card.system_prompt ? `System Prompt:\n${card.system_prompt}` : '',
+        card.post_history_instructions ? `Post-History Instructions:\n${card.post_history_instructions}` : '',
         card.creator_notes ? `Creator Notes:\n${card.creator_notes}` : '',
     ].filter(Boolean).join('\n\n'));
 
     if (mode === 'json_schema') {
         return {
-            system: shieldMacrosForPrompt(`${coreRules}\nOutput ONLY valid JSON matching: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[],"mes_example":"","creator_notes":""}`),
+            system: shieldMacrosForPrompt(`${coreRules}\nOutput ONLY valid JSON matching: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[],"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":""}`),
             user: sourceBlock,
             jsonSchema: CARD_TRANSLATION_JSON_SCHEMA,
         };
@@ -3188,6 +3221,8 @@ export function buildCardTranslationRequest(card, targetLangLabel = 'Русск�
             `[[NMF_FIRST_MES]]Translated First Message[[/NMF_FIRST_MES]]`,
             `[[NMF_ALT_GREETING]]Translated Alternate Greeting (if multiple, separate with ===NMF_ALT_SEP===)[[/NMF_ALT_GREETING]]`,
             `[[NMF_MES_EXAMPLE]]Translated Example Dialogue[[/NMF_MES_EXAMPLE]]`,
+            `[[NMF_SYS_PROMPT]]${card.system_prompt ? 'Translated System Prompt' : ''}[[/NMF_SYS_PROMPT]]`,
+            `[[NMF_POST_HISTORY]]${card.post_history_instructions ? 'Translated Post-History Instructions' : ''}[[/NMF_POST_HISTORY]]`,
             `[[NMF_CREATOR_NOTES]]Translated Creator Notes[[/NMF_CREATOR_NOTES]]`,
         ].join('\n')),
         jsonSchema: null,
@@ -3210,6 +3245,8 @@ export function parseCardTranslationResponse(raw, sourceCard = {}, targetLangLab
             first_mes: extractTagBlock(text, 'NMF_FIRST_MES'),
             alternate_greetings: alts,
             mes_example: extractTagBlock(text, 'NMF_MES_EXAMPLE'),
+            system_prompt: extractTagBlock(text, 'NMF_SYS_PROMPT'),
+            post_history_instructions: extractTagBlock(text, 'NMF_POST_HISTORY'),
             creator_notes: extractTagBlock(text, 'NMF_CREATOR_NOTES'),
         };
     } else {
@@ -3222,6 +3259,8 @@ export function parseCardTranslationResponse(raw, sourceCard = {}, targetLangLab
             first_mes: String(obj.first_mes || '').trim(),
             alternate_greetings: Array.isArray(obj.alternate_greetings) ? obj.alternate_greetings.map(String).filter(Boolean) : [],
             mes_example: String(obj.mes_example || '').trim(),
+            system_prompt: String(obj.system_prompt || '').trim(),
+            post_history_instructions: String(obj.post_history_instructions || '').trim(),
             creator_notes: String(obj.creator_notes || '').trim(),
         };
     }
@@ -3236,6 +3275,8 @@ export function parseCardTranslationResponse(raw, sourceCard = {}, targetLangLab
         first_mes: sanitizeCardMetaPollution(normalizeCardMacros(out.first_mes, chName, playerNameMode)),
         alternate_greetings: out.alternate_greetings.map((g) => sanitizeCardMetaPollution(normalizeCardMacros(g, chName, playerNameMode))),
         mes_example: sanitizeCardMetaPollution(normalizeCardMacros(out.mes_example, chName, playerNameMode)),
+        system_prompt: sanitizeCardMetaPollution(normalizeCardMacros(out.system_prompt, chName, playerNameMode)),
+        post_history_instructions: sanitizeCardMetaPollution(normalizeCardMacros(out.post_history_instructions, chName, playerNameMode)),
         creator_notes: sanitizeCardMetaPollution(normalizeCardMacros(out.creator_notes, chName, playerNameMode)),
         updatedAt: Date.now(),
     };
