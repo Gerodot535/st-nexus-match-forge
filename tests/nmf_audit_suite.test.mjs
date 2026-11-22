@@ -2740,20 +2740,20 @@ test('v1.9.0 Bilingual UI (RU/EN), Dynamic Placeholder Cover Lang, 39 Themed Unp
     // 5. Bundled Rikka Art Studio reveal assets exist and Aspect Ratio warning box is gone
     const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
     assert.equal(entryTxt.includes('aspectWarnText'), false);
-    assert.ok(entryTxt.includes('* Необязательно, но будет красиво'));
+    assert.ok(entryTxt.includes('Арт-мастерская'));
     assert.ok(fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../assets/reveal_match.webp')));
     assert.ok(fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../assets/reveal_altar.webp')));
 });
 
-test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vault Media Isolation Across Prune & 4-Point Home Layout', async () => {
+test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vault Media Isolation Across Prune & Studio Home Layout', async () => {
     const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
     const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js');
 
-    // 1. All 4 numbered Points exist on Home Screen & zero "Шаг " labels remain in renderHomeTab
-    assert.ok(entryTxt.includes('Пункт 1. Анкеты сессии и базовая настройка:'));
-    assert.ok(entryTxt.includes('Пункт 2. Выберите режим создания карточки:'));
-    assert.ok(entryTxt.includes('Пункт 3. Темы оформления и настройки Гачи:'));
-    assert.ok(entryTxt.includes('Пункт 4. Генератор Артов и Обложки:'));
+    // 1. Studio showcases & Session Setup sections exist on Home Screen
+    assert.ok(entryTxt.includes('data-hcard="intake"'));
+    assert.ok(entryTxt.includes('data-hcard="setup"'));
+    assert.ok(entryTxt.includes('data-act="toggle-gacha-drawer"'));
+    assert.ok(entryTxt.includes('Арт-мастерская'));
 
     // 2. Every pruneOrphanedMedia call in nmf_entry.js passes savedVault (zero bare pruneOrphanedMedia(cfg.sessions) calls!)
     assert.equal(/pruneOrphanedMedia\(\s*cfg\.sessions\s*\)/.test(entryTxt), false, 'All pruneOrphanedMedia calls must pass savedVault');
@@ -2948,4 +2948,248 @@ test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite),
     assert.equal(cleanAu.data.extensions.world, '');
     assert.equal('character_book' in cleanAu.data, false);
 });
+
+test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, [ ] expander, and Vault -> Tavern flow', async () => {
+    const mod = await import('../modules/nmf_templates_and_prompts.js');
+    const sess = mod.createDefaultSession(1);
+
+    // 1. Zero alt greetings mode
+    sess.intake.firstMesLanguage = 'Русский';
+    sess.intake.altGreetingsCount = 0;
+    const zeroAltReq = mod.buildFullCardRequest(sess, 'Test Detective', 'prefill_user_msg');
+    assert.ok(zeroAltReq.user.includes('Main First Message (first_mes / [[NMF_FIRST_MES]]) MUST be written in: Русский'));
+    assert.ok(zeroAltReq.user.includes('Alternate Greetings Count: 0 (ZERO)'));
+
+    const parsedZero = mod.parseFullCardResponse(
+        '[[NMF_NAME]]Det[[/NMF_NAME]][[NMF_DESC]]Desc[[/NMF_DESC]][[NMF_FIRST_MES]]Hi[[/NMF_FIRST_MES]][[NMF_ALT_GREETING]]ShouldBeTrimmed[[/NMF_ALT_GREETING]]',
+        'prefill_user_msg',
+        'macro',
+        { maxAltGreetings: 0 },
+    );
+    assert.deepEqual(parsedZero.alternate_greetings, []);
+
+    // 2. Multi-alt greetings with distinct languages (e.g. #1 RU translation + #2 EN alt scene)
+    sess.intake.altGreetingsCount = 2;
+    sess.intake.altGreetingLangs = ['Русский_translate', 'English'];
+    const twoAltReq = mod.buildFullCardRequest(sess, 'Test Detective', 'prefill_user_msg');
+    assert.ok(twoAltReq.user.includes('Generate EXACTLY 2 alternate greeting(s)'));
+    assert.ok(twoAltReq.user.includes('FULL TRANSLATION of the Main First Message into Russian'));
+    assert.ok(twoAltReq.user.includes('brand-new, distinct alternative opening scene hook in English'));
+
+    const parsedTwo = mod.parseFullCardResponse(
+        '[[NMF_NAME]]Det[[/NMF_NAME]][[NMF_DESC]]Desc[[/NMF_DESC]][[NMF_FIRST_MES]]Hello[[/NMF_FIRST_MES]][[NMF_ALT_GREETING]]Привет ===NMF_ALT_SEP=== Rainy street[[/NMF_ALT_GREETING]]',
+        'prefill_user_msg',
+        'macro',
+        { maxAltGreetings: 2 },
+    );
+    assert.deepEqual(parsedTwo.alternate_greetings, ['Привет', 'Rainy street']);
+
+    // 3. AU Rework also honors greeting language & alt count
+    const auReq = mod.buildReworkCardRequest(sess, { name: 'Hero', description: 'Old', first_mes: 'Old' }, 'prefill_user_msg');
+    assert.ok(auReq.user.includes('Generate EXACTLY 2 alternate greeting(s)'));
+
+    // 4. Verify Profile UI, 4-mode Create grid, dedicated Vault tab & full-card surgical safety guard
+    const longDesc = Array.from({ length: 180 }, (_, i) => `word${i}`).join(' ');
+    const fullCardSample = { ...sess.card, name: 'TestHero', description: longDesc, first_mes: 'Full opening scene.' };
+    const surgPrompt = mod.buildSurgicalCardEditRequest(sess, fullCardSample, 'Fix point 3', { scope: 'description', mode: 'prefill_user_msg' });
+    assert.ok(surgPrompt.user.includes('COMPLETE CARD & FULL-FIELD OUTPUT LAW'));
+    assert.throws(
+        () => mod.applySurgicalCardEditResult(fullCardSample, { description: 'Only point 3 edited snippet.' }, { scope: 'description' }),
+        /короткий фрагмент/,
+        'Anti-truncation guard must reject partial snippet responses',
+    );
+
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+    const createBlock = entrySrc.slice(entrySrc.indexOf('function renderCreateTab'), entrySrc.indexOf('function summarizeProfileFieldSub'));
+    assert.equal(createBlock.includes('renderCardAiRegenAndEditBox'), false, 'Create tab must not contain AI Regeneration box');
+    assert.ok(createBlock.includes('data-sub="manual_new"') && createBlock.includes('data-sub="manual_edit"'), 'Create tab must expose all 4 mode cards');
+    assert.ok(entrySrc.includes('data-sub="vault"'), 'Vault must be a tab inside Collection');
+    assert.ok(entrySrc.includes('data-act="open-fs-field"'), 'Profile must include [ ] fullscreen expand buttons');
+    assert.ok(entrySrc.includes('data-act="save-vault-to-tavern"'), 'Vault must include direct To Tavern import button');
+    assert.ok(entrySrc.includes('data-act="post-save-clear-sheet"'), 'Post-save compact popup must ask before clearing');
+
+    // 5. Verify stalled HTTP 200 body stream aborts on timeout & masks API keys in lastRequestDiagnostics
+    const ioMod = await import('../modules/nmf_card_io_and_art.js');
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, { signal }) => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        url: 'https://proxy.example/v1/images',
+        json: () => new Promise((_res, rej) => {
+            signal?.addEventListener('abort', () => rej(new Error('Body aborted')), { once: true });
+        }),
+        text: async () => '',
+        arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    try {
+        const resp = await ioMod.fetchWithTimeout(
+            'https://proxy.example/v1/images?key=AIzaSecretKey999',
+            {
+                method: 'POST',
+                headers: { Authorization: 'Bearer sk-super-secret-token', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: 'gemini-3-image', prompt: 'test portrait' }),
+            },
+            300,
+        );
+        await assert.rejects(() => resp.json(), /Превышено время ожидания потока ответа/);
+        assert.equal(ioMod.lastRequestDiagnostics.art.url.includes('AIzaSecretKey999'), false, 'URL key param must be masked');
+        assert.equal(JSON.stringify(ioMod.lastRequestDiagnostics.art).includes('sk-super-secret-token'), false, 'Bearer token must never appear in diagnostic log');
+        assert.equal(ioMod.getModelMaxReferenceImages({ apiType: 'gemini', model: 'gemini-3.1-flash-image' }), 14);
+        assert.equal(ioMod.getModelMaxReferenceImages({ apiType: 'gemini', model: 'gemini-3-pro-image' }), 11);
+        assert.equal(ioMod.getModelMaxReferenceImages({ apiType: 'gemini', model: 'gemini-2.5-flash-image' }), 3);
+    } finally {
+        globalThis.fetch = origFetch;
+    }
+});
+
+test('CANDY CRUSH & Google AI Studio Preset Regression: preserves ALL assistant blocks, enhanceDefinitions prefill, Depth-0 notes, and "\\n" empty toggles', async () => {
+    const ioMod = await import('../modules/nmf_card_io_and_art.js');
+    const mockCtx = {
+        chatCompletionSettings: {
+            assistant_prefill: '',
+            prompts: [
+                { identifier: 'main', name: 'SWEET BOX', role: 'system', marker: false, content: 'ACTIVATION PROTOCOL' },
+                { identifier: 'u_turn_1', name: 'User Setup', role: 'user', marker: false, content: 'Follow rules.' },
+                { identifier: 'a_turn_1', name: 'Assistant Ack', role: 'assistant', marker: false, content: 'Understood.' },
+                { identifier: 'char_leak', name: 'DESCRIPTION CHAR', role: 'user', marker: false, content: '{{description}} {{personality}}' },
+                { identifier: 'chatHistory', name: 'Chat History', marker: true },
+                { identifier: 'sys_note_after', name: 'System Note After Chat', role: 'system', marker: false, content: 'REMINDER: Stay sharp.' },
+                { identifier: 'enhanceDefinitions', name: 'Sugar Rush (Prefill)', role: 'assistant', marker: false, content: 'MY WORK STARTS NOW!\n' },
+                { identifier: 'nsfw', name: 'GEMINI EMPTY TOGGLE', role: 'user', content: '\n' },
+            ],
+            prompt_order: [
+                {
+                    character_id: 100001,
+                    order: [
+                        { identifier: 'main', enabled: true },
+                        { identifier: 'u_turn_1', enabled: true },
+                        { identifier: 'a_turn_1', enabled: true },
+                        { identifier: 'char_leak', enabled: true },
+                        { identifier: 'chatHistory', enabled: true },
+                        { identifier: 'sys_note_after', enabled: true },
+                        { identifier: 'enhanceDefinitions', enabled: true },
+                        { identifier: 'nsfw', enabled: true },
+                    ],
+                },
+            ],
+        },
+    };
+
+    const trace = [];
+    const built = ioMod.buildPresetAlignedMessages(mockCtx, 'BUILD_BROTHER_CARD', '', 'CORRECTION', {
+        stripActiveCharFromPreset: true,
+        outTrace: trace,
+    });
+
+    // 1. Pre-chat user -> assistant pair preserved
+    assert.deepEqual(built[1], { role: 'user', content: 'Follow rules.' });
+    assert.deepEqual(built[2], { role: 'assistant', content: 'Understood.' });
+
+    // 2. Active char leak '{{description}} {{personality}}' stripped cleanly
+    assert.equal(built.some((m) => m.content.includes('{{description}}')), false);
+
+    // 3. Exact tail sequence after chatHistory: Task -> System Note -> Assistant Prefill ('MY WORK STARTS NOW!\n') -> Empty Toggle ('\n')
+    const tail = built.slice(-4);
+    assert.equal(tail[0].role, 'user');
+    assert.ok(tail[0].content.includes('BUILD_BROTHER_CARD'));
+    assert.deepEqual(tail[1], { role: 'system', content: 'REMINDER: Stay sharp.' });
+    assert.deepEqual(tail[2], { role: 'assistant', content: 'MY WORK STARTS NOW!\n' });
+    assert.deepEqual(tail[3], { role: 'user', content: '\n' });
+});
+
+test('v1.9.8-beta: 3 simple language presets, live similar-tag autocomplete + library, blank-first + bilingual preset sessions, and bottom Home nav', async () => {
+    const tp = await import('../modules/nmf_tags_and_presets.js');
+    const mod = await import('../modules/nmf_templates_and_prompts.js');
+
+    // 1. Fresh install ALWAYS starts on a clean blank session
+    const { settings } = mod.normalizeAndMigrateSettings(null);
+    assert.equal(settings.sessions.length, 1);
+    assert.equal(settings.sessions[0].presetTemplateId, '');
+    assert.equal(settings.sessions[0].intake.settingEra, '');
+
+    // 2. Simple language presets map cleanly without confusion
+    const intake = mod.createDefaultSession(1).intake;
+    intake.userLanguage = 'Русский';
+    tp.applySimpleLangScenario(intake, 'hybrid_tokens');
+    assert.equal(tp.resolveSimpleLangScenarioId(intake), 'hybrid_tokens');
+    assert.equal(intake.firstMesLanguage, 'target_user_lang');
+
+    tp.applySimpleLangScenario(intake, 'en_with_translation');
+    assert.equal(tp.resolveSimpleLangScenarioId(intake), 'en_with_translation');
+    assert.equal(intake.cardLanguage, 'English');
+    assert.equal(intake.altGreetingLangs[0], 'target_user_translate');
+
+    // 3. Personal tag library + semantic similar-tag autocomplete ("брат" -> older brother, under one roof, etc.)
+    const lib = tp.harvestTagsIntoLibrary('нежный вампир, ночной дождь', []);
+    assert.deepEqual(lib, ['нежный вампир', 'ночной дождь']);
+    const simRu = tp.getLiveSimilarTagSuggestions({ rawInput: 'брат', category: 'vibe', userLibrary: lib, lang: 'ru' });
+    assert.ok(simRu.some((x) => x.tag === 'старший брат'), 'Must suggest старший брат');
+    assert.ok(simRu.some((x) => x.tag === 'живут под одной крышей'), 'Must suggest semantic cluster neighbors');
+
+    // Different session seeds produce distinct rotated tag sets
+    const rotA = tp.getSessionRotatingTagSuggestions({ seed: 101, category: 'vibe', userLibrary: lib, lang: 'ru' }).map((x) => x.tag);
+    const rotB = tp.getSessionRotatingTagSuggestions({ seed: 202, category: 'vibe', userLibrary: lib, lang: 'ru' }).map((x) => x.tag);
+    assert.notDeepEqual(rotA, rotB);
+
+    // 4. Preset example session tunes to {{language}} and auto-translates RU <-> EN
+    const presetSess = tp.populateSessionFromPresetTemplate(mod.createDefaultSession(2), 'preset_noir_syndicate', 'ru');
+    assert.equal(presetSess.intake.userLanguage, '{{language}}');
+    assert.ok(presetSess.title.includes('Босс Синдиката'));
+    tp.syncPresetSessionsToUiLanguage([presetSess], 'en');
+    assert.equal(presetSess.title, 'Sample: Syndicate Boss');
+    assert.ok(presetSess.gacha.tagsInput.includes('syndicate boss'));
+    tp.syncPresetSessionsToUiLanguage([presetSess], 'ru');
+    assert.equal(presetSess.title, 'Пример: Босс Синдиката');
+
+    // 5. Home button moved from header to bottom nav
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+    const headerBlock = entrySrc.slice(entrySrc.indexOf('<div class="nmf-header-actions">'), entrySrc.indexOf('${renderBackgroundBusyStrip()}'));
+    assert.equal(headerBlock.includes('data-act="open-home-tab"'), false, 'Home button must not be in top header');
+    const bottomNavBlock = entrySrc.slice(entrySrc.indexOf('<div class="nmf-bottom-nav">'), entrySrc.indexOf('${renderIntakeSheetModal(sess)}'));
+    assert.ok(bottomNavBlock.includes('data-act="open-home-tab"'), 'Home button must be in bottom navigation bar');
+});
+
+test('v2.0.0-beta: muted Calm Kit + Gustave Dore palettes, 4-pillar nav, 5 Studio showcases (with Art Studio room), and independent language selectors', async () => {
+    const themesMod = await import('../modules/nmf_themes_and_icons.js');
+    const mod = await import('../modules/nmf_templates_and_prompts.js');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+
+    // 1. Harsh neon accents removed from theme definitions & CSS
+    assert.equal(themesMod.NMF_FULL_CSS.includes('#00f0ff'), false, 'Neon cyan removed');
+    assert.equal(themesMod.NMF_FULL_CSS.includes('#1de9b6'), false, 'Neon mint removed');
+    assert.equal(themesMod.NMF_FULL_CSS.includes('#ff2a6d'), false, 'Neon magenta removed');
+    assert.equal(themesMod.NMF_THEMES.length, 13, 'All 13 themes preserved');
+
+    // 2. 4-pillar bottom navigation + header Sessions button + 5 Studio showcases (including Art Studio)
+    const bottomNavBlock = entrySrc.slice(entrySrc.indexOf('<div class="nmf-bottom-nav">'), entrySrc.indexOf('${renderIntakeSheetModal(sess)}'));
+    const navBtnCount = (bottomNavBlock.match(/class="nmf-nav-item/g) || []).length;
+    assert.equal(navBtnCount, 3, 'Bottom navigation must have 3 airy buttons (Studio, Collection, Editor)');
+    assert.ok(entrySrc.includes('data-act="open-sessions-sheet"'), 'Top header must provide Sessions switcher');
+    for (const modeId of ['swipe', 'gacha', 'blitz', 'create', 'art']) {
+        assert.ok(entrySrc.includes(`data-act="launch-mode-from-home" data-mode="${modeId}"`), `Studio must render showcase for ${modeId}`);
+    }
+
+    // 3. Independent granular language resolution (Questionnaire, Card Description, First Message, Per-Alt)
+    const s = mod.createDefaultSession(1);
+    s.intake.userLanguage = 'Русский';
+    s.intake.cardLanguage = 'same_as_user';
+    assert.equal(mod.resolveCardLanguageSpec(s.intake).shortLabel, 'Русский');
+
+    s.intake.cardLanguage = '__custom__';
+    s.intake.cardLanguageCustom = 'Italiano';
+    s.intake.firstMesLanguage = '__custom__';
+    s.intake.firstMesLanguageCustom = 'Français';
+    s.intake.altGreetingsCount = 2;
+    s.intake.altGreetingLangs = ['target_user_translate', 'Español'];
+    const norm = mod.normalizeSession(s, 1);
+    assert.equal(mod.resolveCardLanguageSpec(norm.intake).shortLabel, 'Italiano');
+    const dir = mod.buildGreetingLanguagesAndCountDirective(norm.intake);
+    assert.ok(dir.includes('Main First Message (first_mes / [[NMF_FIRST_MES]]) MUST be written in: Français.'));
+    assert.ok(dir.includes('FULL TRANSLATION of the Main First Message into Русский'));
+    assert.ok(dir.includes('distinct alternative opening scene hook in Español'));
+});
+
+
 

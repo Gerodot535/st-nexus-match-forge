@@ -1108,7 +1108,13 @@ export async function importCardIntoTavern(card, { avatarDataUrl = '', accentHex
         throw new Error(`Ошибка сохранения новой карточки в Таверну (HTTP ${res.status})`);
     }
     const data = await res.json();
-    if (data?.error) throw new Error(String(data.error));
+    if (data?.error) {
+        throw new Error(
+            data.error === true
+                ? 'SillyTavern не смогла прочитать PNG-файл карточки при импорте.'
+                : String(data.error),
+        );
+    }
 
     if (typeof ctx?.getCharacters === 'function') {
         await ctx.getCharacters();
@@ -2087,8 +2093,80 @@ export async function cropImageDataUrlLossless(sourceDataUrl, cropParams = {}) {
     return canvas.toDataURL('image/png');
 }
 
+export const lastRequestDiagnostics = {
+    art: null,
+    llm: null,
+};
+
+function sanitizeUrlForLog(rawUrl = '') {
+    return String(rawUrl || '').replace(/([?&](?:key|api_key|apikey|token)=)[^&#]+/gi, '$1***[HIDDEN]***');
+}
+
+function sanitizeHeadersForLog(headers = {}) {
+    if (!headers || typeof headers !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(headers)) {
+        if (/authorization|api[-_]?key|token|secret|cookie/i.test(k)) {
+            out[k] = '*** [СКРЫТО ДЛЯ БЕЗОПАСНОСТИ] ***';
+        } else {
+            out[k] = String(v ?? '');
+        }
+    }
+    return out;
+}
+
+function sanitizePayloadStringForLog(rawStr = '', maxLen = 14000) {
+    if (!rawStr) return '';
+    if (typeof FormData !== 'undefined' && rawStr instanceof FormData) {
+        const parts = [];
+        try {
+            for (const [k, v] of rawStr.entries()) {
+                if (typeof v === 'string') {
+                    parts.push(`${k}: ${v.length > 500 ? v.slice(0, 500) + '…' : v}`);
+                } else {
+                    parts.push(`${k}: [File/Blob ${v?.type || ''} · ${Math.round((v?.size || 0) / 1024)} KB]`);
+                }
+            }
+        } catch {}
+        return `[FormData]\n${parts.join('\n')}`;
+    }
+    const str = typeof rawStr === 'string' ? rawStr : JSON.stringify(rawStr, null, 2);
+    const scrubbed = str
+        .replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{120,}/g, (m) => `[DATA_URL_IMAGE · ~${Math.round((m.length * 0.75) / 1024)} KB]`)
+        .replace(/"(b64_json|data|image|bytesBase64Encoded)"\s*:\s*"[A-Za-z0-9+/=\s]{200,}"/g, (_, key) => `"${key}": "[BASE64_IMAGE_PAYLOAD]"`);
+    return scrubbed.length > maxLen ? `${scrubbed.slice(0, maxLen)}\n… [обрезано ${scrubbed.length - maxLen} симв.]` : scrubbed;
+}
+
 export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, externalSignal = null) {
+    const cleanUrl = sanitizeUrlForLog(url);
+    const isLocalAssetFetch = cleanUrl.startsWith('/') || /^blob:|^data:/i.test(cleanUrl);
+    const isInternalCheck = isLocalAssetFetch || /\/user\/subscription$/i.test(cleanUrl);
+    const startedAt = Date.now();
+    const prevArtCtx = lastRequestDiagnostics.art?.artContext || null;
+    const diagEntry = !isInternalCheck ? {
+        kind: 'art',
+        startedAt,
+        finishedAt: 0,
+        status: 'В процессе (ожидание заголовков HTTP)...',
+        ok: null,
+        httpStatus: 0,
+        method: String(init?.method || 'GET').toUpperCase(),
+        url: cleanUrl,
+        headers: sanitizeHeadersForLog(init?.headers || {}),
+        requestBody: sanitizePayloadStringForLog(init?.body || ''),
+        responsePreview: 'Ждём ответ сервера...',
+        artContext: prevArtCtx,
+    } : null;
+    if (diagEntry) {
+        lastRequestDiagnostics.art = diagEntry;
+    }
+
     if (externalSignal?.aborted) {
+        if (diagEntry) {
+            diagEntry.status = 'Отменено пользователем';
+            diagEntry.ok = false;
+            diagEntry.finishedAt = Date.now();
+        }
         const err = new Error('Запрос отменён пользователем.');
         err.code = 'ABORTED';
         throw err;
@@ -2103,30 +2181,169 @@ export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE
     }
 
     const effectiveTimeout = Math.max(250, Number(timeoutMs) || DEFAULT_IMAGE_REQUEST_TIMEOUT_MS);
-    const timer = setTimeout(() => {
+    const deadlineMs = startedAt + effectiveTimeout;
+    const headerTimer = setTimeout(() => {
         timedOut = true;
         ctl.abort();
     }, effectiveTimeout);
 
-    try {
-        // Keep externalSignal -> ctl.abort() active while response body (.json() / .arrayBuffer()) downloads!
-        const resp = await fetch(url, { ...init, signal: ctl.signal });
-        clearTimeout(timer);
-        return resp;
-    } catch (err) {
-        clearTimeout(timer);
+    const cleanupAbortHook = () => {
         if (externalSignal) {
             externalSignal.removeEventListener('abort', onExternalAbort);
         }
+    };
+
+    const wrapBodyPromiseWithRemainingTimeout = (readFn, modeLabel = 'body') => {
+        const remMs = Math.max(250, deadlineMs - Date.now());
+        let bodyTimedOut = false;
+        const bodyTimer = setTimeout(() => {
+            bodyTimedOut = true;
+            timedOut = true;
+            ctl.abort();
+        }, remMs);
+
+        if (diagEntry && diagEntry.ok !== false) {
+            diagEntry.status = `HTTP ${diagEntry.httpStatus} получен · скачивание потока (${modeLabel})...`;
+        }
+
+        return new Promise((resolve, reject) => {
+            const onTimeoutOrAbort = () => {
+                clearTimeout(bodyTimer);
+                cleanupAbortHook();
+                if (bodyTimedOut || timedOut) {
+                    const msg = `Превышено время ожидания потока ответа (${Math.round(effectiveTimeout / 1000)} сек) — прокси прислал HTTP ${diagEntry?.httpStatus || 200}, но завис при передаче тела кадра.`;
+                    if (diagEntry) {
+                        diagEntry.status = `Таймаут потока (${Math.round(effectiveTimeout / 1000)}с)`;
+                        diagEntry.ok = false;
+                        diagEntry.finishedAt = Date.now();
+                        diagEntry.responsePreview = msg;
+                    }
+                    const te = new Error(msg);
+                    te.code = 'TIMEOUT';
+                    reject(te);
+                    return;
+                }
+                if (externalSignal?.aborted) {
+                    if (diagEntry) {
+                        diagEntry.status = 'Остановлено пользователем';
+                        diagEntry.ok = false;
+                        diagEntry.finishedAt = Date.now();
+                    }
+                    const ae = new Error('Генерация остановлена пользователем.');
+                    ae.code = 'ABORTED';
+                    reject(ae);
+                }
+            };
+
+            ctl.signal.addEventListener('abort', onTimeoutOrAbort, { once: true });
+            Promise.resolve().then(readFn).then(
+                (val) => {
+                    clearTimeout(bodyTimer);
+                    ctl.signal.removeEventListener('abort', onTimeoutOrAbort);
+                    cleanupAbortHook();
+                    if (diagEntry) {
+                        diagEntry.finishedAt = Date.now();
+                        diagEntry.status = diagEntry.httpStatus >= 200 && diagEntry.httpStatus < 300
+                            ? `Успешно (HTTP ${diagEntry.httpStatus})`
+                            : `Ошибка HTTP ${diagEntry.httpStatus}`;
+                        if (modeLabel === 'arrayBuffer') {
+                            diagEntry.responsePreview = `[Бинарный файл получен · ${Math.round((val?.byteLength || 0) / 1024)} KB]`;
+                        } else {
+                            diagEntry.responsePreview = sanitizePayloadStringForLog(val, 10000);
+                        }
+                    }
+                    resolve(val);
+                },
+                (err) => {
+                    clearTimeout(bodyTimer);
+                    ctl.signal.removeEventListener('abort', onTimeoutOrAbort);
+                    cleanupAbortHook();
+                    if (bodyTimedOut || timedOut) {
+                        const msg = `Превышено время ожидания потока ответа (${Math.round(effectiveTimeout / 1000)} сек) — прокси прислал HTTP ${diagEntry?.httpStatus || 200}, но завис при передаче тела кадра.`;
+                        if (diagEntry) {
+                            diagEntry.status = `Таймаут потока (${Math.round(effectiveTimeout / 1000)}с)`;
+                            diagEntry.ok = false;
+                            diagEntry.finishedAt = Date.now();
+                            diagEntry.responsePreview = msg;
+                        }
+                        const te = new Error(msg);
+                        te.code = 'TIMEOUT';
+                        reject(te);
+                        return;
+                    }
+                    if (externalSignal?.aborted) {
+                        if (diagEntry) {
+                            diagEntry.status = 'Остановлено пользователем';
+                            diagEntry.ok = false;
+                            diagEntry.finishedAt = Date.now();
+                        }
+                        const ae = new Error('Генерация остановлена пользователем.');
+                        ae.code = 'ABORTED';
+                        reject(ae);
+                        return;
+                    }
+                    if (diagEntry) {
+                        diagEntry.status = 'Ошибка чтения тела ответа';
+                        diagEntry.ok = false;
+                        diagEntry.finishedAt = Date.now();
+                        diagEntry.responsePreview = String(err?.message || err);
+                    }
+                    reject(err);
+                },
+            );
+        });
+    };
+
+    try {
+        const resp = await fetch(url, { ...init, signal: ctl.signal });
+        clearTimeout(headerTimer);
+        if (diagEntry) {
+            diagEntry.httpStatus = resp.status;
+            diagEntry.ok = resp.ok;
+            diagEntry.status = resp.ok
+                ? `HTTP ${resp.status} OK · ждём поток тела...`
+                : `HTTP ${resp.status} (ошибка сервера)`;
+        }
+        return {
+            ok: resp.ok,
+            status: resp.status,
+            statusText: resp.statusText,
+            headers: resp.headers,
+            url: resp.url,
+            json: () => wrapBodyPromiseWithRemainingTimeout(() => resp.json(), 'json'),
+            text: () => wrapBodyPromiseWithRemainingTimeout(() => resp.text(), 'text'),
+            arrayBuffer: () => wrapBodyPromiseWithRemainingTimeout(() => resp.arrayBuffer(), 'arrayBuffer'),
+        };
+    } catch (err) {
+        clearTimeout(headerTimer);
+        cleanupAbortHook();
         if (timedOut) {
-            const te = new Error(`Превышено время ожидания ответа от сервера изображений (${Math.round(effectiveTimeout / 1000)} сек).`);
+            const msg = `Превышено время ожидания ответа от сервера изображений (${Math.round(effectiveTimeout / 1000)} сек).`;
+            if (diagEntry) {
+                diagEntry.status = `Таймаут (${Math.round(effectiveTimeout / 1000)}с)`;
+                diagEntry.ok = false;
+                diagEntry.finishedAt = Date.now();
+                diagEntry.responsePreview = msg;
+            }
+            const te = new Error(msg);
             te.code = 'TIMEOUT';
             throw te;
         }
         if (externalSignal?.aborted) {
+            if (diagEntry) {
+                diagEntry.status = 'Генерация остановлена пользователем';
+                diagEntry.ok = false;
+                diagEntry.finishedAt = Date.now();
+            }
             const ae = new Error('Генерация остановлена пользователем.');
             ae.code = 'ABORTED';
             throw ae;
+        }
+        if (diagEntry) {
+            diagEntry.status = 'Сетевая ошибка';
+            diagEntry.ok = false;
+            diagEntry.finishedAt = Date.now();
+            diagEntry.responsePreview = String(err?.message || err);
         }
         throw err;
     }
@@ -2350,6 +2567,80 @@ function resolveBucketModel(v) {
     return String(v.model ?? '').trim();
 }
 
+export function getModelMaxReferenceImages(imgCfg) {
+    if (!imgCfg || typeof imgCfg !== 'object') return 0;
+    const apiType = String(imgCfg.apiType || '').toLowerCase().trim();
+    const model = resolveBucketModel(imgCfg).toLowerCase();
+    const endpoint = String(imgCfg.endpoint || '').toLowerCase();
+
+    const classifyGem = (m) => {
+        if (m.includes('gemini-3.1-flash-image') || m.includes('nano-banana-2') || m.includes('nano banana 2')) return 14;
+        if (m.includes('gemini-3-pro-image') || m.includes('nano-banana-pro') || m.includes('nano banana pro')) return 11;
+        if (m.includes('gemini-2.5-flash-image') || m.includes('nano-banana')) return 3;
+        return 0;
+    };
+
+    if (apiType === 'gemini' || (apiType === 'openai' && endpoint.includes('google-ai'))) {
+        return classifyGem(model) || 5;
+    }
+    if (apiType === 'openrouter') {
+        return classifyGem(model) || 5;
+    }
+    if (apiType === 'xai') {
+        return 3;
+    }
+    if (apiType === 'openai' || apiType === 'electronhub') {
+        if (model.includes('gpt-image')) return apiType === 'electronhub' ? 1 : 5;
+        if ((model.includes('flux') && model.includes('kontext')) || model.includes('dall-e-2')) return 1;
+        return 0;
+    }
+    if (apiType === 'naistera') {
+        if (/^novelai(?:-|$)/i.test(model)) return 0;
+        return 14;
+    }
+    return 0;
+}
+
+export function getActiveImageModelReferenceInfo(sourcePref = 'auto', requestedProfileId = '') {
+    try {
+        if (sourcePref === 'off' || sourcePref === 'st_sd') {
+            return { maxRefs: 0, supportsImageRefs: false, model: '', apiType: sourcePref, profileName: '', hasUnsavedProfileDiff: false };
+        }
+        const picked = pickEffectiveBucket(sourcePref);
+        if (!picked?.cfg) {
+            return { maxRefs: 0, supportsImageRefs: false, model: '', apiType: '', profileName: '', hasUnsavedProfileDiff: false };
+        }
+        const cfgBase = picked.cfg;
+        const imgCfg = resolveIsolatedImageConfig(cfgBase, requestedProfileId);
+        const maxRefs = getModelMaxReferenceImages(imgCfg);
+        let hasUnsavedProfileDiff = false;
+        if (!requestedProfileId && cfgBase.activeConnectionProfileId && Array.isArray(cfgBase.connectionProfiles)) {
+            const savedActive = cfgBase.connectionProfiles.find((p) => p && p.id === cfgBase.activeConnectionProfileId);
+            if (savedActive) {
+                const liveModel = resolveBucketModel(cfgBase);
+                const savedModel = resolveBucketModel(savedActive);
+                if (
+                    String(cfgBase.apiType || '') !== String(savedActive.apiType || '')
+                    || liveModel !== savedModel
+                    || String(cfgBase.endpoint || '') !== String(savedActive.endpoint || '')
+                ) {
+                    hasUnsavedProfileDiff = true;
+                }
+            }
+        }
+        return {
+            maxRefs,
+            supportsImageRefs: maxRefs > 0,
+            model: resolveBucketModel(imgCfg),
+            apiType: imgCfg.apiType || '',
+            profileName: imgCfg.profileName || 'Активный профиль',
+            hasUnsavedProfileDiff,
+        };
+    } catch {
+        return { maxRefs: 0, supportsImageRefs: false, model: '', apiType: '', profileName: '', hasUnsavedProfileDiff: false };
+    }
+}
+
 // Isolated connection profile resolver: NEVER inherits apiKey, endpoint, or credentials from another profile! (fixes NMF-007)
 export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
     if (!cfgBase || typeof cfgBase !== 'object') {
@@ -2359,8 +2650,11 @@ export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
     const profiles = Array.isArray(cfgBase.connectionProfiles)
         ? cfgBase.connectionProfiles.filter((p) => p && typeof p === 'object' && p.id)
         : [];
-    const targetId = String(requestedProfileId || cfgBase.activeConnectionProfileId || '').trim();
-    const selectedProfile = targetId ? profiles.find((p) => p.id === targetId) : null;
+    const explicitId = String(requestedProfileId || '').trim();
+    const activeNamedProfile = !explicitId && cfgBase.activeConnectionProfileId
+        ? profiles.find((p) => p.id === cfgBase.activeConnectionProfileId)
+        : null;
+    const selectedProfile = explicitId ? profiles.find((p) => p.id === explicitId) : null;
 
     // Only global non-credential fields come from cfgBase (strictly READ-ONLY)
     const globalShared = {
@@ -2375,28 +2669,31 @@ export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
         sendRefDescriptions: cfgBase.sendRefDescriptions !== false,
     };
 
-    const sourceSnapshot = selectedProfile || cfgBase;
+    // When explicitId is empty ("Active Profile"), read live top-level cfgBase if populated so unsaved active edits work too,
+    // falling back to activeNamedProfile snapshot when top-level fields are blank.
+    // When explicitId IS set, strictly isolate to selectedProfile only (zero key leakage across profiles — NMF-007!).
+    const useLiveBase = !explicitId && Boolean(cfgBase.apiKey || cfgBase.endpoint || cfgBase.model || !activeNamedProfile);
+    const sourceSnapshot = explicitId ? (selectedProfile || {}) : (useLiveBase ? cfgBase : activeNamedProfile);
     const isolatedConn = {};
     for (const [key, defVal] of Object.entries(SILLYIMAGES_DEFAULT_CONNECTION_FIELDS)) {
         const val = Object.prototype.hasOwnProperty.call(sourceSnapshot, key) ? sourceSnapshot[key] : undefined;
         isolatedConn[key] = val !== undefined && val !== null ? val : defVal;
     }
 
-    // Strictly enforce string type without inheriting from cfgBase when selectedProfile has empty string ''
-    isolatedConn.apiKey = selectedProfile
-        ? String(selectedProfile.apiKey ?? '')
-        : String(cfgBase.apiKey ?? '');
-    const rawEp = selectedProfile
-        ? String(selectedProfile.endpoint ?? '')
-        : String(cfgBase.endpoint ?? '');
+    isolatedConn.apiKey = explicitId
+        ? String(selectedProfile?.apiKey ?? '')
+        : String(sourceSnapshot?.apiKey ?? '');
+    const rawEp = explicitId
+        ? String(selectedProfile?.endpoint ?? '')
+        : String(sourceSnapshot?.endpoint ?? '');
     isolatedConn.rawConfiguredEndpoint = rawEp;
     isolatedConn.endpoint = normalizeProviderEndpoint(isolatedConn.apiType, rawEp);
 
     return {
         ...globalShared,
         ...isolatedConn,
-        profileId: selectedProfile?.id || '',
-        profileName: selectedProfile?.name || 'Default',
+        profileId: (selectedProfile || activeNamedProfile)?.id || '',
+        profileName: (selectedProfile || activeNamedProfile)?.name || 'Default',
     };
 }
 
@@ -2804,7 +3101,7 @@ function textMatchesTriggerAlias(haystackNorm, aliasRaw) {
  * Read-only catalog of available appearance references from SillyImages v3.0+ (lorebooks & characterReferenceLibrary)
  * and legacy v2 additionalReferences. Never mutates SillyImages settings.
  */
-export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
+export function listSillyImagesReferenceCatalog(sourcePref = 'auto', { includeDisabled = false } = {}) {
     let picked = null;
     try {
         picked = pickEffectiveBucket(sourcePref);
@@ -2825,7 +3122,9 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
             const lbName = String(lb.name || 'Lorebook').trim();
             const refs = Array.isArray(lb.refs) ? lb.refs : [];
             for (const r of refs) {
-                if (!r || typeof r !== 'object' || r.enabled === false) continue;
+                if (!r || typeof r !== 'object') continue;
+                const refEnabled = r.enabled !== false;
+                if (!includeDisabled && !refEnabled) continue;
                 const imagePath = normalizeSillyImagesStoredImagePath(r.imagePath);
                 const description = String(r.description || '').trim();
                 const name = String(r.name || '').trim();
@@ -2833,7 +3132,9 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
                 catalog.push({
                     uid: `lb:${lb.id || lbName}:${r.id || name}`,
                     kind: 'lorebook',
-                    bookEnabled: !powerMode || lbEnabled,
+                    bookEnabled: (!powerMode || lbEnabled) && refEnabled,
+                    refEnabled,
+                    lbEnabled,
                     bookName: lbName,
                     name: name || 'Без имени',
                     label: `[${lbName}] ${name || 'Референс'}`,
@@ -2849,7 +3150,9 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
     } else if (Array.isArray(cfg.additionalReferences)) {
         // Legacy SillyImages v2 fallback
         for (const [idx, r] of cfg.additionalReferences.entries()) {
-            if (!r || typeof r !== 'object' || r.enabled === false) continue;
+            if (!r || typeof r !== 'object') continue;
+            const refEnabled = r.enabled !== false;
+            if (!includeDisabled && !refEnabled) continue;
             const imagePath = normalizeSillyImagesStoredImagePath(r.imagePath || r.url || r.image);
             const description = String(r.description || '').trim();
             const name = String(r.name || '').trim();
@@ -2857,7 +3160,9 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
             catalog.push({
                 uid: `legacy:${r.id || idx}`,
                 kind: 'lorebook',
-                bookEnabled: true,
+                bookEnabled: refEnabled,
+                refEnabled,
+                lbEnabled: true,
                 bookName: 'Refs',
                 name: name || `Ref ${idx + 1}`,
                 label: `[Refs] ${name || `Ref ${idx + 1}`}`,
@@ -2871,22 +3176,33 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
         }
     }
 
-    // 2. SillyImages v3.0+ Character Reference Library
-    const charLib = cfg.characterReferenceLibrary?.characters;
-    if (charLib && typeof charLib === 'object') {
-        for (const [charKey, entry] of Object.entries(charLib)) {
+    // 2. SillyImages v3.0+ Character & User Persona Reference Libraries
+    const libBuckets = [
+        { map: cfg.characterReferenceLibrary?.characters, kind: 'char_lib', bookLabel: 'Персонажи ST', prefix: '[Чар]' },
+        { map: cfg.characterReferenceLibrary?.users, kind: 'user_lib', bookLabel: 'Персоны Юзера', prefix: '[Юзер]' },
+    ];
+    for (const { map, kind, bookLabel, prefix } of libBuckets) {
+        if (!map || typeof map !== 'object') continue;
+        for (const [charKey, entry] of Object.entries(map)) {
             if (!entry || typeof entry !== 'object') continue;
-            const disp = String(entry.displayName || charKey.replace(/^avatar:|^name:/, '')).trim() || charKey;
-            const primImg = normalizeSillyImagesStoredImagePath(entry.primary?.imagePath);
+            const rawFileName = charKey.startsWith('avatar:') ? charKey.slice('avatar:'.length) : '';
+            const fallbackAvatarPath = rawFileName
+                ? (kind === 'user_lib' ? `/User Avatars/${encodeURIComponent(rawFileName)}` : `/characters/${encodeURIComponent(rawFileName)}`)
+                : '';
+            const disp = String(entry.displayName || charKey.replace(/^avatar:|^name:/, '').replace(/\.png$/i, '')).trim() || charKey;
+            const primImg = normalizeSillyImagesStoredImagePath(entry.primary?.imagePath) || fallbackAvatarPath;
             const primDesc = String(entry.primary?.description || '').trim();
-            if (entry.primary?.enabled !== false && (primImg || primDesc)) {
+            const primEnabled = entry.primary?.enabled !== false;
+            if ((includeDisabled || primEnabled) && (primImg || primDesc)) {
                 catalog.push({
-                    uid: `charlib:${charKey}:primary`,
-                    kind: 'char_lib',
-                    bookEnabled: true,
-                    bookName: 'Персонажи ST',
+                    uid: `${kind}:${charKey}:primary`,
+                    kind,
+                    bookEnabled: primEnabled,
+                    refEnabled: primEnabled,
+                    lbEnabled: true,
+                    bookName: bookLabel,
                     name: disp,
-                    label: `[Чар] ${disp}`,
+                    label: `${prefix} ${disp}`,
                     description: primDesc,
                     imagePath: primImg,
                     matchMode: 'match',
@@ -2897,17 +3213,21 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
             }
             const items = Array.isArray(entry.appearanceItems) ? entry.appearanceItems : [];
             items.forEach((it, idx) => {
-                if (!it || it.enabled === false) return;
+                if (!it) return;
+                const itEnabled = it.enabled !== false;
+                if (!includeDisabled && !itEnabled) return;
                 const itImg = it.type === 'image' ? normalizeSillyImagesStoredImagePath(it.imagePath) : '';
                 const itDesc = String(it.description || '').trim();
                 if (!itImg && !itDesc) return;
                 catalog.push({
-                    uid: `charlib:${charKey}:item:${it.id || idx}`,
-                    kind: 'char_lib',
-                    bookEnabled: true,
-                    bookName: 'Персонажи ST',
+                    uid: `${kind}:${charKey}:item:${it.id || idx}`,
+                    kind,
+                    bookEnabled: itEnabled,
+                    refEnabled: itEnabled,
+                    lbEnabled: true,
+                    bookName: bookLabel,
                     name: `${disp} #${idx + 1}`,
-                    label: `[Чар] ${disp} — облик #${idx + 1}`,
+                    label: `${prefix} ${disp} — облик #${idx + 1}`,
                     description: itDesc,
                     imagePath: itImg,
                     matchMode: 'match',
@@ -2922,40 +3242,51 @@ export function listSillyImagesReferenceCatalog(sourcePref = 'auto') {
     return catalog;
 }
 
-export function matchSillyImagesReferencesByText(sourcePref = 'auto', searchText = '', maxRefs = 3) {
-    const catalog = listSillyImagesReferenceCatalog(sourcePref).filter((x) => x.kind === 'lorebook' && x.bookEnabled);
+export function matchSillyImagesReferencesByText(sourcePref = 'auto', searchText = '', maxRefs = 5) {
+    const catalog = listSillyImagesReferenceCatalog(sourcePref).filter((x) => x.bookEnabled);
     if (!catalog.length) return [];
     const normHaystack = String(searchText || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
     const matched = [];
+    const seenKeys = new Set();
 
     for (const item of catalog) {
+        let matchReasonLabel = '';
         if (item.matchMode === 'always') {
-            matched.push(item);
-            continue;
-        }
-        if (!normHaystack) continue;
-        let primaryHit = false;
-        if (item.useRegex && item.name) {
-            try {
-                const m = item.name.match(/^\/(.+)\/([a-z]*)$/i);
-                const re = m ? new RegExp(m[1], m[2] || 'iu') : new RegExp(item.name, 'iu');
-                primaryHit = re.test(searchText);
-            } catch {
-                primaryHit = textMatchesTriggerAlias(normHaystack, item.name);
-            }
+            matchReasonLabel = `Библиотека «${item.bookName}» · Всегда активен`;
         } else {
-            const aliases = String(item.name || '').split(',').map((s) => s.trim()).filter(Boolean);
-            primaryHit = aliases.some((a) => textMatchesTriggerAlias(normHaystack, a));
+            if (!normHaystack) continue;
+            let primaryHit = false;
+            let hitKey = '';
+            if (item.useRegex && item.name) {
+                try {
+                    const m = item.name.match(/^\/(.+)\/([a-z]*)$/i);
+                    const re = m ? new RegExp(m[1], m[2] || 'iu') : new RegExp(item.name, 'iu');
+                    primaryHit = re.test(searchText);
+                    if (primaryHit) hitKey = item.name;
+                } catch {
+                    primaryHit = textMatchesTriggerAlias(normHaystack, item.name);
+                    if (primaryHit) hitKey = item.name;
+                }
+            } else {
+                const aliases = String(item.name || '').split(',').map((s) => s.trim()).filter(Boolean);
+                const foundAlias = aliases.find((a) => textMatchesTriggerAlias(normHaystack, a));
+                primaryHit = Boolean(foundAlias);
+                hitKey = foundAlias || '';
+            }
+            if (!primaryHit) continue;
+            matchReasonLabel = `Библиотека «${item.bookName}» · Ключ «${hitKey || item.name}»`;
         }
-        if (!primaryHit) continue;
 
         if (item.secondaryKeys) {
             const sec = item.secondaryKeys.split(',').map((s) => s.trim()).filter(Boolean);
-            if (sec.length > 0 && !sec.some((s) => textMatchesTriggerAlias(normHaystack, s))) {
+            if (sec.length > 0 && !sec.every((s) => textMatchesTriggerAlias(normHaystack, s))) {
                 continue;
             }
         }
-        matched.push(item);
+        const dedupeSig = `${item.name}|${item.imagePath}|${item.description}`;
+        if (seenKeys.has(dedupeSig)) continue;
+        seenKeys.add(dedupeSig);
+        matched.push({ ...item, _matchSource: matchReasonLabel });
     }
 
     matched.sort((a, b) => (b.priority || 0) - (a.priority || 0));
@@ -2966,9 +3297,12 @@ async function resolveActiveReferencePayloadList({
     sourcePref = 'auto',
     refMode = 'off',
     pickedRefUid = '',
+    pickedRefUids = [],
     customRefDataUrls = [],
     customRefDesc = '',
     matchText = '',
+    maxRefs = 5,
+    fusionBlendRefs = false,
     signal = null,
     timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS,
 } = {}) {
@@ -2977,8 +3311,9 @@ async function resolveActiveReferencePayloadList({
         return [];
     }
 
+    const cap = Math.max(1, Number(maxRefs) || 5);
     const out = [];
-    const pushResolved = (rawDataUrl, desc, label) => {
+    const pushResolved = (rawDataUrl, desc, label, sourceTag = '', previewUrl = '') => {
         const parts = splitDataUrlComponents(rawDataUrl);
         if (parts) {
             out.push({
@@ -2987,6 +3322,8 @@ async function resolveActiveReferencePayloadList({
                 mimeType: parts.mimeType,
                 description: String(desc || '').trim(),
                 label: String(label || '').trim(),
+                sourceTag: String(sourceTag || '').trim(),
+                previewUrl: previewUrl || parts.dataUrl,
             });
         } else if (String(desc || '').trim()) {
             out.push({
@@ -2995,44 +3332,55 @@ async function resolveActiveReferencePayloadList({
                 mimeType: '',
                 description: String(desc || '').trim(),
                 label: String(label || '').trim(),
+                sourceTag: String(sourceTag || '').trim(),
+                previewUrl: previewUrl || '',
             });
         }
     };
 
     if (Array.isArray(customRefDataUrls) && customRefDataUrls.length > 0 && (normalizedMode === 'custom_photo' || normalizedMode === 'explicit')) {
-        for (const item of customRefDataUrls.slice(0, 4)) {
+        const tag = fusionBlendRefs ? 'Синтез Алтаря (донор)' : 'Своё реф-фото сессии';
+        for (const item of customRefDataUrls.slice(0, cap)) {
             if (typeof item === 'string') {
-                pushResolved(item, customRefDesc, 'Custom Reference');
+                pushResolved(item, customRefDesc, 'Custom Reference', tag, item);
             } else if (item && typeof item === 'object') {
-                pushResolved(item.dataUrl || item.image || '', item.description ?? customRefDesc, item.label || 'Reference');
+                const u = item.dataUrl || item.image || '';
+                pushResolved(u, item.description ?? customRefDesc, item.label || 'Reference', tag, u);
             }
         }
         return out;
     }
 
     let rawItems = [];
-    if (normalizedMode === 'pick_sillyimages' && pickedRefUid) {
-        const all = listSillyImagesReferenceCatalog(sourcePref);
-        const found = all.find((x) => x.uid === pickedRefUid);
-        if (found) rawItems = [found];
+    const normalizedUids = Array.isArray(pickedRefUids) && pickedRefUids.length > 0
+        ? pickedRefUids.map((u) => String(u || '').trim()).filter(Boolean)
+        : (pickedRefUid ? [String(pickedRefUid).trim()] : []);
+
+    if (normalizedMode === 'pick_sillyimages' && normalizedUids.length > 0) {
+        const uniqueUids = [...new Set(normalizedUids)];
+        const all = listSillyImagesReferenceCatalog(sourcePref, { includeDisabled: true });
+        rawItems = uniqueUids
+            .map((uid) => all.find((x) => x.uid === uid))
+            .filter(Boolean)
+            .map((it) => ({ ...it, _matchSource: `Выбрано вручную · ${it.bookName || 'SillyImages'}` }));
     } else if (normalizedMode === 'auto_lorebook') {
-        rawItems = matchSillyImagesReferencesByText(sourcePref, matchText, 3);
+        rawItems = matchSillyImagesReferencesByText(sourcePref, matchText, cap);
     }
 
-    for (const item of rawItems.slice(0, 4)) {
+    for (const item of rawItems.slice(0, cap)) {
         if (item.imagePath) {
             try {
                 const dUrl = item.imagePath.startsWith('data:')
                     ? item.imagePath
                     : await urlToDataUrl(item.imagePath, signal, timeoutMs);
-                pushResolved(dUrl, item.description, item.name);
+                pushResolved(dUrl, item.description, item.name, item._matchSource || item.bookName, item.imagePath);
             } catch {
                 if (item.description) {
-                    pushResolved('', item.description, item.name);
+                    pushResolved('', item.description, item.name, item._matchSource || item.bookName, item.imagePath);
                 }
             }
         } else if (item.description) {
-            pushResolved('', item.description, item.name);
+            pushResolved('', item.description, item.name, item._matchSource || item.bookName, '');
         }
     }
     return out;
@@ -3050,7 +3398,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const customNegativePrompt = typeof options === 'object' ? (options.imageCustomNegative || '') : '';
     const rawAspect = typeof options === 'object' && options.aspectRatio ? options.aspectRatio : '1:1';
     const signal = typeof options === 'object' ? (options.signal || null) : null;
-    const maxAttempts = typeof options === 'object' && Number(options.maxAttempts) > 0 ? Number(options.maxAttempts) : 3;
+    let maxAttempts = typeof options === 'object' && Number.isFinite(Number(options.maxAttempts)) && Number(options.maxAttempts) > 0 ? Number(options.maxAttempts) : 0;
     const timeoutMs = typeof options === 'object' && Number(options.timeoutMs) > 0
         ? Number(options.timeoutMs)
         : DEFAULT_IMAGE_REQUEST_TIMEOUT_MS;
@@ -3058,6 +3406,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
 
     const refMode = typeof options === 'object' ? (options.refMode || 'off') : 'off';
     const pickedRefUid = typeof options === 'object' ? (options.pickedRefUid || '') : '';
+    const pickedRefUids = typeof options === 'object' && Array.isArray(options.pickedRefUids) ? options.pickedRefUids : [];
     const customRefDataUrls = typeof options === 'object' && Array.isArray(options.customRefDataUrls) ? options.customRefDataUrls : [];
     const customRefDesc = typeof options === 'object' ? (options.customRefDesc || '') : '';
     const refMatchContext = typeof options === 'object' ? (options.refMatchContext || '') : '';
@@ -3098,22 +3447,33 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     }
 
     const imgCfg = resolveIsolatedImageConfig(picked.cfg, profileId);
+    const siMaxRetries = Number.isFinite(Number(picked.cfg.maxRetries)) && Number(picked.cfg.maxRetries) >= 0 ? Math.min(5, Math.round(Number(picked.cfg.maxRetries))) : 0;
+    const siBaseDelayMs = Number.isFinite(Number(picked.cfg.retryDelay)) && Number(picked.cfg.retryDelay) >= 500 ? Number(picked.cfg.retryDelay) : 1000;
+    if (!maxAttempts) maxAttempts = 1 + siMaxRetries;
     const validation = validateResolvedImageConfig(imgCfg);
     if (!validation.ready) {
         throw new Error(`${picked.key} (${imgCfg.profileName}): ${validation.reason}`);
     }
 
+    const maxModelRefs = getModelMaxReferenceImages(imgCfg);
+    const effectiveMaxRefs = maxModelRefs > 0 ? maxModelRefs : 5;
+
     const resolvedRefs = await resolveActiveReferencePayloadList({
         sourcePref,
         refMode,
         pickedRefUid,
+        pickedRefUids,
         customRefDataUrls,
         customRefDesc,
         matchText: `${refMatchContext}\n${cleanPrompt}`,
+        maxRefs: effectiveMaxRefs,
+        fusionBlendRefs,
         signal,
         timeoutMs,
     });
-    const imageRefs = resolvedRefs.filter((r) => Boolean(r.base64 && r.dataUrl));
+    const imageRefs = maxModelRefs > 0
+        ? resolvedRefs.filter((r) => Boolean(r.base64 && r.dataUrl)).slice(0, maxModelRefs)
+        : [];
     const refDescriptionsBlock = imgCfg.sendRefDescriptions !== false
         ? resolvedRefs
             .filter((r) => Boolean(r.description))
@@ -3174,6 +3534,63 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             return `${effectiveRefInstruction}\n\n${promptWithRefText}`;
         }
         return promptWithRefText;
+    };
+
+    const refModeHumanMap = {
+        off: 'Выключены (без референсов)',
+        auto_lorebook: 'Авто-подбор по имени/триггерам из лорбука SillyImages',
+        pick_sillyimages: 'Ручной выбор записи из каталога SillyImages',
+        custom_photo: 'Своё референс-фото текущей сессии',
+        explicit: fusionBlendRefs ? 'Синтез Алтаря (портреты карт-доноров)' : 'Явно переданный референс',
+    };
+    const artContextSnapshot = {
+        sourceExtension: picked.key,
+        profileName: imgCfg.profileName || 'Активный профиль',
+        apiType: apiType || 'unknown',
+        model: model || '(по умолчанию)',
+        aspectRatio: aspect,
+        styleName: styleId === '__none__'
+            ? 'Без стиля (отключено)'
+            : (styleText ? `Применён (${styleWrapMode})` : 'Пустой / не задан в профиле'),
+        styleText: styleText || '',
+        rawScenePrompt: cleanPrompt,
+        negativePrompt: negativePrompt || '',
+        refInstruction: (imageRefs.length > 0 && effectiveRefInstruction) ? effectiveRefInstruction : '',
+        finalCombinedPrompt: buildConditionedPrompt(imageRefs.length > 0),
+        refDetector: {
+            modeId: fusionBlendRefs ? 'explicit' : (refMode || 'off'),
+            modeLabel: fusionBlendRefs
+                ? 'Синтез Алтаря (портреты карт-доноров)'
+                : (refModeHumanMap[refMode] || String(refMode || 'off')),
+            matchQuery: refMode === 'auto_lorebook' ? String(refMatchContext || '').trim().slice(0, 180) : '',
+            maxModelRefs,
+            totalMatched: resolvedRefs.length,
+            imagesAttached: imageRefs.length,
+            items: resolvedRefs.map((r, i) => ({
+                index: i + 1,
+                label: r.label || `Референс #${i + 1}`,
+                sourceTag: r.sourceTag || '',
+                previewUrl: r.previewUrl && !r.previewUrl.startsWith('data:') ? r.previewUrl : (r.dataUrl || ''),
+                hasImage: Boolean(r.base64 && r.dataUrl) && maxModelRefs > 0,
+                mimeType: r.mimeType || '',
+                approxKb: r.base64 ? Math.round((r.base64.length * 0.75) / 1024) : 0,
+                description: r.description || '',
+            })),
+        },
+    };
+    lastRequestDiagnostics.art = {
+        kind: 'art',
+        startedAt: Date.now(),
+        finishedAt: 0,
+        status: 'Подготовка запроса Арта...',
+        ok: null,
+        httpStatus: 0,
+        method: isPollinations ? 'GET' : 'POST',
+        url: sanitizeUrlForLog(endpoint || apiType || ''),
+        headers: {},
+        requestBody: '',
+        responsePreview: 'Подготовка к отправке...',
+        artContext: artContextSnapshot,
     };
 
     const executeSingleAttempt = async (attemptNum) => {
@@ -3260,7 +3677,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             }
             const j = await resp.json();
             if (j?.data_url) {
-                emit('Декодирование арта', 'Получен готовый кадр от Naistera...', attemptNum, providerLabel);
+                emit('Чтение потока арта', 'Получен готовый кадр от Naistera...', attemptNum, providerLabel);
                 return String(j.data_url);
             }
             if (j?.job_id) {
@@ -3321,7 +3738,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             if (!resp.ok) {
                 throw new Error(formatHttpProviderError('A1111', resp.status, await resp.text().catch(() => '')));
             }
-            emit('Декодирование арта', 'Чтение ответа локального SD / Forge...', attemptNum, providerLabel);
+            emit('Чтение потока арта', 'Чтение ответа локального SD / Forge...', attemptNum, providerLabel);
             const j = await resp.json();
             if (!j?.images?.[0]) throw new Error('A1111 не вернул изображение.');
             return `data:image/png;base64,${j.images[0]}`;
@@ -3349,7 +3766,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             let messageContent = buildConditionedPrompt(imageRefs.length > 0);
             if (imageRefs.length > 0) {
                 const contentParts = [];
-                imageRefs.slice(0, 5).forEach((ref, idx) => {
+                imageRefs.slice(0, Math.max(1, maxModelRefs)).forEach((ref, idx) => {
                     if (ref.description) {
                         contentParts.push({ type: 'text', text: `Reference ${idx + 1}: ${ref.description}` });
                     }
@@ -3391,7 +3808,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             if (!resp.ok) {
                 throw new Error(formatHttpProviderError('OpenRouter', resp.status, await resp.text().catch(() => '')));
             }
-            emit('Декодирование арта', 'Извлечение изображения из ответа OpenRouter...', attemptNum, providerLabel);
+            emit('Чтение потока арта', 'Извлечение изображения из ответа OpenRouter...', attemptNum, providerLabel);
             const j = await resp.json();
             const msg = j?.choices?.[0]?.message;
             const imgObj = msg?.images?.[0];
@@ -3485,7 +3902,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 throw new Error(formatHttpProviderError('Gemini', resp.status, await resp.text().catch(() => '')));
             }
 
-            emit('Декодирование арта', 'Извлечение кадра из ответа Gemini...', attemptNum, providerLabel);
+            emit('Чтение потока арта', 'Извлечение кадра из ответа Gemini...', attemptNum, providerLabel);
             const j = await resp.json();
             const parts = j?.candidates?.[0]?.content?.parts || [];
             const imgPart = parts.find((p) => p.inlineData?.data || p.inline_data?.data);
@@ -3659,7 +4076,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             throw new Error(formatHttpProviderError(apiType === 'electronhub' ? 'Electron Hub' : 'Image API', resp.status, await resp.text().catch(() => '')));
         }
 
-        emit('Декодирование арта', 'Распаковка сгенерированного кадра...', attemptNum, providerLabel);
+        emit('Чтение потока арта', 'Распаковка сгенерированного кадра...', attemptNum, providerLabel);
         const j = await resp.json();
         const d = j?.data?.[0];
         if (d?.b64_json) {
@@ -3697,8 +4114,16 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 if (attempt >= maxAttempts || isNonRetryableArtError(err)) {
                     throw err;
                 }
-                const shortErr = String(err?.message || err).slice(0, 80);
-                const waitSec = attempt === 1 ? 2 : 3;
+                const fullErrMsg = String(err?.message || err || '');
+                const shortErr = fullErrMsg.slice(0, 80);
+                const retryMatch = fullErrMsg.match(/try again in\s+(\d+(?:\.\d+)?)\s*s/i)
+                    || fullErrMsg.match(/"retry_after"\s*:\s*(\d+(?:\.\d+)?)/i);
+                const is429 = /HTTP 429|rate.?limit|too many requests/i.test(fullErrMsg);
+                const parsedWait = retryMatch ? Math.ceil(Number(retryMatch[1])) + 2 : 0;
+                const siStepSec = Math.max(1, Math.ceil((siBaseDelayMs * Math.pow(2, attempt - 1)) / 1000));
+                const waitSec = parsedWait > 0
+                    ? Math.min(25, Math.max(siStepSec, parsedWait))
+                    : (is429 ? Math.max(5, siStepSec) : siStepSec);
                 for (let left = waitSec; left > 0; left--) {
                     emit(
                         `Ожидание повтора [${attempt + 1}/${maxAttempts}]`,
@@ -3739,53 +4164,106 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     });
 }
 
+const CHAT_LEAK_MACRO_RE = /\{\{\s*(?:description|charPrompt|char_prompt|personality|scenario|mesExamples|mesExamplesRaw|worldInfoBefore|worldInfoAfter|wiBefore|wiAfter|charDepthPrompt|depth_prompt|charJailbreak|char_version|persona|personaDescription|summary|authorsNote|char_GlobalNote|iig-book|iig_book|char_appearance|user_appearance)\s*\}\}/gi;
+
 /**
  * Strips all SillyTavern active character, persona, world-info/lorebook, example-dialogue, and chat-summary macros
  * from custom preset prompt blocks BEFORE SillyTavern runs substituteParams(), preventing active chat cards/worlds
  * from leaking into NexusMatch Forge generations across any user preset.
+ * IMPORTANT: Blocks that do NOT contain active-chat leak macros are returned 100% verbatim (preserving '\n' empty toggles & assistant prefills!).
  */
 export function stripActiveChatMacrosFromPresetBlock(rawBlockText) {
     const src = String(rawBlockText ?? '');
     if (!src) return '';
 
-    const CHAT_LEAK_MACRO_RE = /\{\{\s*(?:description|charPrompt|char_prompt|personality|scenario|mesExamples|mesExamplesRaw|worldInfoBefore|worldInfoAfter|wiBefore|wiAfter|charDepthPrompt|depth_prompt|charJailbreak|char_version|persona|personaDescription|summary|authorsNote|char_GlobalNote|iig-book|iig_book|char_appearance|user_appearance)\s*\}\}/gi;
+    CHAT_LEAK_MACRO_RE.lastIndex = 0;
+    if (!CHAT_LEAK_MACRO_RE.test(src)) {
+        // Zero active-chat macros inside this block — return 100% untouched (never trim '\n' or assistant prefills!)
+        return src;
+    }
 
+    CHAT_LEAK_MACRO_RE.lastIndex = 0;
     let cleaned = src.replace(CHAT_LEAK_MACRO_RE, '');
 
     // Collapse XML/tag wrappers that became empty after removing the macro (e.g. <description>\n</description>)
     cleaned = cleaned.replace(/<([a-zA-Z0-9_:-]+)>\s*<\/\1>/g, '');
-    cleaned = cleaned.replace(/\[(?:Character|Scenario|World\s*Info|Lorebook|Persona|Examples)[^\]]*:\s*\]/gi, '');
+    cleaned = cleaned.replace(/\[(?:Character|Scenario|World\s*Info|Lorebook|Persona|Examples|SCENARIO)[^\]]*:\s*\]/gi, '');
+    cleaned = cleaned.replace(/^(?:SCENARIO|DESCRIPTION|PERSONALITY|PERSONA|CHARACTER)\s*:\s*$/gim, '');
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
     return cleaned;
 }
 
-// Chat Completion preset message builder — fixes assistant_prefill preservation & strips active char/lorebook macro leaks!
+// Chat Completion preset message builder — 1:1 faithful to SillyTavern PromptManager:
+// Preserves ALL assistant blocks, Sugar Rush / enhanceDefinitions prefills, @ Depth injections, and '\n' empty toggles!
 export function buildPresetAlignedMessages(
     ctx,
     userTaskContent,
     systemPrompt = '',
     presetCorrectionPrompt = '',
-    { stripActiveCharFromPreset = true } = {},
+    { stripActiveCharFromPreset = true, outTrace = null } = {},
 ) {
     const oai = ctx?.chatCompletionSettings || {};
     const prompts = Array.isArray(oai.prompts) ? oai.prompts : [];
     const byId = new Map(prompts.map((p) => [p?.identifier, p]));
     const orderEntry = Array.isArray(oai.prompt_order)
-        ? (oai.prompt_order.find((o) => o?.character_id === 100001) || oai.prompt_order[0])
+        ? (oai.prompt_order.find((o) => o?.character_id === 100001)
+            || oai.prompt_order.find((o) => o?.character_id === 100000)
+            || oai.prompt_order[0])
         : null;
     const orderList = Array.isArray(orderEntry?.order) ? orderEntry.order.filter((x) => x?.enabled) : [];
 
     const chatIdx = orderList.findIndex((x) => x.identifier === 'chatHistory');
     const messages = [];
 
-    const DYNAMIC_SLOTS = new Set([
+    // ONLY true character/world/chat markers — NEVER include 'enhanceDefinitions', 'nsfw', 'jailbreak', or 'main'!
+    const TRUE_MARKER_SLOTS = new Set([
         'worldInfoBefore', 'worldInfoAfter', 'charDescription', 'charPersonality',
-        'scenario', 'personaDescription', 'dialogueExamples', 'chatHistory', 'enhanceDefinitions',
+        'scenario', 'personaDescription', 'dialogueExamples', 'chatHistory',
     ]);
 
-    const sanitizePresetPromptContent = (rawContent) => {
-        if (!stripActiveCharFromPreset) return String(rawContent || '');
-        return stripActiveChatMacrosFromPresetBlock(rawContent);
+    const pushTrace = (zone, role, label, contentStr) => {
+        if (!Array.isArray(outTrace)) return;
+        const isWhitespaceToggle = contentStr.length > 0 && contentStr.trim().length === 0;
+        outTrace.push({
+            zone,
+            role,
+            label,
+            chars: contentStr.length,
+            isWhitespaceToggle,
+            preview: isWhitespaceToggle
+                ? `[Пустой/пробельный тогл: ${JSON.stringify(contentStr)}]`
+                : contentStr.replace(/\s+/g, ' ').trim().slice(0, 90),
+        });
+    };
+
+    const resolveBlockMessage = (id, defaultRole = 'system') => {
+        if (id === 'chatHistory') return null;
+        if (stripActiveCharFromPreset && TRUE_MARKER_SLOTS.has(id)) return null;
+        const p = byId.get(id);
+        if (!p || p.marker === true) return null;
+        if (typeof p.content !== 'string' || p.content.length === 0) return null;
+
+        CHAT_LEAK_MACRO_RE.lastIndex = 0;
+        const hadLeakMacro = stripActiveCharFromPreset && CHAT_LEAK_MACRO_RE.test(p.content);
+        const finalContent = stripActiveCharFromPreset
+            ? stripActiveChatMacrosFromPresetBlock(p.content)
+            : p.content;
+
+        // Only skip if the block originally held an active-chat macro ({{description}}, {{persona}}, etc.) and became empty after stripping it!
+        // Intentional '\n' / ' ' empty toggles and ALL assistant/user/system blocks without chat-leak macros are preserved 100% verbatim!
+        if (hadLeakMacro && finalContent.trim().length === 0) {
+            return null;
+        }
+        if (finalContent.length === 0) return null;
+
+        return {
+            role: p.role || defaultRole,
+            content: finalContent,
+            _label: p.name || id,
+            _injPos: Number(p.injection_position) === 1 ? 1 : 0,
+            _injDepth: Number.isFinite(Number(p.injection_depth)) ? Number(p.injection_depth) : 4,
+            _injOrder: Number.isFinite(Number(p.injection_order)) ? Number(p.injection_order) : 100,
+        };
     };
 
     const correctionClean = String(presetCorrectionPrompt || '').trim();
@@ -3795,47 +4273,76 @@ export function buildPresetAlignedMessages(
 
     if (systemPrompt) {
         messages.push({ role: 'system', content: systemPrompt });
+        pushTrace('NMF_SYS', 'system', 'NexusMatch System Prompt', systemPrompt);
     }
+
+    // Separate absolute In-Chat (@ Depth) injections so Depth 0 lands AFTER chatHistory and Depth >= 1 lands BEFORE chatHistory
+    const depthBeforeTask = [];
+    const depthZeroAfterTask = [];
+    for (const item of orderList) {
+        const p = byId.get(item.identifier);
+        if (p && Number(p.injection_position) === 1) {
+            const built = resolveBlockMessage(item.identifier, p.role || 'system');
+            if (!built) continue;
+            if (built._injDepth <= 0) depthZeroAfterTask.push(built);
+            else depthBeforeTask.push(built);
+        }
+    }
+    depthBeforeTask.sort((a, b) => (b._injDepth - a._injDepth) || (a._injOrder - b._injOrder));
+    depthZeroAfterTask.sort((a, b) => a._injOrder - b._injOrder);
+
+    const pushResolved = (zone, built) => {
+        messages.push({ role: built.role, content: built.content });
+        pushTrace(zone, built.role, built._label, built.content);
+    };
 
     if (chatIdx === -1) {
         for (const item of orderList) {
-            if (stripActiveCharFromPreset && DYNAMIC_SLOTS.has(item.identifier)) continue;
             if (item.identifier === 'chatHistory') continue;
             const p = byId.get(item.identifier);
-            if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-            const cleanBlock = sanitizePresetPromptContent(p.content);
-            if (!cleanBlock) continue;
-            messages.push({ role: p.role || 'system', content: cleanBlock });
+            if (p && Number(p.injection_position) === 1) continue;
+            const built = resolveBlockMessage(item.identifier, 'system');
+            if (built) pushResolved('BEFORE_CHAT', built);
         }
+        for (const b of depthBeforeTask) pushResolved('DEPTH_BEFORE', b);
         messages.push({ role: 'user', content: finalUserTask });
+        pushTrace('CHAT_TASK', 'user', 'Задание NexusMatch Forge (вместо Chat History)', finalUserTask);
+        for (const b of depthZeroAfterTask) pushResolved('DEPTH_0_AFTER', b);
     } else {
         for (let i = 0; i < chatIdx; i++) {
             const id = orderList[i].identifier;
-            if (stripActiveCharFromPreset && DYNAMIC_SLOTS.has(id)) continue;
             const p = byId.get(id);
-            if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-            const cleanBlock = sanitizePresetPromptContent(p.content);
-            if (!cleanBlock) continue;
-            messages.push({ role: p.role || 'system', content: cleanBlock });
+            if (p && Number(p.injection_position) === 1) continue;
+            const built = resolveBlockMessage(id, 'system');
+            if (built) pushResolved('BEFORE_CHAT', built);
         }
+        for (const b of depthBeforeTask) pushResolved('DEPTH_BEFORE', b);
+
         messages.push({ role: 'user', content: finalUserTask });
+        pushTrace('CHAT_TASK', 'user', 'Задание NexusMatch Forge (на месте Chat History)', finalUserTask);
+
+        for (const b of depthZeroAfterTask) pushResolved('DEPTH_0_AFTER', b);
+
         for (let i = chatIdx + 1; i < orderList.length; i++) {
             const id = orderList[i].identifier;
-            if (stripActiveCharFromPreset && DYNAMIC_SLOTS.has(id)) continue;
             const p = byId.get(id);
-            if (!p || typeof p.content !== 'string' || p.content.length === 0) continue;
-            const cleanBlock = sanitizePresetPromptContent(p.content);
-            if (!cleanBlock) continue;
-            messages.push({ role: p.role || 'user', content: cleanBlock });
+            if (p && Number(p.injection_position) === 1) continue;
+            const built = resolveBlockMessage(id, 'user');
+            if (built) pushResolved('AFTER_CHAT', built);
         }
     }
 
-    // Always append assistant_prefill if configured and not already identical to the tail message
+    // Append explicit oai.assistant_prefill if set in settings and not already covered by a post-chat assistant block
     if (oai.assistant_prefill && String(oai.assistant_prefill).length > 0) {
-        const prefillStr = sanitizePresetPromptContent(oai.assistant_prefill) || String(oai.assistant_prefill);
-        const lastMsg = messages[messages.length - 1];
-        if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.content !== prefillStr) {
-            messages.push({ role: 'assistant', content: prefillStr });
+        const prefillStr = stripActiveCharFromPreset
+            ? stripActiveChatMacrosFromPresetBlock(oai.assistant_prefill)
+            : String(oai.assistant_prefill);
+        if (prefillStr.length > 0) {
+            const alreadyHasSameAssistant = messages.some((m) => m.role === 'assistant' && m.content === prefillStr);
+            if (!alreadyHasSameAssistant) {
+                messages.push({ role: 'assistant', content: prefillStr });
+                pushTrace('PREFILL_SETTING', 'assistant', 'oai_settings.assistant_prefill', prefillStr);
+            }
         }
     }
 
@@ -3935,11 +4442,13 @@ export async function runLlmGeneration({
     let sysPayload = '';
     let prefillPayload = '';
     let schemaPayload = null;
+    const presetTrace = [];
 
     if (transportMode === 'prefill_user_msg') {
         if (isChatCompletion) {
             promptPayload = buildPresetAlignedMessages(ctx, user, system, presetCorrectionPrompt, {
                 stripActiveCharFromPreset: stripActiveCharFromPreset !== false,
+                outTrace: presetTrace,
             });
             sysPayload = '';
         } else {
@@ -3955,10 +4464,61 @@ export async function runLlmGeneration({
         schemaPayload = isChatCompletion && jsonSchema ? jsonSchema : null;
     }
 
+    const llmDiag = {
+        kind: 'llm',
+        startedAt: Date.now(),
+        finishedAt: 0,
+        status: 'В процессе (генерация текста ИИ)...',
+        ok: null,
+        api: activeApi,
+        transportMode,
+        presetTrace,
+        extensionPrompts: {
+            modeLabel: transportMode === 'json_schema'
+                ? 'Строгая JSON-схема (прямой системный запрос)'
+                : 'Через активный пресет SillyTavern',
+            systemFromExtension: String(system || '').trim(),
+            userFromExtension: String(user || '').trim(),
+            presetCorrection: transportMode === 'prefill_user_msg' ? correctionClean : '',
+            hasJsonSchema: Boolean(schemaPayload),
+        },
+        requestBody: sanitizePayloadStringForLog({
+            transportMode,
+            api: activeApi,
+            systemPrompt: sysPayload || undefined,
+            prefill: prefillPayload || undefined,
+            hasJsonSchema: Boolean(schemaPayload),
+            prompt: promptPayload,
+        }, 400000),
+        responsePreview: 'Ожидание ответа модели...',
+    };
+    lastRequestDiagnostics.llm = llmDiag;
+
     let cancelledLocally = false;
     const runPromise = (async () => {
-        if (typeof rawDataFn === 'function') {
-            const data = await rawDataFn({
+        try {
+            if (typeof rawDataFn === 'function') {
+                const data = await rawDataFn({
+                    prompt: promptPayload,
+                    api: activeApi,
+                    systemPrompt: sysPayload,
+                    prefill: prefillPayload,
+                    instructOverride: false,
+                    quietToLoud: false,
+                    jsonSchema: schemaPayload,
+                    signal, // Forwarded harmlessly now; automatically picked up if Core adds request-scoped signal support
+                });
+                if (cancelledLocally || signal?.aborted) return '';
+                const { text, reasoning } = extractUniversalReasoningAndText(ctx, data);
+                lastGenerationReasoning = reasoning;
+                llmDiag.finishedAt = Date.now();
+                llmDiag.ok = true;
+                llmDiag.status = `Успешно (${text.length} симв.)`;
+                llmDiag.responsePreview = sanitizePayloadStringForLog(text || '[Пустой ответ]', 250000);
+                return text;
+            }
+
+            const fallbackTxt = await rawFn({
                 prompt: promptPayload,
                 api: activeApi,
                 systemPrompt: sysPayload,
@@ -3966,27 +4526,22 @@ export async function runLlmGeneration({
                 instructOverride: false,
                 quietToLoud: false,
                 jsonSchema: schemaPayload,
-                signal, // Forwarded harmlessly now; automatically picked up if Core adds request-scoped signal support
             });
             if (cancelledLocally || signal?.aborted) return '';
-            const { text, reasoning } = extractUniversalReasoningAndText(ctx, data);
+            const { text, reasoning } = extractUniversalReasoningAndText(ctx, null, String(fallbackTxt || ''));
             lastGenerationReasoning = reasoning;
+            llmDiag.finishedAt = Date.now();
+            llmDiag.ok = true;
+            llmDiag.status = `Успешно (${text.length} симв.)`;
+            llmDiag.responsePreview = sanitizePayloadStringForLog(text || '[Пустой ответ]', 250000);
             return text;
+        } catch (err) {
+            llmDiag.finishedAt = Date.now();
+            llmDiag.ok = false;
+            llmDiag.status = 'Ошибка генерации ИИ';
+            llmDiag.responsePreview = String(err?.message || err);
+            throw err;
         }
-
-        const fallbackTxt = await rawFn({
-            prompt: promptPayload,
-            api: activeApi,
-            systemPrompt: sysPayload,
-            prefill: prefillPayload,
-            instructOverride: false,
-            quietToLoud: false,
-            jsonSchema: schemaPayload,
-        });
-        if (cancelledLocally || signal?.aborted) return '';
-        const { text, reasoning } = extractUniversalReasoningAndText(ctx, null, String(fallbackTxt || ''));
-        lastGenerationReasoning = reasoning;
-        return text;
     })();
 
     if (!signal) return await runPromise;
@@ -3994,6 +4549,9 @@ export async function runLlmGeneration({
     return await new Promise((resolve, reject) => {
         const onAbort = () => {
             cancelledLocally = true;
+            llmDiag.finishedAt = Date.now();
+            llmDiag.ok = false;
+            llmDiag.status = 'Отменено пользователем';
             reject(new Error('Генерация в NexusMatch Forge отменена пользователем.'));
         };
         if (signal.aborted) {

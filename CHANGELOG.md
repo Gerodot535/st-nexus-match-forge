@@ -2,6 +2,39 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [2.0.1-beta] - 2026-11-23
+
+### Guided Mockup-True Studio Layout, Top Story Questionnaire & Unified Format/AI/Languages Drawers, Attached Gacha Drawer Above Summons, Step-by-Step Art Studio & 3-Tab Navigation
+- **Guided Studio Top Drawers (`renderHomeTab`)**: Placed the **Main Story Questionnaire** drawer first on the Studio screen (with clear guidance explaining that optional/blank fields increase AI creative randomness and never mix with Gacha), paired with a single unified **Format, AI & Languages** drawer combining AI request delivery, card templates & word counts, language presets + per-field language selectors, and greetings/POV/style.
+- **Clean Mockup Mode List & Step-by-Step Art Studio (`renderArtStudioTab`)**: Restored the calm editorial serif header, recent draft card, and uncluttered `.nmf-mode-list` rows without badge clutter; redesigned **Art Studio** into a clear 3-step single-column guide so mobile dropdowns never truncate.
+- **Attached Gacha Drawer Above Summons (`renderGachaSummonSubScreen`)**: Moved isolated Gacha Wishes and Gacha/Altar Rules directly inside **Gacha Summon** as a unified drawer pinned right above the tag formula and pull buttons.
+- **3-Button Airy Bottom Bar & Vault Inside Collection (`renderMatchesTab`)**: Matched the reference mockup navigation (`Studio · Collection · Editor`) with `Vault` integrated as the 4th underline tab inside `Collection` (`Matches · Gacha · Passed · Vault`).
+
+## [2.0.0-beta] - 2026-11-22
+
+### Editorial "Atelier & Card Studio" UI Overhaul, Muted Calm Kit + Gustave Doré Palettes, 4-Pillar Navigation, 5 Studio Showcases (Dedicated Art Studio Room) & Full Granular Language Selectors
+- **Muted Editorial Palettes Across All 13 Themes + Tavern Sync (`modules/nmf_themes_and_icons.js`)**: Re-calibrated all 13 visual themes and the default SillyTavern sync palette around a calm editorial aesthetic (*Calm / Kit* warm ivory & sage for light themes; *Gustave Doré* velvet charcoal, antique gold, muted eucalyptus, burgundy, and slate for dark themes) with `1px` hairline borders, `7px–10px` radii, zero neon frames, and zero `999px` pills.
+- **4-Pillar Navigation & Responsive Desktop Rail (`.nmf-bottom-nav` & `.nmf-header-sess-btn`)**: Replaced the cramped 7-tab bottom strip with 4 stable, unchanging navigation pillars (`Studio`, `Collection`, `Profile`, `Vault`) — rendered as a comfortable thumb bar on mobile and a clean left rail on wide screens — plus a dedicated 1-tap `Sessions` switcher sheet right in the top header.
+- **5 Studio Showcases Including Dedicated Art Studio Room (`renderHomeTab` & `renderArtStudioTab`)**: Added an active session draft resume banner and 5 equal studio showcases (`Swipes`, `Gacha Summon`, `Blitz Quiz`, `Idea & AU Shift`, and `Art Studio & Covers` with live generator/aspect badges and inline reference miniature strip) opening clean dedicated rooms with `<- Studio` navigation.
+- **Full Granular Language Selectors (`CARD_DESCRIPTION_LANGUAGE_OPTIONS`, `FIRST_MES_LANGUAGE_OPTIONS`, `ALT_GREETING_LANG_OPTIONS`)**: Restored explicit, independent language dropdowns (including custom language input) for **App UI (`RU / EN`)**, **Questionnaires & Previews**, **Card Description & Lore**, **First Message**, and **each Alternate Greeting (`0..4`)**, alongside optional 1-click layout shortcuts.
+
+## [1.9.8-beta] - 2026-11-22
+
+### Simplified 3-Preset Language & Scene Setup in Point 1, Bottom-Nav Home Button, Personal Tag Library + Live Similar-Tag Autocomplete & Bilingual Preset Example Sessions
+- **Point 1 Dual Mandatory Cards & Simplified Language Setup (`SIMPLE_LANGUAGE_SCENARIOS`)**: Moved the entire Language, Alt-Greetings & Writing Style setup out of the Story Questionnaire into **Point 1** on the Start Screen alongside `*Template & AI Mode` as two matching `.nmf-home-mode-btn` cards (`*Шаблон и Режим ИИ` | `*Язык и Слог сцены`). Replaced confusing multi-dropdown matrices with **3 human-friendly presets**: 1) *All in My Language*, 2) *Hybrid (English Base + My Scene)*, and 3) *English + Translated Alt #1* (with optional per-alt fine-tuning tucked under a spoiler).
+- **Home Button Moved to Bottom Navigation Bar (`.nmf-bottom-nav`)**: Relocated the Home (`Старт`) button from the top header down to the bottom navigation bar for comfortable 1-thumb mobile reach.
+- **Personal Tag Library, Session-Randomized Ideas & Live Similar-Tag Autocomplete (`modules/nmf_tags_and_presets.js`)**: Manually typed tags across Swipes, Gacha, and Questionnaires are automatically saved into your persistent `userTagLibrary`, rotated randomly across different sessions, and matched in real time as you type (surfacing both direct matches and semantically similar tags from the same cluster).
+- **Ready-Made Bilingual Preset Example Sessions (`PRESET_SESSION_TEMPLATES` & `syncPresetSessionsToUiLanguage`)**: Initial launch always starts on a clean blank session, while the `Sessions` panel offers 4 pre-configured example sessions tuned to `{{language}}` that automatically translate all titles, tropes, hints, and tags between `RU` and `EN` when switching app language.
+
+## [1.9.7-beta] - 2026-11-22
+
+### Cube-Card Mobile Profile UI, Fullscreen Field Expander `[ ]`, Per-Greeting Languages & Count (`0..4`), Clean Post-Save Cycle & Enhanced Vault
+- **Redesigned Cube-Card Profile UI (`renderEditorTab`)**: Rebuilt the entire **Profile** tab from the ground up using clean collapsible `.nmf-hcard` cube-cards matching the Start Screen aesthetic, making every V2 card section explicitly visible at a glance (`Description`, `First Message`, `Alternate Greetings`, `Personality`, `Scenario`, `Example Dialogue`, `Creator Notes / Tags / Creator`, `Lorebook & System/Post-History`) with live word counts and one-line previews.
+- **Fullscreen Mobile Field Editor `[ ]` (`renderFullscreenFieldEditorModal`)**: Added `[ ]` fullscreen expand buttons on every text cube header and inside every `<textarea>` (including each Alternate Greeting and Artwork Prompt) for effortless mobile editing at `94dvh`.
+- **Profile-Only AI Regeneration Cube**: Moved the dual-mode **Regenerate / AI Fix** panel out of `Create` and placed it cleanly under the finished card inside `Profile`.
+- **First Message & Per-Alt Greeting Languages + Count (`0..4`)**: Added Questionnaire controls (with 1-tap shortcut from Profile) for First Message language, Alternate Greetings count (`0 — No Alts` up to `4`), and individual language/mode per alt greeting (new alt scene vs full translation of First Message).
+- **Post-Save Sheet Reset & Vault -> Tavern Flow (`clearActiveProfileSlotAfterCompletion`, `renderPostCardSavedModal` & `save-vault-to-tavern`)**: Saving a new card to SillyTavern, updating an existing card, or storing a card inside the internal Extension Vault now clears the active Profile sheet and offers a 1-tap button to clear the Story Questionnaire; Vault tiles now support both direct **To Tavern** import and **Unpack** back into Profile with full natural-ratio Mosaic packing.
+
 ## [1.9.6-beta] - 2026-11-22
 
 ### Dual-Mode Card V2 Regeneration & Surgical Anti-Slop Editor, Donor Lorebook Toggle & Always-On Sacrifice Confirmation

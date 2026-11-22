@@ -1,6 +1,7 @@
 // 8 Character, World & RPG Card Formats synthesized from ST / Chub / JanitorAI / GM-Authoring guides
 // Note (NMF-017): World Sandbox and RPG GM Engine are structured content templates packaged inside standard Character Card V2 (chara_card_v2).
 import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js';
+import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js';
 
 export const SETTINGS_SCHEMA_VERSION = 7;
 export const MAX_LIKED_CANDIDATES = 100;
@@ -171,19 +172,132 @@ export const CARD_SLOT_DEFS = Object.freeze([
 ]);
 
 export const LANGUAGE_PRESET_OPTIONS = Object.freeze([
-    { id: '{{language}}', label: 'Авто по системе ({{language}})' },
-    { id: 'Русский', label: 'Русский' },
-    { id: 'English', label: 'English (экономия токенов)' },
-    { id: 'Описание EN + Сцена {{language}}', label: 'Гибрид: База EN + Сцена на моём языке' },
-    { id: 'Українська', label: 'Українська' },
-    { id: '简体中文', label: '简体中文 (Китайский упр.)' },
-    { id: '繁體中文', label: '繁體中文 (Китайский трад.)' },
-    { id: '日本語', label: '日本語 (Японский)' },
-    { id: '한국어', label: '한국어 (Корейский)' },
-    { id: 'Español', label: 'Español' },
-    { id: 'Deutsch', label: 'Deutsch' },
-    { id: 'Français', label: 'Français' },
-    { id: '__custom__', label: 'Свой язык вручную...' },
+    { id: '{{language}}', label: 'Авто по системе Таверны ({{language}})', labelEn: 'Auto from Tavern ({{language}})' },
+    { id: 'Русский', label: 'Русский', labelEn: 'Russian (Русский)' },
+    { id: 'English', label: 'English', labelEn: 'English' },
+    { id: 'Описание EN + Сцена {{language}}', label: 'Гибрид: База EN + Сцена на моём языке', labelEn: 'Hybrid: EN Base + Scene in My Language' },
+    { id: 'Українська', label: 'Українська', labelEn: 'Ukrainian (Українська)' },
+    { id: '简体中文', label: '简体中文 (Китайский упр.)', labelEn: 'Chinese Simplified (简体中文)' },
+    { id: '繁體中文', label: '繁體中文 (Китайский трад.)', labelEn: 'Chinese Traditional (繁體中文)' },
+    { id: '日本語', label: '日本語 (Японский)', labelEn: 'Japanese (日本語)' },
+    { id: '한국어', label: '한국어 (Корейский)', labelEn: 'Korean (한국어)' },
+    { id: 'Español', label: 'Español', labelEn: 'Spanish (Español)' },
+    { id: 'Deutsch', label: 'Deutsch', labelEn: 'German (Deutsch)' },
+    { id: 'Français', label: 'Français', labelEn: 'French (Français)' },
+    { id: '__custom__', label: 'Свой язык вручную...', labelEn: 'Custom language...' },
+]);
+
+export const CARD_DESCRIPTION_LANGUAGE_OPTIONS = Object.freeze([
+    { id: 'same_as_user', label: 'Как язык анкет и чтения', labelEn: 'Same as Questionnaire & Reading Language' },
+    { id: '{{language}}', label: 'Авто по системе Таверны ({{language}})', labelEn: 'Auto from Tavern ({{language}})' },
+    { id: 'Русский', label: 'Русский', labelEn: 'Russian (Русский)' },
+    { id: 'English', label: 'English (экономия ~35% токенов)', labelEn: 'English (saves ~35% tokens)' },
+    { id: 'Українська', label: 'Українська', labelEn: 'Ukrainian (Українська)' },
+    { id: '简体中文', label: '简体中文 (Китайский упр.)', labelEn: 'Chinese Simplified (简体中文)' },
+    { id: '繁體中文', label: '繁體中文 (Китайский трад.)', labelEn: 'Chinese Traditional (繁體中文)' },
+    { id: '日本語', label: '日本語 (Японский)', labelEn: 'Japanese (日本語)' },
+    { id: '한국어', label: '한국어 (Корейский)', labelEn: 'Korean (한국어)' },
+    { id: 'Español', label: 'Español', labelEn: 'Spanish (Español)' },
+    { id: 'Deutsch', label: 'Deutsch', labelEn: 'German (Deutsch)' },
+    { id: 'Français', label: 'Français', labelEn: 'French (Français)' },
+    { id: '__custom__', label: 'Свой язык вручную...', labelEn: 'Custom language...' },
+]);
+
+export const FIRST_MES_LANGUAGE_OPTIONS = Object.freeze([
+    { id: 'same_as_card', label: 'Как язык описания карточки', labelEn: 'Same as Card Description Language' },
+    { id: 'target_user_lang', label: 'Как язык анкет и чтения', labelEn: 'Same as Questionnaire & Reading Language' },
+    { id: '{{language}}', label: 'Авто по системе Таверны ({{language}})', labelEn: 'Auto from Tavern ({{language}})' },
+    { id: 'Русский', label: 'Русский', labelEn: 'Russian (Русский)' },
+    { id: 'English', label: 'English', labelEn: 'English' },
+    { id: 'Українська', label: 'Українська', labelEn: 'Ukrainian (Українська)' },
+    { id: '简体中文', label: '简体中文 (Китайский упр.)', labelEn: 'Chinese Simplified (简体中文)' },
+    { id: '繁體中文', label: '繁體中文 (Китайский трад.)', labelEn: 'Chinese Traditional (繁體中文)' },
+    { id: '日本語', label: '日本語 (Японский)', labelEn: 'Japanese (日本語)' },
+    { id: '한국어', label: '한국어 (Корейский)', labelEn: 'Korean (한국어)' },
+    { id: 'Español', label: 'Español', labelEn: 'Spanish (Español)' },
+    { id: 'Deutsch', label: 'Deutsch', labelEn: 'German (Deutsch)' },
+    { id: 'Français', label: 'Français', labelEn: 'French (Français)' },
+    { id: '__custom__', label: 'Свой язык вручную...', labelEn: 'Custom language...' },
+]);
+
+export const ALT_GREETING_COUNT_OPTIONS = Object.freeze([0, 1, 2, 3, 4]);
+
+export const ALT_GREETING_LANG_OPTIONS = Object.freeze([
+    {
+        id: 'target_user_scene',
+        label: 'Как язык анкет и чтения — новая альт-сцена',
+        labelEn: 'Questionnaire Language — New Alt Scene',
+    },
+    {
+        id: 'same_as_card',
+        label: 'Как язык описания карточки — новая альт-сцена',
+        labelEn: 'Card Description Language — New Alt Scene',
+    },
+    {
+        id: 'target_user_translate',
+        label: 'На язык анкет и чтения — перевод 1-го сообщения',
+        labelEn: 'Questionnaire Language — Translate 1st Message',
+    },
+    {
+        id: 'Русский',
+        label: 'Русский — новая альт-сцена',
+        labelEn: 'Russian — New Alt Scene',
+    },
+    {
+        id: 'Русский_translate',
+        label: 'Русский — перевод 1-го сообщения',
+        labelEn: 'Russian — Translate 1st Message',
+    },
+    {
+        id: 'English',
+        label: 'English — новая альт-сцена',
+        labelEn: 'English — New Alt Scene',
+    },
+    {
+        id: 'English_translate',
+        label: 'English — перевод 1-го сообщения',
+        labelEn: 'English — Translate 1st Message',
+    },
+    {
+        id: 'Українська',
+        label: 'Українська — новая альт-сцена',
+        labelEn: 'Ukrainian — New Alt Scene',
+    },
+    {
+        id: '简体中文',
+        label: '简体中文 — новая альт-сцена',
+        labelEn: 'Chinese Simplified — New Alt Scene',
+    },
+    {
+        id: '繁體中文',
+        label: '繁體中文 — новая альт-сцена',
+        labelEn: 'Chinese Traditional — New Alt Scene',
+    },
+    {
+        id: '日本語',
+        label: '日本語 — новая альт-сцена',
+        labelEn: 'Japanese — New Alt Scene',
+    },
+    {
+        id: '한국어',
+        label: '한국어 — новая альт-сцена',
+        labelEn: 'Korean — New Alt Scene',
+    },
+    {
+        id: 'Español',
+        label: 'Español — новая альт-сцена',
+        labelEn: 'Spanish — New Alt Scene',
+    },
+    {
+        id: 'Deutsch',
+        label: 'Deutsch — новая альт-сцена',
+        labelEn: 'German — New Alt Scene',
+    },
+    {
+        id: 'Français',
+        label: 'Français — новая альт-сцена',
+        labelEn: 'French — New Alt Scene',
+    },
 ]);
 
 export const STYLE_WRAP_OPTIONS = Object.freeze([
@@ -194,8 +308,8 @@ export const STYLE_WRAP_OPTIONS = Object.freeze([
 
 export const IMAGE_REF_MODE_OPTIONS = Object.freeze([
     { id: 'off', label: 'Без референсов (с нуля по промпту)' },
-    { id: 'auto_lorebook', label: 'Авто-подбор по имени из SillyImages' },
-    { id: 'pick_sillyimages', label: 'Выбрать референс из SillyImages' },
+    { id: 'auto_lorebook', label: 'Библиотеки SillyImages (авто: все «Всегда» + по ключам)' },
+    { id: 'pick_sillyimages', label: 'Выбрать референсы из SillyImages (несколько с превью)' },
     { id: 'custom_photo', label: 'Своё реф-фото внешности' },
 ]);
 
@@ -810,7 +924,14 @@ export function resolveUserLanguageSpec(intake = {}) {
 
 export function resolveCardLanguageSpec(intake = {}) {
     const safe = intake && typeof intake === 'object' ? intake : {};
-    return resolveRawLanguageField(safe.cardLanguage, safe.language, safe.customLanguage);
+    const rawCard = String(safe.cardLanguage || '').trim();
+    if (rawCard === 'same_as_user') {
+        return resolveUserLanguageSpec(safe);
+    }
+    if (rawCard === '__custom__' || rawCard === 'custom') {
+        return resolveRawLanguageField('__custom__', '', safe.cardLanguageCustom || safe.customLanguage || '{{language}}');
+    }
+    return resolveRawLanguageField(safe.cardLanguage, safe.language, safe.cardLanguageCustom || safe.customLanguage);
 }
 
 export function resolveOutputLanguageSpec(intake = {}) {
@@ -897,6 +1018,59 @@ export function buildGreetingStyleDirective(intake = {}) {
     ].filter(Boolean).join('\n');
 }
 
+export function buildGreetingLanguagesAndCountDirective(intake = {}) {
+    const safe = intake && typeof intake === 'object' ? intake : {};
+    const detected = detectUserLocaleLanguage();
+    const userLang = resolveUserLanguageSpec(safe).shortLabel;
+    const cardLang = resolveCardLanguageSpec(safe).shortLabel;
+
+    const fmMode = String(safe.firstMesLanguage || 'same_as_card').trim();
+    let fmLangLabel = cardLang;
+    if (fmMode === 'target_user_lang') {
+        fmLangLabel = userLang;
+    } else if (fmMode === '{{language}}') {
+        fmLangLabel = detected;
+    } else if (fmMode === '__custom__' || fmMode === 'custom') {
+        const custFm = stripAccidentalLanguageBraces(safe.firstMesLanguageCustom) || userLang;
+        fmLangLabel = custFm.replace(/\{\{\s*(?:language|lang|card_lang|user_lang)\s*\}\}/gi, detected);
+    } else if (fmMode && fmMode !== 'same_as_card') {
+        fmLangLabel = fmMode.replace(/\{\{\s*(?:language|lang|card_lang|user_lang)\s*\}\}/gi, detected);
+    }
+
+    const rawAltCnt = safe.altGreetingsCount !== undefined ? Number(safe.altGreetingsCount) : 1;
+    const altCount = Number.isFinite(rawAltCnt) ? Math.max(0, Math.min(4, Math.round(rawAltCnt))) : 1;
+    const rawAltLangs = Array.isArray(safe.altGreetingLangs) ? safe.altGreetingLangs : [];
+
+    const lines = [
+        `[BOT MESSAGES COUNT & PER-MESSAGE LANGUAGE DIRECTIVE — STRICTLY MANDATORY]`,
+        `- Main First Message (first_mes / [[NMF_FIRST_MES]]) MUST be written in: ${fmLangLabel}.`,
+    ];
+
+    if (altCount === 0) {
+        lines.push(`- Alternate Greetings Count: 0 (ZERO). The user explicitly requested ONLY ONE (1) opening message without any alternate greetings — leave alternate_greetings strictly empty [] (and leave [[NMF_ALT_GREETING]] empty)!`);
+        return lines.join('\n');
+    }
+
+    lines.push(`- Alternate Greetings Count: Generate EXACTLY ${altCount} alternate greeting(s):`);
+    for (let i = 0; i < altCount; i++) {
+        const spec = String(rawAltLangs[i] || 'same_as_card').trim();
+        if (spec === 'target_user_translate') {
+            lines.push(`  * Alternate Greeting #${i + 1}: Write a faithful, literary FULL TRANSLATION of the Main First Message into ${userLang} (the user's chosen target / Tavern language).`);
+        } else if (spec === 'target_user_scene') {
+            lines.push(`  * Alternate Greeting #${i + 1}: Write a brand-new, distinct alternative opening scene in ${userLang} (the user's chosen target / Tavern language).`);
+        } else if (spec === 'Русский_translate') {
+            lines.push(`  * Alternate Greeting #${i + 1}: Write a faithful, literary FULL TRANSLATION of the Main First Message into Russian (Русский).`);
+        } else if (spec === 'English_translate') {
+            lines.push(`  * Alternate Greeting #${i + 1}: Write a faithful, literary FULL TRANSLATION of the Main First Message into English.`);
+        } else if (spec === 'same_as_card' || !spec) {
+            lines.push(`  * Alternate Greeting #${i + 1}: Write a brand-new, distinct alternative opening scene hook in ${cardLang}.`);
+        } else {
+            lines.push(`  * Alternate Greeting #${i + 1}: Write a brand-new, distinct alternative opening scene hook in ${spec}.`);
+        }
+    }
+    return lines.join('\n');
+}
+
 export function normalizeCardMacros(str, charName = '', playerNameMode = 'macro') {
     let out = String(str || '')
         .replace(/\{\s*\{\s*(?:char|чар)\s*\}\s*\}/gi, '{{char}}');
@@ -963,6 +1137,9 @@ export function createDefaultSession(index = 1) {
     return {
         id: 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
         title: `Сессия ${index}`,
+        presetTemplateId: '',
+        presetLangApplied: '',
+        tagSeed: Math.floor(Math.random() * 100000) + 1,
         homeCompleted: false,
         frozen: false,
         createdAt: Date.now(),
@@ -986,8 +1163,13 @@ export function createDefaultSession(index = 1) {
             greetingStyle: 'fanfic',
             greetingPov: 'third',
             greetingCustomRules: '',
+            firstMesLanguage: 'same_as_card',
+            firstMesLanguageCustom: '',
+            altGreetingsCount: 1,
+            altGreetingLangs: ['same_as_card'],
             userLanguage: '{{language}}',
             cardLanguage: '{{language}}',
+            cardLanguageCustom: '',
             language: '{{language}}',
             customLanguage: '',
             userGender: 'any',
@@ -1420,6 +1602,23 @@ export function normalizeSession(rawSession, index = 1) {
     if (!intake.rating) intake.rating = 'sfw';
     if (!intake.originType) intake.originType = 'oc';
     if (!intake.cardFormat) intake.cardFormat = 'dossier_19';
+    intake.cardLanguageCustom = stripAccidentalLanguageBraces(rawIntake.cardLanguageCustom || '');
+    intake.firstMesLanguageCustom = stripAccidentalLanguageBraces(rawIntake.firstMesLanguageCustom || '');
+    const rawFmLang = stripAccidentalLanguageBraces(rawIntake.firstMesLanguage || '');
+    const validFmLangs = new Set(FIRST_MES_LANGUAGE_OPTIONS.map((o) => o.id));
+    intake.firstMesLanguage = validFmLangs.has(rawFmLang)
+        ? rawFmLang
+        : (rawFmLang ? rawFmLang : 'same_as_card');
+    const parsedAltCnt = rawIntake.altGreetingsCount !== undefined ? Number(rawIntake.altGreetingsCount) : 1;
+    intake.altGreetingsCount = Number.isFinite(parsedAltCnt) ? Math.max(0, Math.min(4, Math.round(parsedAltCnt))) : 1;
+    const rawAltArr = Array.isArray(rawIntake.altGreetingLangs) ? rawIntake.altGreetingLangs : [];
+    intake.altGreetingLangs = Array.from(
+        { length: Math.max(1, intake.altGreetingsCount) },
+        (_, i) => {
+            const cleanedAlt = stripAccidentalLanguageBraces(rawAltArr[i] || '');
+            return cleanedAlt || 'same_as_card';
+        },
+    );
 
     const rawArtRef = rawSession.artRefCustom && typeof rawSession.artRefCustom === 'object' && !Array.isArray(rawSession.artRefCustom)
         ? rawSession.artRefCustom
@@ -1477,7 +1676,7 @@ export function normalizeSession(rawSession, index = 1) {
         ? rawSession.architect
         : {};
     const architect = {
-        subMode: rawArch.subMode === 'rework' ? 'rework' : 'idea',
+        subMode: ['rework', 'idea', 'manual_new', 'manual_edit'].includes(rawArch.subMode) ? rawArch.subMode : 'idea',
         useIntake: rawArch.useIntake !== undefined ? Boolean(rawArch.useIntake) : true,
         freeConcept: String(rawArch.freeConcept ?? ''),
     };
@@ -1567,6 +1766,11 @@ export function normalizeSession(rawSession, index = 1) {
     return {
         id: String(rawSession.id || '').trim() || base.id,
         title: String(rawSession.title || '').trim() || base.title,
+        presetTemplateId: String(rawSession.presetTemplateId || '').trim(),
+        presetLangApplied: String(rawSession.presetLangApplied || '').trim(),
+        tagSeed: Number.isFinite(Number(rawSession.tagSeed)) && Number(rawSession.tagSeed) > 0
+            ? Math.round(Number(rawSession.tagSeed))
+            : base.tagSeed,
         homeCompleted: rawSession.homeCompleted !== undefined ? Boolean(rawSession.homeCompleted) : hasExistingWork,
         frozen: Boolean(rawSession.frozen),
         createdAt: Number.isFinite(Number(rawSession.createdAt)) ? Number(rawSession.createdAt) : base.createdAt,
@@ -1626,6 +1830,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             imageCropFocus: 'top',
             imageRefMode: 'off',
             imagePickedRefUid: '',
+            imagePickedRefUids: [],
             gachaTimerEnabled: true,
             gachaCooldownMinutes: DEFAULT_GACHA_COOLDOWN_MINUTES,
             gachaMaxPullsPerCycle: GACHA_CYCLE_LIMIT,
@@ -1633,6 +1838,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             gachaSacrificeFailEnabled: true,
             gachaSacrificeFailChance: 25,
             gachaWallet: createDefaultGachaWallet(),
+            userTagLibrary: [],
             savedVault: [],
             activeSessionId: '',
             sessions: [createDefaultSession(1)],
@@ -1726,6 +1932,14 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             ? rawCfg.imageRefMode
             : 'off',
         imagePickedRefUid: typeof rawCfg.imagePickedRefUid === 'string' ? rawCfg.imagePickedRefUid : '',
+        imagePickedRefUids: (() => {
+            const arr = Array.isArray(rawCfg.imagePickedRefUids)
+                ? rawCfg.imagePickedRefUids.map((u) => String(u || '').trim()).filter(Boolean)
+                : [];
+            const legacySingle = typeof rawCfg.imagePickedRefUid === 'string' ? rawCfg.imagePickedRefUid.trim() : '';
+            if (arr.length === 0 && legacySingle) return [legacySingle];
+            return [...new Set(arr)];
+        })(),
         gachaTimerEnabled: rawCfg.gachaTimerEnabled !== false,
         gachaCooldownMinutes: Number.isFinite(parsedCooldownMin) && parsedCooldownMin >= 5 && parsedCooldownMin <= 1440
             ? Math.round(parsedCooldownMin)
@@ -1741,6 +1955,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             ? Math.round(parsedFailChance)
             : 25,
         gachaWallet,
+        userTagLibrary: normalizeUserTagLibrary(rawCfg.userTagLibrary),
         savedVault,
         activeSessionId,
         sessions,
@@ -2067,6 +2282,10 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
     const pMode = effectiveIntake.playerNameMode || 'macro';
     const safeBrief = pMode === 'macro' ? shieldMacrosForPrompt(extraBrief) : String(extraBrief || '');
     const greetStyleBlock = buildGreetingStyleDirective(effectiveIntake);
+    const greetLangCountBlock = buildGreetingLanguagesAndCountDirective(effectiveIntake);
+    const altCnt = effectiveIntake.altGreetingsCount !== undefined
+        ? Math.max(0, Math.min(4, Math.round(Number(effectiveIntake.altGreetingsCount))))
+        : 1;
     const artMechRule = buildFlexibleAvatarArtMechanismRule(effectiveIntake);
 
     const gmExtraRule = worldMode
@@ -2078,6 +2297,7 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
         `Do NOT roleplay with the user. Construct a complete, vivid, ready-to-import SillyTavern V2 card.`,
         buildUniversalMacroRule(pMode),
         greetStyleBlock,
+        greetLangCountBlock,
         `Never write actions, thoughts, or dialogue for the player inside the opening scene.`,
         `Target length for Description: approximately ${descWords} words.`,
         `Target length for First Message (Opening Scene): approximately ${greetWords} words.`,
@@ -2089,12 +2309,19 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
     ].filter(Boolean).join('\n');
 
     if (mode === 'json_schema') {
+        const jsonAltSample = altCnt === 0 ? '[]' : JSON.stringify(Array.from({ length: altCnt }, (_, i) => `alt_greeting_${i + 1}`));
         return {
-            system: shieldMacrosForPrompt(coreRules) + `\nOutput ONLY valid JSON matching this exact object structure:\n{"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1","tag2"],"image_prompt":""}`,
+            system: shieldMacrosForPrompt(coreRules) + `\nOutput ONLY valid JSON matching this exact object structure:\n{"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1","tag2"],"image_prompt":""}`,
             user: `${intakeSummary}\n\n[USER CONCEPT / EXTRA DATA]\n${safeBrief || 'Create an unforgettable card matching all intake parameters above.'}`,
             jsonSchema: FULL_CARD_JSON_SCHEMA,
         };
     }
+
+    const altIndexedTagLine = altCnt === 0
+        ? `[[NMF_ALT_GREETING]][[/NMF_ALT_GREETING]]`
+        : (altCnt === 1
+            ? `[[NMF_ALT_GREETING]]Alternate greeting #1 (in its specified language)[[/NMF_ALT_GREETING]]`
+            : `[[NMF_ALT_GREETING]]${Array.from({ length: altCnt }, (_, i) => `Alt greeting #${i + 1}`).join(' ===NMF_ALT_SEP=== ')}[[/NMF_ALT_GREETING]]`);
 
     return {
         system: '',
@@ -2114,7 +2341,7 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
             `[[NMF_PERSONALITY]]${worldMode ? 'GM / Narrator behavioral principles' : 'Concise personality summary'}[[/NMF_PERSONALITY]]`,
             `[[NMF_SCENARIO]]Starting scenario & premise[[/NMF_SCENARIO]]`,
             `[[NMF_FIRST_MES]]Opening scene[[/NMF_FIRST_MES]]`,
-            `[[NMF_ALT_GREETING]]One alternative opening scene hook[[/NMF_ALT_GREETING]]`,
+            altIndexedTagLine,
             `[[NMF_MES_EXAMPLE]]<START>\n{ {user} }: ...\n{ {char} }: ...[[/NMF_MES_EXAMPLE]]`,
             `[[NMF_SYS_PROMPT]]${worldMode ? 'System prompt for GM/Narrator role' : ''}[[/NMF_SYS_PROMPT]]`,
             `[[NMF_POST_HISTORY]]${worldMode ? 'Post-history anti-drift / HUD reminder' : ''}[[/NMF_POST_HISTORY]]`,
@@ -2126,19 +2353,25 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
     };
 }
 
-export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerNameMode = 'macro', { fallbackName = '' } = {}) {
+export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerNameMode = 'macro', { fallbackName = '', maxAltGreetings = undefined } = {}) {
     const text = stripReasoning(raw);
     const cleanFallbackName = String(fallbackName || '').trim();
     let res;
     if (typeof raw === 'string' && (text.includes('[[NMF_NAME]]') || text.includes('[[NMF_DESC]]'))) {
-        const alt = extractTagBlock(text, 'NMF_ALT_GREETING');
+        const multiBlocks = [...text.matchAll(/\[\[NMF_ALT_GREETING\]\]([\s\S]*?)\[\[\/NMF_ALT_GREETING\]\]/gi)]
+            .map((m) => m[1].trim())
+            .filter(Boolean);
+        const rawAltJoined = multiBlocks.length > 0 ? multiBlocks.join('===NMF_ALT_SEP===') : extractTagBlock(text, 'NMF_ALT_GREETING');
+        const parsedAltList = rawAltJoined
+            ? rawAltJoined.split(/===NMF_ALT_SEP===/i).map((s) => s.trim()).filter(Boolean)
+            : [];
         res = {
             name: extractTagBlock(text, 'NMF_NAME') || cleanFallbackName,
             description: extractTagBlock(text, 'NMF_DESC'),
             personality: extractTagBlock(text, 'NMF_PERSONALITY'),
             scenario: extractTagBlock(text, 'NMF_SCENARIO'),
             first_mes: extractTagBlock(text, 'NMF_FIRST_MES'),
-            alternate_greetings: alt ? [alt] : [],
+            alternate_greetings: parsedAltList,
             mes_example: extractTagBlock(text, 'NMF_MES_EXAMPLE'),
             system_prompt: extractTagBlock(text, 'NMF_SYS_PROMPT'),
             post_history_instructions: extractTagBlock(text, 'NMF_POST_HISTORY'),
@@ -2190,6 +2423,11 @@ export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerName
     }
 
     const chName = sanitizeCardMetaPollution(res.name) || cleanFallbackName || res.name;
+    let finalAlts = res.alternate_greetings.map((g) => sanitizeCardMetaPollution(normalizeCardMacros(g, chName, playerNameMode))).filter(Boolean);
+    if (maxAltGreetings !== undefined && Number.isFinite(Number(maxAltGreetings))) {
+        const cap = Math.max(0, Math.round(Number(maxAltGreetings)));
+        finalAlts = cap === 0 ? [] : finalAlts.slice(0, cap);
+    }
     return {
         ...res,
         name: chName,
@@ -2197,7 +2435,7 @@ export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerName
         personality: sanitizeCardMetaPollution(normalizeCardMacros(res.personality, chName, playerNameMode)),
         scenario: sanitizeCardMetaPollution(normalizeCardMacros(res.scenario, chName, playerNameMode)),
         first_mes: sanitizeCardMetaPollution(normalizeCardMacros(res.first_mes, chName, playerNameMode)),
-        alternate_greetings: res.alternate_greetings.map((g) => sanitizeCardMetaPollution(normalizeCardMacros(g, chName, playerNameMode))),
+        alternate_greetings: finalAlts,
         mes_example: sanitizeCardMetaPollution(normalizeCardMacros(res.mes_example, chName, playerNameMode)),
         system_prompt: sanitizeCardMetaPollution(normalizeCardMacros(res.system_prompt, chName, playerNameMode)),
         post_history_instructions: sanitizeCardMetaPollution(normalizeCardMacros(res.post_history_instructions, chName, playerNameMode)),
@@ -2525,6 +2763,10 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
     const userLangSpec = resolveUserLanguageSpec(session.intake);
     const macroRule = buildUniversalMacroRule(session.intake.playerNameMode || 'macro');
     const greetStyleBlock = buildGreetingStyleDirective(session.intake);
+    const greetLangCountBlock = buildGreetingLanguagesAndCountDirective(session.intake);
+    const altCnt = session.intake?.altGreetingsCount !== undefined
+        ? Math.max(0, Math.min(4, Math.round(Number(session.intake.altGreetingsCount))))
+        : 1;
     const artMechRule = buildFlexibleAvatarArtMechanismRule(session.intake);
     const fmt = CARD_FORMATS.find((f) => f.id === session.intake.cardFormat) || CARD_FORMATS[0];
 
@@ -2582,12 +2824,19 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
     const notesLangRule = `Write human-facing Creator Notes (creator_notes / [[NMF_CREATOR_NOTES]]) in ${userLangSpec.shortLabel}.`;
 
     if (mode === 'json_schema') {
+        const jsonAltSample = altCnt === 0 ? '[]' : JSON.stringify(Array.from({ length: altCnt }, (_, i) => `alt_greeting_${i + 1}`));
         return {
-            system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\nTarget Output Language: ${langSpec.directive}.\n${notesLangRule}\nNever write actions, thoughts, or dialogue for the player inside the opening scene.\n${macroRule}\n${greetStyleBlock}\n${CARD_META_PURITY_RULE}\n${artMechRule}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":[""],"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
+            system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\nTarget Output Language: ${langSpec.directive}.\n${notesLangRule}\nNever write actions, thoughts, or dialogue for the player inside the opening scene.\n${macroRule}\n${greetStyleBlock}\n${greetLangCountBlock}\n${CARD_META_PURITY_RULE}\n${artMechRule}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
             user: `${intakeSummary}${userAuDecisionsBlock}\n\n${srcDump}`,
             jsonSchema: FULL_CARD_JSON_SCHEMA,
         };
     }
+
+    const altIndexedTagLine = altCnt === 0
+        ? `[[NMF_ALT_GREETING]][[/NMF_ALT_GREETING]]`
+        : (altCnt === 1
+            ? `[[NMF_ALT_GREETING]]Alternate greeting #1 (in its specified language)[[/NMF_ALT_GREETING]]`
+            : `[[NMF_ALT_GREETING]]${Array.from({ length: altCnt }, (_, i) => `Alt greeting #${i + 1}`).join(' ===NMF_ALT_SEP=== ')}[[/NMF_ALT_GREETING]]`);
 
     return {
         system: '',
@@ -2597,6 +2846,7 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
             `Never write actions, thoughts, or dialogue for the player inside the opening scene.`,
             macroRule,
             greetStyleBlock,
+            greetLangCountBlock,
             CARD_META_PURITY_RULE,
             `Target Output Language: ${langSpec.directive}.`,
             notesLangRule,
@@ -2612,7 +2862,7 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
             `[[NMF_PERSONALITY]]Adapted Personality[[/NMF_PERSONALITY]]`,
             `[[NMF_SCENARIO]]Adapted Scenario in ${targetEra}[[/NMF_SCENARIO]]`,
             `[[NMF_FIRST_MES]]New Opening Scene[[/NMF_FIRST_MES]]`,
-            `[[NMF_ALT_GREETING]]Optional second opening hook[[/NMF_ALT_GREETING]]`,
+            altIndexedTagLine,
             `[[NMF_MES_EXAMPLE]]Adapted example dialogue[[/NMF_MES_EXAMPLE]]`,
             `[[NMF_SYS_PROMPT]][[/NMF_SYS_PROMPT]]`,
             `[[NMF_POST_HISTORY]][[/NMF_POST_HISTORY]]`,
@@ -3374,6 +3624,10 @@ export function buildSurgicalCardEditRequest(
         `1) Do NOT regenerate the card from scratch! Preserve 100% of the existing formatting template (numbered headings, Markdown, XML tags, PList brackets), established lore, personality core, and every paragraph/field the user did NOT ask to change.`,
         `2) Apply the user's exact edit/fix seamlessly so the updated part matches the surrounding card tone, tense, and continuity with zero seams.`,
         `3) ${scopeRule}`,
+        `4) COMPLETE CARD & FULL-FIELD OUTPUT LAW (ZERO SNIPPETS / ZERO OMISSIONS — CRITICAL!):`,
+        `   - You MUST return the ENTIRE Character Card V2 with the 100% COMPLETE, FULL-LENGTH text of every field!`,
+        `   - Inside any modified field (for example [[NMF_DESC]] or [[NMF_FIRST_MES]]), output the ENTIRE field from the very first line to the very last line with your edited point/paragraph integrated in place and ALL other points/paragraphs copied word-for-word!`,
+        `   - NEVER output only the edited paragraph/fragment alone! NEVER omit unchanged points! NEVER write placeholders such as "...", "[rest unchanged]", "(same as before)", or "[без изменений]" — any omitted text would be permanently lost!`,
         ANTI_SLOP_WRITING_LAW,
         `Never write actions, thoughts, or dialogue for the player inside the opening scene.`,
         `Card Fields Language: ${cardLangSpec.directive}. Creator Notes Language: ${userLangSpec.shortLabel}.`,
@@ -3434,28 +3688,46 @@ export function applySurgicalCardEditResult(
     { scope = 'auto', updateArtPrompt = false } = {},
 ) {
     const next = structuredClone(currentCard || createBlankCardSlot());
-    const pickIfNonEmpty = (val, prev) => (val !== undefined && val !== null && String(val).trim() !== '' ? String(val) : String(prev ?? ''));
+    const LAZY_PLACEHOLDER_RE = /(?:\[\s*(?:rest\s+unchanged|unchanged|same\s+as\s+above|без\s+изменений|остальное\s+без\s+изменений|\.{3,})\s*\])/i;
+
+    const pickSafeFullField = (val, prev, fieldLabel = 'Field') => {
+        const cleanNext = val !== undefined && val !== null ? String(val).trim() : '';
+        const cleanPrev = String(prev ?? '');
+        if (!cleanNext) return cleanPrev;
+        if (LAZY_PLACEHOLDER_RE.test(cleanNext) && !LAZY_PLACEHOLDER_RE.test(cleanPrev)) {
+            throw new Error(`ИИ вернул сокращённую заглушку в поле «${fieldLabel}» вместо полного текста карточки. Повторите попытку — ваша карточка сохранена без потерь!`);
+        }
+        const prevWords = cleanPrev.trim() ? cleanPrev.trim().split(/\s+/).length : 0;
+        const nextWords = cleanNext.split(/\s+/).length;
+        // Guard against lazy LLM returning only the 1 edited paragraph instead of the full multi-point dossier!
+        if (prevWords >= 140 && nextWords < Math.max(35, Math.floor(prevWords * 0.35))) {
+            throw new Error(`ИИ вернул только короткий фрагмент (${nextWords} сл. вместо ~${prevWords} сл.) в поле «${fieldLabel}». Повторите правку — исходная карточка защищена от обрезки!`);
+        }
+        return String(val);
+    };
 
     if (scope === 'description') {
-        next.description = pickIfNonEmpty(parsed.description, currentCard.description);
+        next.description = pickSafeFullField(parsed.description, currentCard.description, 'Description');
     } else if (scope === 'first_mes') {
-        next.first_mes = pickIfNonEmpty(parsed.first_mes, currentCard.first_mes);
+        next.first_mes = pickSafeFullField(parsed.first_mes, currentCard.first_mes, 'First Message');
     } else if (scope === 'personality_scenario') {
-        next.personality = pickIfNonEmpty(parsed.personality, currentCard.personality);
-        next.scenario = pickIfNonEmpty(parsed.scenario, currentCard.scenario);
+        next.personality = pickSafeFullField(parsed.personality, currentCard.personality, 'Personality');
+        next.scenario = pickSafeFullField(parsed.scenario, currentCard.scenario, 'Scenario');
     } else if (scope === 'mes_example') {
-        next.mes_example = pickIfNonEmpty(parsed.mes_example, currentCard.mes_example);
+        next.mes_example = pickSafeFullField(parsed.mes_example, currentCard.mes_example, 'mes_example');
     } else {
-        // 'auto': smart surgical update across relevant text fields
-        next.name = pickIfNonEmpty(parsed.name, currentCard.name);
-        next.description = pickIfNonEmpty(parsed.description, currentCard.description);
-        next.personality = pickIfNonEmpty(parsed.personality, currentCard.personality);
-        next.scenario = pickIfNonEmpty(parsed.scenario, currentCard.scenario);
-        next.first_mes = pickIfNonEmpty(parsed.first_mes, currentCard.first_mes);
+        // 'auto': smart surgical update across relevant text fields while guarding full-card completeness
+        next.name = pickSafeFullField(parsed.name, currentCard.name, 'Name');
+        next.description = pickSafeFullField(parsed.description, currentCard.description, 'Description');
+        next.personality = pickSafeFullField(parsed.personality, currentCard.personality, 'Personality');
+        next.scenario = pickSafeFullField(parsed.scenario, currentCard.scenario, 'Scenario');
+        next.first_mes = pickSafeFullField(parsed.first_mes, currentCard.first_mes, 'First Message');
         if (Array.isArray(parsed.alternate_greetings) && parsed.alternate_greetings.filter(Boolean).length > 0) {
             next.alternate_greetings = parsed.alternate_greetings.filter(Boolean);
         }
-        if (String(parsed.mes_example || '').trim()) next.mes_example = parsed.mes_example;
+        if (String(parsed.mes_example || '').trim()) {
+            next.mes_example = pickSafeFullField(parsed.mes_example, currentCard.mes_example, 'mes_example');
+        }
         if (String(parsed.system_prompt || '').trim()) next.system_prompt = parsed.system_prompt;
         if (String(parsed.post_history_instructions || '').trim()) next.post_history_instructions = parsed.post_history_instructions;
         if (String(parsed.creator_notes || '').trim()) next.creator_notes = parsed.creator_notes;

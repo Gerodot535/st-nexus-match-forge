@@ -990,6 +990,10 @@ const PROTECTED_CONTENT_SELECTOR = [
     'select[data-rework="sourceAvatar"]',
     'select[data-card="world"]',
     'select[data-blitz-cand]',
+    'select[data-lang-preset]',
+    'select[data-card-lang-preset]',
+    'select[data-fm-lang-preset]',
+    'select[data-alt-lang-idx]',
     '[data-nmf-raw]',
 ].join(', ');
 
