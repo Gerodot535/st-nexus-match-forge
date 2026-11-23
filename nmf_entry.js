@@ -292,8 +292,12 @@ export function esc(str) {
 export function safeImgSrc(url) {
     const clean = String(url ?? '').trim();
     if (!clean) return '';
-    if (/^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(clean)) {
-        return clean;
+    if (/^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(clean)) {
+        const b64Idx = clean.indexOf(';base64,') + 8;
+        if (b64Idx < clean.length && !/[^A-Za-z0-9+/=\s]/.test(clean.slice(b64Idx))) {
+            return clean;
+        }
+        return '';
     }
     if (/^data:image\/svg\+xml;charset=utf-8,[A-Za-z0-9%._~!'()*-]+$/i.test(clean)) {
         return clean;

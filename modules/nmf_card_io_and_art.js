@@ -731,10 +731,14 @@ export function sanitizeAspectForProvider(rawAspect = 'native', apiType = '') {
 function decodePngDataUrlBytesDirect(avatarDataUrl) {
     if (typeof avatarDataUrl !== 'string') return null;
     const trimmed = avatarDataUrl.trim();
-    const prefixMatch = trimmed.match(/^data:image\/png;base64,([\s\S]+)$/i);
-    if (!prefixMatch) return null;
+    const b64Marker = ';base64,';
+    const markerIdx = trimmed.indexOf(b64Marker);
+    if (markerIdx === -1 || trimmed.slice(0, markerIdx).toLowerCase() !== 'data:image/png') return null;
     try {
-        const bin = atob(prefixMatch[1].replace(/\s+/g, ''));
+        const rawB64 = trimmed.slice(markerIdx + b64Marker.length);
+        const cleanB64 = /\s/.test(rawB64) ? rawB64.replace(/\s+/g, '') : rawB64;
+        if (!cleanB64) return null;
+        const bin = atob(cleanB64);
         const arr = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i) & 0xff;
         if (!isValidNonEmptyPngBytes(arr)) return null;
@@ -1069,12 +1073,19 @@ export function triggerDownload(blob, filename) {
 
 export function dataUrlToPureBlob(dataUrl) {
     const clean = String(dataUrl || '').trim();
-    const m = clean.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/i);
-    if (!m) {
+    const b64Marker = ';base64,';
+    const markerIdx = clean.indexOf(b64Marker);
+    const header = markerIdx > 5 ? clean.slice(0, markerIdx) : '';
+    if (!/^data:image\/[a-zA-Z0-9.+-]+$/i.test(header)) {
         throw new Error('Некорректный формат изображения для скачивания.');
     }
-    const mime = m[1].toLowerCase();
-    const bin = atob(m[2].replace(/\s+/g, ''));
+    const mime = header.slice(5).toLowerCase();
+    const rawB64 = clean.slice(markerIdx + b64Marker.length);
+    const cleanB64 = /\s/.test(rawB64) ? rawB64.replace(/\s+/g, '') : rawB64;
+    if (!cleanB64) {
+        throw new Error('Некорректный формат изображения для скачивания.');
+    }
+    const bin = atob(cleanB64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
     const ext = mime.includes('jpeg') || mime.includes('jpg')
@@ -2115,6 +2126,89 @@ function sanitizeHeadersForLog(headers = {}) {
     return out;
 }
 
+function scrubInlineImagesFromParsedJson(root) {
+    if (!root || typeof root !== 'object') return root;
+    const BINARY_KEYS = new Set(['b64_json', 'data', 'image', 'bytesBase64Encoded']);
+    const cloneRoot = Array.isArray(root) ? [...root] : { ...root };
+    const stack = [cloneRoot];
+
+    while (stack.length > 0) {
+        const cur = stack.pop();
+        if (Array.isArray(cur)) {
+            for (let i = 0; i < cur.length; i++) {
+                const val = cur[i];
+                if (typeof val === 'string') {
+                    if (val.length > 140 && val.startsWith('data:image/') && val.includes(';base64,')) {
+                        cur[i] = `[DATA_URL_IMAGE · ~${Math.round((val.length * 0.75) / 1024)} KB]`;
+                    }
+                } else if (val && typeof val === 'object') {
+                    const next = Array.isArray(val) ? [...val] : { ...val };
+                    cur[i] = next;
+                    stack.push(next);
+                }
+            }
+        } else {
+            for (const key of Object.keys(cur)) {
+                const val = cur[key];
+                if (typeof val === 'string') {
+                    if (val.length > 140 && val.startsWith('data:image/') && val.includes(';base64,')) {
+                        cur[key] = `[DATA_URL_IMAGE · ~${Math.round((val.length * 0.75) / 1024)} KB]`;
+                    } else if (BINARY_KEYS.has(key) && val.length >= 200 && !val.includes(' ')) {
+                        cur[key] = `[BASE64_IMAGE_PAYLOAD · ~${Math.round((val.length * 0.75) / 1024)} KB]`;
+                    }
+                } else if (val && typeof val === 'object') {
+                    const next = Array.isArray(val) ? [...val] : { ...val };
+                    cur[key] = next;
+                    stack.push(next);
+                }
+            }
+        }
+    }
+    return cloneRoot;
+}
+
+function scrubPlainStringDataUrlsLinear(inputStr, maxLen = 14000) {
+    const marker = 'data:image/';
+    let pos = 0;
+    let out = '';
+    while (pos < inputStr.length && out.length <= maxLen + 2048) {
+        const idx = inputStr.indexOf(marker, pos);
+        if (idx === -1) {
+            const rem = maxLen + 2048 - out.length;
+            out += inputStr.slice(pos, pos + Math.max(0, rem));
+            if (pos + Math.max(0, rem) < inputStr.length) {
+                return `${out.slice(0, maxLen)}\n… [обрезано ${inputStr.length - maxLen} симв.]`;
+            }
+            pos = inputStr.length;
+            break;
+        }
+        out += inputStr.slice(pos, idx);
+        const semiIdx = inputStr.indexOf(';base64,', idx);
+        if (semiIdx !== -1 && semiIdx - idx < 64) {
+            let end = semiIdx + 8;
+            while (end < inputStr.length) {
+                const c = inputStr.charCodeAt(end);
+                const isB64 = (c >= 65 && c <= 90)
+                    || (c >= 97 && c <= 122)
+                    || (c >= 48 && c <= 57)
+                    || c === 43 || c === 47 || c === 61
+                    || c === 10 || c === 13;
+                if (!isB64) break;
+                end++;
+            }
+            const b64Len = end - (semiIdx + 8);
+            if (b64Len >= 120) {
+                out += `[DATA_URL_IMAGE · ~${Math.round((b64Len * 0.75) / 1024)} KB]`;
+                pos = end;
+                continue;
+            }
+        }
+        out += marker;
+        pos = idx + marker.length;
+    }
+    return out.length > maxLen ? `${out.slice(0, maxLen)}\n… [обрезано ${out.length - maxLen} симв.]` : out;
+}
+
 function sanitizePayloadStringForLog(rawStr = '', maxLen = 14000) {
     if (!rawStr) return '';
     if (typeof FormData !== 'undefined' && rawStr instanceof FormData) {
@@ -2130,11 +2224,27 @@ function sanitizePayloadStringForLog(rawStr = '', maxLen = 14000) {
         } catch {}
         return `[FormData]\n${parts.join('\n')}`;
     }
-    const str = typeof rawStr === 'string' ? rawStr : JSON.stringify(rawStr, null, 2);
-    const scrubbed = str
-        .replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{120,}/g, (m) => `[DATA_URL_IMAGE · ~${Math.round((m.length * 0.75) / 1024)} KB]`)
-        .replace(/"(b64_json|data|image|bytesBase64Encoded)"\s*:\s*"[A-Za-z0-9+/=\s]{200,}"/g, (_, key) => `"${key}": "[BASE64_IMAGE_PAYLOAD]"`);
-    return scrubbed.length > maxLen ? `${scrubbed.slice(0, maxLen)}\n… [обрезано ${scrubbed.length - maxLen} симв.]` : scrubbed;
+
+    if (typeof rawStr === 'object') {
+        try {
+            const safeObj = scrubInlineImagesFromParsedJson(rawStr);
+            const str = JSON.stringify(safeObj, null, 2);
+            return str.length > maxLen ? `${str.slice(0, maxLen)}\n… [обрезано ${str.length - maxLen} симв.]` : str;
+        } catch {}
+    }
+
+    const str = String(rawStr);
+    const firstCh = str.trimStart()[0];
+    if (firstCh === '{' || firstCh === '[') {
+        try {
+            const parsed = JSON.parse(str);
+            const safeObj = scrubInlineImagesFromParsedJson(parsed);
+            const pretty = JSON.stringify(safeObj, null, 2);
+            return pretty.length > maxLen ? `${pretty.slice(0, maxLen)}\n… [обрезано ${pretty.length - maxLen} симв.]` : pretty;
+        } catch {}
+    }
+
+    return scrubPlainStringDataUrlsLinear(str, maxLen);
 }
 
 export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, externalSignal = null) {
@@ -3042,16 +3152,24 @@ export const FUSION_BLEND_REF_INSTRUCTION = '[VISUAL ALCHEMY REFERENCE: The refe
 function splitDataUrlComponents(rawStr) {
     const val = String(rawStr || '').trim();
     if (!val) return null;
-    const m = val.match(/^data:([^;,]+);base64,(.+)$/s);
-    if (m) {
-        return {
-            mimeType: m[1] || 'image/png',
-            base64: m[2].replace(/\s+/g, ''),
-            dataUrl: `data:${m[1] || 'image/png'};base64,${m[2].replace(/\s+/g, '')}`,
-        };
+    if (val.startsWith('data:')) {
+        const b64Marker = ';base64,';
+        const markerIdx = val.indexOf(b64Marker);
+        if (markerIdx > 5) {
+            const mime = val.slice(5, markerIdx) || 'image/png';
+            const rawB64 = val.slice(markerIdx + b64Marker.length);
+            const cleanB64 = /\s/.test(rawB64) ? rawB64.replace(/\s+/g, '') : rawB64;
+            if (!cleanB64) return null;
+            return {
+                mimeType: mime,
+                base64: cleanB64,
+                dataUrl: `data:${mime};base64,${cleanB64}`,
+            };
+        }
+        return null;
     }
-    if (/^[A-Za-z0-9+/=\s]+$/.test(val) && val.length > 64) {
-        const cleanB64 = val.replace(/\s+/g, '');
+    if (val.length > 64 && !/[^A-Za-z0-9+/=\s]/.test(val)) {
+        const cleanB64 = /\s/.test(val) ? val.replace(/\s+/g, '') : val;
         const mime = cleanB64.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
         return {
             mimeType: mime,
