@@ -1,6 +1,6 @@
 <div align="center">
 
-# NexusMatch Forge `[BETA v1.9.6]`
+# NexusMatch Forge `[BETA v2.0.1]`
 
 **An Interactive Swipe-Deck, Astral Gacha Summoner & Alchemy Card Fusion, Blitz Quiz, AU Multiverse Adapter, and Safe Character / World / RPG Card V2 Studio for SillyTavern — designed for both Android Mobile and Desktop.**
 
@@ -18,7 +18,7 @@
 
 ## Overview
 
-**NexusMatch Forge** is a standalone SillyTavern extension built around a sharp technical geometry aesthetic with **13 handcrafted vector SVG themes** (matching [**Pocket Codex & Forge**](https://github.com/Gerodot535/st-pocket-codex)):
+**NexusMatch Forge** (`v2.0.1-beta` · *Atelier & Card Studio* overhaul) is a standalone SillyTavern extension featuring **13 muted editorial palettes** (*Calm / Kit* + *Gustave Doré*, matching [**Pocket Codex & Forge**](https://github.com/Gerodot535/st-pocket-codex)), 3-pillar Studio/Collection/Editor navigation, a dedicated Art Studio showcase, and full granular language controls:
 
 1. **Swipe Deck (`Tinder Mode`)** — swipe through AI-generated character or world previews (`1`, `3`, or `5` per batch), mark disliked tags/reasons, edit or restore rejected cards from the **Passed Archive**, and expand matches into complete V2 cards.
 2. **Blitz 10 Questionnaire** — enter any concept and answer up to 10 tailored questions (skip or regenerate individual questions) to synthesize a card.
