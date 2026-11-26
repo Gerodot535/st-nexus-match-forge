@@ -1,4 +1,4 @@
-import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js';
+import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.1';
 import {
     SIMPLE_LANGUAGE_SCENARIOS,
     resolveSimpleLangScenarioId,
@@ -10,7 +10,7 @@ import {
     PRESET_SESSION_TEMPLATES,
     populateSessionFromPresetTemplate,
     syncPresetSessionsToUiLanguage,
-} from './modules/nmf_tags_and_presets.js';
+} from './modules/nmf_tags_and_presets.js?v=2.1.1';
 import {
     getUiLang,
     setUiLang,
@@ -25,7 +25,7 @@ import {
     localizeOptionLabel,
     HELP_TOPICS_EN,
     applyEnglishDomTranslation,
-} from './modules/nmf_i18n.js';
+} from './modules/nmf_i18n.js?v=2.1.1';
 import {
     MAX_LIKED_CANDIDATES,
     MAX_PASSED_CANDIDATES,
@@ -107,7 +107,25 @@ import {
     buildSurgicalCardEditRequest,
     applySurgicalCardEditResult,
     buildFullCardRegenerateRequest,
-} from './modules/nmf_templates_and_prompts.js';
+    sanitizeSafeFandomVisualPrompt,
+    getAllCardFormats,
+    resolveCardFormat,
+    normalizeCustomCardFormats,
+    buildExtractCardTemplateRequest,
+    parseExtractCardTemplateResponse,
+    buildPhotoToCardRequest,
+    listConceptSelectableCandidates,
+    resolveConceptSeedCandidate,
+    hasActiveConceptCaptions,
+    buildConceptInspirationBlock,
+    buildConceptSinglePlanRequest,
+    parseConceptSinglePlanResponse,
+    buildConceptSeriesQuestionsRequest,
+    buildConceptSeriesPlanRequest,
+    parseConceptSeriesPlanResponse,
+    createDefaultPhotoLabState,
+    createDefaultConceptLabState,
+} from './modules/nmf_templates_and_prompts.js?v=2.1.1';
 import {
     ALL_EDITABLE_CARD_FIELDS,
     markCardFieldDirty,
@@ -119,6 +137,9 @@ import {
     buildV2CardObject,
     buildCardPngBlob,
     embedCharaChunkIntoPng,
+    extractCharaJsonFromPng,
+    CONCEPT_SHEET_REF_INSTRUCTION,
+    getSupportedAspectRatiosForImageConfig,
     triggerDownload,
     dataUrlToPureBlob,
     importCardIntoTavern,
@@ -141,7 +162,7 @@ import {
     runLlmGeneration,
     lastGenerationReasoning,
     lastRequestDiagnostics,
-} from './modules/nmf_card_io_and_art.js';
+} from './modules/nmf_card_io_and_art.js?v=2.1.1';
 import {
     base64ToBytes,
     isMediaDurablyPersisted,
@@ -158,7 +179,14 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     getCardBackupById,
-} from './modules/nmf_media_vault.js';
+} from './modules/nmf_media_vault.js?v=2.1.1';
+import {
+    renderTemplateManagerWidgetHtml,
+    renderPhotoLabTabHtml,
+    renderConceptLabTabHtml,
+    renderConceptCollectionViewHtml,
+    renderPhotoCollectionViewHtml,
+} from './modules/nmf_labs_and_templates.js?v=2.1.1';
 
 const EXT_KEY = 'st_nexus_match_forge';
 let nextBusyRunId = 1;
@@ -253,6 +281,15 @@ export const state = {
     cardRefinePrompt: '',
     cardRefineUpdateArt: false,
     cardUndoSnapshots: new Map(), // `${sessId}:${slotId}` -> cloned card before AI edit
+    tplInspectorOpen: false,
+    tplCreatorOpen: false,
+    tplExtractorOpen: false,
+    tplExtractFilter: '',
+    tplExtractAvatar: '',
+    tplExtractHint: '',
+    tplExtractUploadedCard: null,
+    newTplDraft: { shortBtn: '', desc: '', instructions: '' },
+    editingConceptKey: '',
     recentBackups: [],
     busy: false,
     busyMinimized: false,
@@ -341,6 +378,14 @@ function getFallbackStore() {
 
 const GACHA_WALLET_STORAGE_KEY = 'st_nmf_gacha_wallet_v2';
 
+function isTavernSettingsLoaded(ctx) {
+    const ext = ctx?.extensionSettings;
+    if (!ext || typeof ext !== 'object') return false;
+    if (ext[EXT_KEY] && typeof ext[EXT_KEY] === 'object') return true;
+    // Before SillyTavern finishes fetching settings.json on boot, extensionSettings is an empty {}!
+    return Object.keys(ext).length > 0;
+}
+
 function reconcileGachaWalletFromLocalStorage(cfg) {
     if (!cfg || typeof cfg !== 'object') return false;
     if (!cfg.gachaWallet || typeof cfg.gachaWallet !== 'object') {
@@ -350,19 +395,37 @@ function reconcileGachaWalletFromLocalStorage(cfg) {
         if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return false;
         const raw = localStorage.getItem(GACHA_WALLET_STORAGE_KEY);
         if (!raw) {
-            localStorage.setItem(GACHA_WALLET_STORAGE_KEY, JSON.stringify(cfg.gachaWallet));
+            if ((Number(cfg.gachaWallet.updatedAt) || 0) > 0 || (Number(cfg.gachaWallet.cooldownEndsAt) || 0) > 0 || (Number(cfg.gachaWallet.freeSpentInCycle) || 0) > 0 || (Number(cfg.gachaWallet.bonusWishes) || 0) > 0) {
+                localStorage.setItem(GACHA_WALLET_STORAGE_KEY, JSON.stringify(cfg.gachaWallet));
+            }
             return false;
         }
+        const now = Date.now();
         const localW = normalizeGachaWallet(JSON.parse(raw));
-        const cfgTs = Number(cfg.gachaWallet.updatedAt) || 0;
+        const cfgW = cfg.gachaWallet;
+        const cfgTs = Number(cfgW.updatedAt) || 0;
         const locTs = Number(localW.updatedAt) || 0;
-        // If browser closed before ST debounced POST finished, localStorage holds the exact newer cooldown & wish balance!
-        if (locTs > cfgTs || (localW.cooldownEndsAt > Date.now() && localW.cooldownEndsAt > (Number(cfg.gachaWallet.cooldownEndsAt) || 0))) {
+
+        // Strict anti-reset protection: an unexpired cooldown ALWAYS wins over an accidental 0-reset!
+        const locActiveCd = (Number(localW.cooldownEndsAt) || 0) > now ? Number(localW.cooldownEndsAt) : 0;
+        const cfgActiveCd = (Number(cfgW.cooldownEndsAt) || 0) > now ? Number(cfgW.cooldownEndsAt) : 0;
+        const bestActiveCd = Math.max(locActiveCd, cfgActiveCd);
+
+        if (locTs > cfgTs || (locActiveCd > cfgActiveCd)) {
             cfg.gachaWallet = {
                 ...localW,
-                firstSacrificeConfirmed: Boolean(cfg.gachaWallet.firstSacrificeConfirmed || localW.firstSacrificeConfirmed),
+                cooldownEndsAt: bestActiveCd > 0 ? bestActiveCd : (Number(localW.cooldownEndsAt) || 0),
+                firstSacrificeConfirmed: Boolean(cfgW.firstSacrificeConfirmed || localW.firstSacrificeConfirmed),
             };
+            localStorage.setItem(GACHA_WALLET_STORAGE_KEY, JSON.stringify(cfg.gachaWallet));
             return true;
+        }
+
+        if (cfgTs > locTs || (cfgActiveCd > locActiveCd)) {
+            if (bestActiveCd > 0 && (Number(cfgW.cooldownEndsAt) || 0) < bestActiveCd) {
+                cfg.gachaWallet.cooldownEndsAt = bestActiveCd;
+            }
+            localStorage.setItem(GACHA_WALLET_STORAGE_KEY, JSON.stringify(cfg.gachaWallet));
         }
     } catch {}
     return false;
@@ -388,8 +451,10 @@ function persistGachaWalletImmediately(cfg) {
 
 export function getSettings() {
     const ctx = getTavernContext();
-    if (!ctx || !ctx.extensionSettings) {
+    // CRITICAL BOOT GUARD: Never initialize/save blank default settings onto ctx.extensionSettings BEFORE SillyTavern loads settings.json!
+    if (!ctx || !isTavernSettingsLoaded(ctx)) {
         const fb = getFallbackStore();
+        reconcileGachaWalletFromLocalStorage(fb);
         setUiLang(fb.uiLang || 'ru');
         return fb;
     }
@@ -830,8 +895,11 @@ function renderMatchSignalRevealOverlay(sess) {
                 <div style="font-family:var(--nmf-font-title);font-size:19px;font-weight:700;color:#ffffff;max-width:340px;line-height:1.3">
                     ${esc(copy.stageMatchTitle)}
                 </div>
-                ${mr.phase === 'unpacked' && topCand ? `
+                ${mr.phase === 'unpacked' && topCand ? (() => {
+                    const topArtUrl = safeImgSrc(resolveEntityDisplayUrl(topCand));
+                    return `
                 <div class="nmf-unpacked-card-enter" style="width:min(100%,320px);padding:16px;border-radius:10px;border:1.5px solid var(--nmf-accent);background:rgba(12,15,24,0.92);box-shadow:0 16px 40px rgba(0,0,0,0.65);display:flex;flex-direction:column;gap:8px">
+                    ${topArtUrl ? `<div style="width:100%;max-height:220px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,0.14);background:#090b12"><img src="${esc(topArtUrl)}" alt="Portrait" style="width:100%;height:100%;max-height:220px;object-fit:cover;object-position:50% 10%;display:block"/></div>` : ''}
                     <div style="font-family:var(--nmf-font-mono);font-size:10px;color:var(--nmf-accent)">${Number(topCand.compatibility) || 92}% MATCH</div>
                     <div style="font-family:var(--nmf-font-title);font-size:18px;font-weight:700;color:#fff">${esc(topCand.name)}</div>
                     <div style="font-size:12px;color:#cbd5e1">${esc(topCand.archetype || '')}</div>
@@ -839,7 +907,8 @@ function renderMatchSignalRevealOverlay(sess) {
                     <button type="button" class="nmf-btn-primary" style="margin-top:6px;width:100%" data-act="close-match-reveal">
                         ${NMF_ICONS.heart} ${esc(tx('Перейти к свайпам', 'Proceed to Swipes'))}
                     </button>
-                </div>` : `
+                </div>`;
+                })() : `
                 <div class="nmf-sealed-card-totem">
                     <div style="color:var(--nmf-accent);transform:scale(1.4)">${NMF_ICONS.heart}</div>
                     <div style="font-family:var(--nmf-font-mono);font-size:10px;letter-spacing:1.4px;color:#e2e8f0;text-transform:uppercase">NEXUSMATCH</div>
@@ -918,6 +987,56 @@ function humanizeImageSourceLabel(autoSummary) {
         .trim();
 }
 
+function renderArtSyncTogglesBlock(sess, cfg, { context = 'studio' } = {}) {
+    const autoSummary = resolveAutoImageSourceSummary(cfg.imageSource, cfg.imageProfileId);
+    const cleanAutoLabel = humanizeImageSourceLabel(autoSummary);
+    const hasGen = cfg.imageSource !== 'off' && detectImageExtensions().hasAny;
+    const isGachaCtx = context === 'gacha';
+    const aspectLabel = isGachaCtx
+        ? ((sess?.gacha?.aspectRatio && sess.gacha.aspectRatio !== 'sillyimages_default')
+            ? sess.gacha.aspectRatio
+            : tx('формат SillyImages', 'SillyImages ratio'))
+        : (cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1'));
+    const isInArtStudio = context === 'studio';
+
+    return `
+    <div class="nmf-art-sync-stack">
+        <div class="nmf-toggle-line nmf-toggle-compact" data-act="toggle-auto-art-cards">
+            <div class="nmf-toggle-copy">
+                <strong>${esc(tx('Карточки сразу с готовым артом', 'Generate cards with ready artwork'))}</strong>
+                <small>${esc(isInArtStudio
+                    ? tx('В Мэтчах и Гаче карты открываются сразу с готовыми иллюстрациями', 'In Swipes & Gacha, cards unpack directly with rendered illustrations')
+                    : tx('Рендерить иллюстрации сразу перед распаковкой карт (настройки из Арт-мастерской)', 'Render illustrations before unpacking cards (uses Art Studio settings)'))}</small>
+            </div>
+            <div class="nmf-switch nmf-switch-sm ${cfg.autoArtWithCards ? 'nmf-on' : ''}"></div>
+        </div>
+
+        <div class="nmf-toggle-line nmf-toggle-compact" data-act="toggle-safe-fandom-art">
+            <div class="nmf-toggle-copy">
+                <strong>${esc(tx('Арт-промпт без имён и брендов (для Gemini)', 'Art prompt without names/brands (Gemini safe)'))}</strong>
+                <small>${esc(tx('В анкете остаются канонные имена, а в запросе картинки — только чистая внешность без имён и актёров', 'Keeps canonical names in card text while omitting character, franchise & actor names from image_prompt'))}</small>
+            </div>
+            <div class="nmf-switch nmf-switch-sm ${cfg.safeFandomArtPrompt ? 'nmf-on' : ''}"></div>
+        </div>
+
+        ${(!isInArtStudio && (cfg.autoArtWithCards || cfg.safeFandomArtPrompt)) ? `
+        <div class="nmf-art-studio-reminder">
+            <span>${hasGen
+                ? tx(
+                    `Параметры рендера и референсов берутся из <strong>Арт-мастерской</strong> (${esc(cleanAutoLabel)} · ${esc(aspectLabel)}).`,
+                    `Generator, style & references come from <strong>Art Studio</strong> (${esc(cleanAutoLabel)} · ${esc(aspectLabel)}).`,
+                )
+                : tx(
+                    '<strong>Генератор картинок не активен</strong> — загляните в Арт-мастерскую, чтобы выбрать источник.',
+                    '<strong>No active image generator</strong> — open Art Studio to select an image source.',
+                )}</span>
+            <button type="button" class="nmf-chip" data-act="open-art-studio-room">
+                ${NMF_ICONS.image} ${esc(tx('Арт-мастерская', 'Art Studio'))}
+            </button>
+        </div>` : ''}
+    </div>`;
+}
+
 function renderOptionalArtSettingsBody(sess, cfg) {
     const buckets = listImageExtensionBuckets();
     const activeBucket = (cfg.imageSource && cfg.imageSource !== "auto" && cfg.imageSource !== "iig") ? (buckets.find((b) => b.key === cfg.imageSource) || null) : (buckets.find((b) => b.enabled && b.ready) || buckets.find((b) => b.enabled) || null);
@@ -952,6 +1071,8 @@ function renderOptionalArtSettingsBody(sess, cfg) {
                 <span>${esc(tx('1. Откуда создавать портреты', '1. Where to Generate Portraits'))}</span>
                 ${helpBtn('art_mechanism')}
             </div>
+
+            ${renderArtSyncTogglesBlock(sess, cfg, { context: 'studio' })}
 
             <div class="nmf-field">
                 <label class="nmf-label">${esc(tx('Генератор изображений', 'Image Generator'))}</label>
@@ -1382,11 +1503,11 @@ function renderHomeTab(sess) {
     const cfg = getSettings();
     const it = sess.intake || {};
     const curFmtId = it.cardFormat || 'dossier_19';
-    const curFmt = CARD_FORMATS.find((f) => f.id === curFmtId) || CARD_FORMATS[0];
-    const fmtGuideRu = CARD_FORMAT_HUMAN_GUIDES[curFmt.id] || CARD_FORMAT_HUMAN_GUIDES.dossier_19;
-    const fmtShort = localizeOptionLabel('cardFormatShort', curFmt.id, fmtGuideRu.shortBtn || curFmt.name);
-    const fmtFullTitle = localizeOptionLabel('cardFormatName', curFmt.id, curFmt.name);
-    const fmtExplain = localizeOptionLabel('cardFormatExplain', curFmt.id, fmtGuideRu.explain);
+    const curFmt = resolveCardFormat(curFmtId, cfg.customCardFormats, it);
+    const fmtGuideRu = CARD_FORMAT_HUMAN_GUIDES[curFmt.id] || { shortBtn: curFmt.shortBtn || curFmt.name, explain: curFmt.desc || '' };
+    const fmtShort = curFmt.isCustom ? (curFmt.shortBtn || curFmt.name) : localizeOptionLabel('cardFormatShort', curFmt.id, fmtGuideRu.shortBtn || curFmt.name);
+    const fmtFullTitle = curFmt.isCustom ? curFmt.name : localizeOptionLabel('cardFormatName', curFmt.id, curFmt.name);
+    const fmtExplain = curFmt.isCustom ? (curFmt.desc || '') : localizeOptionLabel('cardFormatExplain', curFmt.id, fmtGuideRu.explain);
 
     const curModeKey = cfg.transportMode === 'json_schema' ? 'json_schema' : 'prefill_user_msg';
     const trGuideRu = TRANSPORT_MODE_GUIDES[curModeKey] || TRANSPORT_MODE_GUIDES.prefill_user_msg;
@@ -1427,9 +1548,7 @@ function renderHomeTab(sess) {
     const autoArtSummary = resolveAutoImageSourceSummary(cfg.imageSource, cfg.imageProfileId);
     const cleanArtSource = cfg.imageSource === 'off'
         ? tx('Только свои фото и обложки (авто-генерация выключена)', 'Manual photos & covers (auto-generation off)')
-        : (cfg.imageSource === 'st_sd'
-            ? tx('Встроенный /sd SillyTavern', 'Built-in SillyTavern /sd')
-            : `${humanizeImageSourceLabel(autoArtSummary)} · ${cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1')}`);
+        : `${cfg.imageSource === 'st_sd' ? tx('Встроенный /sd SillyTavern', 'Built-in SillyTavern /sd') : `${humanizeImageSourceLabel(autoArtSummary)} · ${cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1')}`}${cfg.autoArtWithCards ? tx(' · Сразу с артом', ' · Immediate Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён в арте', ' · Safe Art Prompt') : ''}`;
 
     const resumeInfo = findBestSessionDraftResume(sess);
     const resumeThumb = resumeInfo ? safeImgSrc(resolveEntityDisplayUrl(resumeInfo.card)) : '';
@@ -1640,17 +1759,7 @@ function renderHomeTab(sess) {
                             <div class="nmf-sub-group-title">
                                 <span>${esc(tx('2. Шаблон и объём карточки', '2. Card Template & Length'))}</span>
                             </div>
-                            <div class="nmf-chip-wrap">
-                                ${CARD_FORMATS.map((f) => {
-                                    const gRu = CARD_FORMAT_HUMAN_GUIDES[f.id] || { shortBtn: f.name };
-                                    const btnText = localizeOptionLabel('cardFormatShort', f.id, gRu.shortBtn);
-                                    return `<button type="button" class="nmf-chip ${curFmt.id === f.id ? 'nmf-on' : ''}" data-act="pick-home-format" data-fmt="${f.id}" ${sess.frozen ? 'disabled' : ''}>${esc(btnText)}</button>`;
-                                }).join('')}
-                            </div>
-                            <div style="padding:8px 10px;border-left:2px solid var(--nmf-accent);background:var(--nmf-bg);border-radius:6px;font-size:12px;line-height:1.45">
-                                <div style="font-weight:700;color:var(--nmf-accent);margin-bottom:2px">${esc(fmtFullTitle)}</div>
-                                <div style="color:var(--nmf-text-muted)">${esc(fmtExplain)}</div>
-                            </div>
+                            ${renderTemplateManagerWidgetHtml({ sess, cfg, state, esc, rosterChars: state.rosterChars || [] })}
 
                             <div class="nmf-field">
                                 <label class="nmf-label">${esc(tx('Объём описания карточки', 'Card Description Length'))}</label>
@@ -1784,7 +1893,7 @@ function renderHomeTab(sess) {
             </div>
         </div>
 
-        <!-- SECTION 2: CLEAN 4 CREATION MODES (1:1 LIKE MOCKUP!) -->
+        <!-- SECTION 2: UNIFIED CREATION MODES -->
         <div>
             <h2 class="nmf-sec-heading">${esc(tx('С чего начнём?', 'Choose Creation Mode'))}</h2>
             <div class="nmf-mode-list">
@@ -1801,7 +1910,25 @@ function renderHomeTab(sess) {
                     <span class="nmf-tile-icon nmf-tint-warm">${NMF_ICONS.primogem}</span>
                     <span class="nmf-row-copy">
                         <strong>${esc(tx('Гача-призыв', 'Gacha Summon'))}</strong>
-                        <small>${esc(tx('Призвать карточку 1–5★ по тегам или объединить героев на Алтаре', 'Summon 1–5★ cards by tags or fuse heroes on the Altar'))}</small>
+                        <small>${esc(tx('Призвать карточку 1–5 зв. по тегам или объединить героев на Алтаре', 'Summon 1–5 star cards by tags or fuse heroes on the Altar'))}</small>
+                    </span>
+                    <span class="nmf-row-chevron">${NMF_ICONS.chevronRight}</span>
+                </button>
+
+                <button type="button" class="nmf-mode-row" data-act="launch-mode-from-home" data-mode="photo">
+                    <span class="nmf-tile-icon">${NMF_ICONS.camera}</span>
+                    <span class="nmf-row-copy">
+                        <strong>${esc(tx('Герой по фото', 'Character from Photo'))}</strong>
+                        <small>${esc(tx('Создать базовую анкету по арту чара или мира (Vision)', 'Create an initial profile from character or world art'))}</small>
+                    </span>
+                    <span class="nmf-row-chevron">${NMF_ICONS.chevronRight}</span>
+                </button>
+
+                <button type="button" class="nmf-mode-row" data-act="launch-mode-from-home" data-mode="concept">
+                    <span class="nmf-tile-icon nmf-tint-warm">${NMF_ICONS.conceptBoard}</span>
+                    <span class="nmf-row-copy">
+                        <strong>${esc(tx('Концепт-арт Бюро', 'Concept Art Lab'))}</strong>
+                        <small>${esc(tx('Концепт-лист или серия кадров с подписями для сборки чара', 'Concept sheet or photo series with captions for card synthesis'))}</small>
                     </span>
                     <span class="nmf-row-chevron">${NMF_ICONS.chevronRight}</span>
                 </button>
@@ -1810,7 +1937,7 @@ function renderHomeTab(sess) {
                     <span class="nmf-tile-icon">${NMF_ICONS.blitz}</span>
                     <span class="nmf-row-copy">
                         <strong>${esc(tx('Блиц-опрос', 'Blitz Quiz'))}</strong>
-                        <small>${esc(tx('Собрать карточку из ответов на вопросы с нуля или по мэтчу', 'Build a card from guided questions or expand a match'))}</small>
+                        <small>${esc(tx('Собрать карточку из ответов на вопросы с нуля или по герою', 'Build a card from guided questions or deepen a hero'))}</small>
                     </span>
                     <span class="nmf-row-chevron">${NMF_ICONS.chevronRight}</span>
                 </button>
@@ -2021,6 +2148,8 @@ function renderGachaPrefsSheetModal(sess) {
                         <label class="nmf-label">${esc(tx('Запреты Баннера (чего точно НЕ должно выпасть)', 'Banner Hard Bans (strictly avoid)'))}</label>
                         <input type="text" class="nmf-input" data-gacha-pref="hardBans" value="${esc(wp.hardBans || '')}" placeholder="${esc(tx('Через запятую всё, что исключить в Гаче...', 'Comma-separated items to exclude in Gacha...'))}" ${sess.frozen ? 'disabled' : ''}/>
                     </div>
+
+                    ${renderArtSyncTogglesBlock(sess, getSettings(), { context: 'gacha' })}
                 </div>
             </div>
             <div class="nmf-sheet-foot" style="justify-content:space-between;gap:8px">
@@ -2066,22 +2195,134 @@ function resolveDisplayOrCoverSpec(entity, realDisplayUrl, isLoading, errText) {
     return { src: coverUrl, isReal: false, isCover: true, croppedCls: '', croppedStyle: '' };
 }
 
+function resolveLiveSourceEntityForConcept(sess, cv) {
+    const sRef = String(cv?.sourceRef || '').trim();
+    if (!sRef || sRef === '__none__') return null;
+    const hit = listConceptSelectableCandidates(sess).find((x) => x.ref === sRef);
+    return hit?.entity || null;
+}
+
+function resolveHeroTruePortraitEntity(sess, entity) {
+    if (!entity || typeof entity !== 'object') return null;
+    const isConceptEntry = Boolean(entity.singleSheet || Array.isArray(entity.seriesFrames));
+    if (!isConceptEntry) return entity;
+    const liveSrc = resolveLiveSourceEntityForConcept(sess, entity);
+    if (liveSrc && (resolveEntityAvatarUrl(liveSrc) || resolveEntityDisplayUrl(liveSrc))) {
+        return liveSrc;
+    }
+    if (entity.anchorPhoto && (resolveEntityAvatarUrl(entity.anchorPhoto) || resolveEntityDisplayUrl(entity.anchorPhoto))) {
+        return entity.anchorPhoto;
+    }
+    return liveSrc || null;
+}
+
+function findLinkedConceptForCandidate(sess, pool, cand) {
+    if (!sess || !cand) return null;
+    if (pool === 'concept_collection') return cand;
+    const vault = sess.conceptLab?.vault || [];
+    if (!vault.length) return null;
+    const targetRefs = pool === 'gacha_collection'
+        ? [`gacha:${cand.id}`]
+        : (pool === 'photo_collection'
+            ? [`photo:${cand.id}`]
+            : [`liked:${cand.id}`, `queue:${cand.id}`]);
+    return vault.find((cv) => targetRefs.includes(String(cv?.sourceRef || ''))) || null;
+}
+
+function renderConceptContinuationHtml(conceptEntry) {
+    if (!conceptEntry || typeof conceptEntry !== 'object') return '';
+    const singleUrl = safeImgSrc(resolveEntityDisplayUrl(conceptEntry.singleSheet));
+    const singleCap = String(conceptEntry.singleSheet?.masterCaption || '').trim();
+    const singleTitle = String(conceptEntry.singleSheet?.title || '').trim()
+        || tx('Личное дело и концепт образа', 'Character Concept Sheet');
+    const hasSingle = Boolean(singleUrl || singleCap);
+    const frames = Array.isArray(conceptEntry.seriesFrames)
+        ? conceptEntry.seriesFrames.filter((fr) => Boolean(safeImgSrc(resolveEntityDisplayUrl(fr)) || String(fr?.caption || '').trim()))
+        : [];
+    if (!hasSingle && frames.length === 0) return '';
+
+    return `
+    <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--nmf-border);display:flex;flex-direction:column;gap:10px">
+        <div class="nmf-sec-heading" style="margin:0">${esc(tx('Концепт-арт и детали образа', 'Concept Art & Visual Details'))}</div>
+
+        ${hasSingle ? `
+        <div class="nmf-concept-card">
+            <div class="nmf-concept-plate-head">
+                <div class="nmf-concept-plate-title">
+                    <span class="nmf-concept-plate-num">01</span>
+                    <span>${esc(singleTitle)}</span>
+                </div>
+            </div>
+            ${singleUrl ? `
+            <div class="nmf-concept-sheet-view nmf-tappable-photo" data-act="open-raw-lightbox" data-src="${esc(singleUrl)}" data-title="${esc(singleTitle)}">
+                <img src="${esc(singleUrl)}" alt="${esc(singleTitle)}"/>
+            </div>` : ''}
+            ${singleCap ? `
+            <div class="nmf-caption-table" style="padding:4px 8px">
+                <details class="nmf-spoiler">
+                    <summary><span>${esc(tx('Заметка о персонаже', 'Character Story Note'))}</span>${NMF_ICONS.chevronDown}</summary>
+                    <div class="nmf-spoiler-body">
+                        <div class="nmf-caption-cell-text">${esc(singleCap)}</div>
+                    </div>
+                </details>
+            </div>` : ''}
+        </div>` : ''}
+
+        ${frames.map((fr, idx) => {
+            const frUrl = safeImgSrc(resolveEntityDisplayUrl(fr));
+            const frCap = String(fr.caption || '').trim();
+            return `
+            <div class="nmf-concept-card">
+                <div class="nmf-concept-plate-head">
+                    <div class="nmf-concept-plate-title">
+                        <span class="nmf-concept-plate-num">${String(idx + 1).padStart(2, '0')}</span>
+                        <span>${esc(fr.title || `Кадр #${idx + 1}`)}</span>
+                    </div>
+                </div>
+                ${frUrl ? `
+                <div class="nmf-concept-sheet-view nmf-tappable-photo" data-act="open-raw-lightbox" data-src="${esc(frUrl)}" data-title="${esc(fr.title || `Кадр #${idx + 1}`)}">
+                    <img src="${esc(frUrl)}" alt="${esc(fr.title || '')}"/>
+                </div>` : ''}
+                ${frCap ? `
+                <div class="nmf-caption-table">
+                    <div class="nmf-caption-row" style="grid-template-columns:1fr">
+                        <div class="nmf-caption-cell-text">${esc(frCap)}</div>
+                    </div>
+                </div>` : ''}
+            </div>`;
+        }).join('')}
+    </div>`;
+}
+
 function renderCandidateDossierModal(sess) {
     const ref = state.viewingCandRef;
     if (!ref) return '';
-    const cand = resolveEntityFromPoolRef(sess, ref.pool, ref.idx);
-    if (!cand) {
+    const rawCand = resolveEntityFromPoolRef(sess, ref.pool, ref.idx);
+    if (!rawCand) {
         state.viewingCandRef = null;
         return '';
     }
+    const isConceptPool = ref.pool === 'concept_collection';
+    const isPhotoPool = ref.pool === 'photo_collection';
+    const liveSrc = isConceptPool ? resolveLiveSourceEntityForConcept(sess, rawCand) : null;
+    const cand = liveSrc || rawCand;
+    const linkedConcept = findLinkedConceptForCandidate(sess, ref.pool, rawCand);
+    const conceptContinuationHtml = renderConceptContinuationHtml(linkedConcept);
+
     const cfg = getSettings();
-    const canArt = detectImageExtensions().hasAny && cfg.imageSource !== 'off';
-    const imgUrl = safeImgSrc(resolveEntityDisplayUrl(cand));
+    const canArt = !isConceptPool && !isPhotoPool && detectImageExtensions().hasAny && cfg.imageSource !== 'off';
+    const heroImgUrl = safeImgSrc(resolveEntityDisplayUrl(cand))
+        || (isConceptPool ? safeImgSrc(resolveEntityDisplayUrl(rawCand.anchorPhoto)) || safeImgSrc(resolveEntityDisplayUrl(rawCand)) : '');
     const isLoading = state.loadingArtIds.has(cand.id);
     const artErrText = state.artErrors.get(cand.id) || '';
-    const isGacha = ref.pool === 'gacha_collection';
+    const isGacha = ref.pool === 'gacha_collection' || Boolean(cand.stars);
     const isPassed = ref.pool === 'passed';
-    const blitzRef = isGacha ? `gacha:${cand.id}` : `liked:${cand.id}`;
+    const blitzSource = isConceptPool ? 'concept' : (isPhotoPool ? 'photo' : (isGacha ? 'gacha' : 'tinder'));
+    const blitzRef = isConceptPool
+        ? `concept:${rawCand.id}`
+        : (isPhotoPool ? `photo:${rawCand.id}` : (ref.pool === 'gacha_collection' || String(cand.id || '').startsWith('gacha_') ? `gacha:${cand.id}` : `liked:${cand.id}`));
+    const conceptLinkRef = isConceptPool ? (rawCand.sourceRef || '__none__') : blitzRef;
+    const hasBioFields = Boolean(cand.pitch || cand.quote || cand.appearance || (cand.tags && cand.tags.length));
 
     return `
     <div class="nmf-sheet-backdrop" id="nmf-cand-dossier-backdrop">
@@ -2095,16 +2336,19 @@ function renderCandidateDossierModal(sess) {
             <div class="nmf-sheet-body">
                 <div class="nmf-swipe-card" style="border-color:var(--nmf-border-active)">
                     ${(() => {
-                        const fSpec = resolveDisplayOrCoverSpec(cand, imgUrl, isLoading, artErrText);
+                        const fSpec = resolveDisplayOrCoverSpec(cand, heroImgUrl, isLoading, artErrText);
                         const sealedArt = fSpec.isReal && isArtWaitingToOpen(cand.id);
                         return `
-                    <div class="nmf-hero-visual ${fSpec.src ? 'nmf-has-photo' : 'nmf-rendering-stage'} ${(fSpec.isReal && !sealedArt) ? 'nmf-tappable-photo' : ''}${fSpec.croppedCls}" style="${fSpec.croppedStyle}${fSpec.src ? '' : 'min-height:210px'}" data-act="${(fSpec.isReal && !sealedArt) ? 'open-cand-lightbox' : ''}" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">
+                    <div class="nmf-hero-visual ${fSpec.src ? 'nmf-has-photo' : 'nmf-rendering-stage'} ${(fSpec.isReal && !sealedArt) ? 'nmf-tappable-photo' : ''}${fSpec.croppedCls}" style="${fSpec.croppedStyle}${fSpec.src ? '' : 'min-height:210px'}" data-act="${(fSpec.isReal && !sealedArt) ? (isConceptPool || isPhotoPool ? 'open-raw-lightbox' : 'open-cand-lightbox') : ''}" data-src="${esc(fSpec.src)}" data-title="${esc(cand.name)}" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">
                         ${fSpec.src ? `<img class="nmf-hero-photo${fSpec.isReal ? consumeFreshArtClass(cand.id) : ''}" src="${esc(fSpec.src)}" alt="${esc(cand.name)}"/>` : `<div style="font-family:var(--nmf-font-mono);font-size:11px;color:var(--nmf-accent)">${esc(tx('РЕНДЕР АРТА...', 'RENDERING ART...'))}</div>`}
                         ${fSpec.isReal ? renderSealedArtVeilHtml(cand.id) : ''}
                         <div class="nmf-hero-topbadges">
                             ${isGacha
-                                ? `<span class="nmf-star-pill">${renderStarsRowHtml(cand.stars)}</span>`
-                                : `<span class="nmf-match-badge">${Number(cand.compatibility) || 92}% MATCH</span>`}
+                                ? `<span class="nmf-star-pill">${renderStarsRowHtml(cand.stars || 3)}</span>`
+                                : (isPhotoPool
+                                    ? `<span class="nmf-match-badge">${esc(tx('ПО ФОТО', 'FROM PHOTO'))}</span>`
+                                    : `<span class="nmf-match-badge">${Number(cand.compatibility) || 92}% MATCH</span>`)}
+                            ${(!isConceptPool && !isPhotoPool) ? `
                             <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
                                 <button type="button" class="nmf-art-chip-btn" data-act="trigger-cand-upload" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}" title="Загрузить свой арт с устройства">${NMF_ICONS.upload} Своё фото</button>
                                 ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" style="${state.useAttachedPhotoAsRef ? 'border-color:var(--nmf-accent);background:var(--nmf-accent);color:var(--nmf-btn-fg)' : ''}" data-act="toggle-attached-photo-as-ref" title="Отправить это прикреплённое фото как референс при пересъёмке">${NMF_ICONS.refFrame} Фото = Реф</button>` : ''}
@@ -2112,13 +2356,13 @@ function renderCandidateDossierModal(sess) {
                                 ${canArt ? (isLoading
                                     ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(cand.id)}">Стоп</button>`
                                     : `<button type="button" class="nmf-art-chip-btn" data-act="gen-dossier-art" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.image} ${fSpec.isReal ? 'Переснять' : 'Сделать арт'}</button>`) : ''}
-                            </div>
+                            </div>` : ''}
                         </div>`;
                     })()}
                         <div class="nmf-hero-scrim">
                             ${cand.epithet ? `<div style="font-family:var(--nmf-font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:${cand.stars >= 5 ? '#f5c25b' : 'var(--nmf-accent-2)'}">${esc(cand.epithet)}</div>` : ''}
                             <div class="nmf-hero-name">${esc(cand.name)}</div>
-                            <div class="nmf-hero-arch">${esc(cand.archetype)}</div>
+                            ${cand.archetype ? `<div class="nmf-hero-arch">${esc(cand.archetype)}</div>` : ''}
                         </div>
                     </div>
 
@@ -2129,27 +2373,32 @@ function renderCandidateDossierModal(sess) {
                             <span><strong>Сбой арта:</strong> ${esc(artErrText)}</span>
                         </div>` : ''}
                         ${cand.quote ? `<div class="nmf-profile-quote">«${esc(parseCleanQuote(cand.quote))}»</div>` : ''}
-                        <div class="nmf-profile-bio" style="white-space:pre-line">${esc(cand.pitch || 'Описание пока не заполнено.')}</div>
+                        ${(cand.pitch || !isConceptPool || hasBioFields) ? `<div class="nmf-profile-bio" style="white-space:pre-line">${esc(cand.pitch || (isPhotoPool ? (cand.cardDraft?.description || '') : 'Описание пока не заполнено.'))}</div>` : ''}
                         ${cand.appearance ? `
                         <div class="nmf-panel-sub" style="display:flex;flex-direction:column;gap:4px">
                             <span class="nmf-label">Внешность и детали образа</span>
                             <div style="font-size:12.5px;line-height:1.48;color:var(--nmf-text-muted);white-space:pre-line">${esc(cand.appearance)}</div>
                         </div>` : ''}
+                        ${(cand.tags && cand.tags.length > 0) ? `
                         <div class="nmf-chip-wrap">
                             ${(cand.tags || []).map((t) => `<span class="nmf-mini-tag">${esc(t)}</span>`).join('')}
-                        </div>
+                        </div>` : ''}
                         ${canArt ? renderPromptRefineBox('dossier', state.busy || isLoading) : ''}
+                        ${conceptContinuationHtml}
                     </div>
                 </div>
             </div>
-            <div class="nmf-sheet-foot" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
+            <div class="nmf-sheet-foot" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
                 <div class="nmf-btn-row">
-                    <button type="button" class="nmf-btn-secondary" data-act="edit-cand" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.editSmall} Править</button>
-                    ${(isGacha && cand.fusedFromNames?.length) ? `<button type="button" class="nmf-btn-secondary" data-act="regen-altar-char" data-id="${esc(cand.id)}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.rework} ${esc(tx('Перегенерировать', 'Regenerate'))}</button>` : ''}
-                    ${!isPassed ? `<button type="button" class="nmf-btn-secondary" data-act="send-cand-to-blitz" data-source="${isGacha ? 'gacha' : 'tinder'}" data-ref="${esc(blitzRef)}">${NMF_ICONS.blitz} В Блиц</button>` : ''}
+                    ${isConceptPool
+                        ? `<button type="button" class="nmf-btn-secondary" style="min-height:36px;height:36px;padding:0 10px;white-space:nowrap" data-act="open-concept-vault-item" data-idx="${ref.idx}">${NMF_ICONS.editSmall} ${esc(tx('Концепт', 'Edit Concept'))}</button>`
+                        : (!isPhotoPool ? `<button type="button" class="nmf-btn-secondary" style="min-height:36px;height:36px;padding:0 10px;white-space:nowrap" data-act="edit-cand" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.editSmall} Править</button>` : '')}
+                    ${(ref.pool === 'gacha_collection' && cand.fusedFromNames?.length) ? `<button type="button" class="nmf-btn-secondary" style="min-height:36px;height:36px;padding:0 10px;white-space:nowrap" data-act="regen-altar-char" data-id="${esc(cand.id)}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.rework} ${esc(tx('Заново', 'Regen'))}</button>` : ''}
+                    ${!isPassed ? `<button type="button" class="nmf-btn-secondary" style="min-height:36px;height:36px;padding:0 10px;white-space:nowrap" data-act="send-cand-to-blitz" data-source="${esc(blitzSource)}" data-ref="${esc(linkedConcept ? `concept:${linkedConcept.id}` : blitzRef)}">${NMF_ICONS.blitz} В Блиц</button>` : ''}
+                    ${(!isPassed && !isConceptPool) ? `<button type="button" class="nmf-btn-secondary" style="min-height:36px;height:36px;padding:0 10px;white-space:nowrap" data-act="send-cand-to-concept" data-ref="${esc(conceptLinkRef)}">${NMF_ICONS.conceptBoard} Концепт</button>` : ''}
                 </div>
-                <button type="button" class="nmf-btn-primary" style="flex:1;min-width:140px" data-act="expand-from-dossier" ${state.busy || sess.frozen ? 'disabled' : ''}>
-                    ${NMF_ICONS.spark} Собрать Карточку V2
+                <button type="button" class="nmf-btn-primary" style="flex:1;min-width:120px;min-height:36px;height:36px;padding:0 12px;white-space:nowrap" data-act="expand-from-dossier" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                    ${NMF_ICONS.spark} Собрать V2
                 </button>
             </div>
         </div>
@@ -2752,6 +3001,8 @@ function resolveEntityFromPoolRef(sess, pool, idx) {
     if (!sess) return null;
     if (pool === 'gacha_collection') return sess.gacha?.collection?.[idx] || null;
     if (pool === 'gacha_reveal') return sess.gacha?.lastRevealBatch?.[idx] || null;
+    if (pool === 'concept_collection') return sess.conceptLab?.vault?.[idx] || null;
+    if (pool === 'photo_collection') return sess.photoLab?.drafts?.[idx] || null;
     return sess.tinder?.[pool]?.[idx] || null;
 }
 
@@ -2950,9 +3201,11 @@ function formatRemainingMs(ms) {
 function syncGachaWallClockCooldown(_sess, cfg) {
     reconcileGachaWalletFromLocalStorage(cfg);
     const maxCap = Math.max(3, Math.min(50, Number(cfg.gachaMaxPullsPerCycle) || 10));
+    const cdMin = Math.max(5, Math.min(1440, Number(cfg.gachaCooldownMinutes) || 120));
     const res = syncGachaWalletState(cfg.gachaWallet, {
         maxCap,
         timerEnabled: cfg.gachaTimerEnabled !== false,
+        cooldownMinutes: cdMin,
         nowMs: Date.now(),
     });
     if (res.changed) {
@@ -2996,7 +3249,7 @@ function renderGachaSummonSubScreen(sess) {
     );
     const gDrawerOpen = Boolean(state.gachaDrawerOpen);
     const gTab = state.gachaDrawerTab === 'rules' ? 'rules' : 'wishes';
-    const gachaDrawerSummary = `${hasGachaPrefsFilled ? tx('Пожелания заданы', 'Wishes set') : tx('Пустая анкета = полный рандом по тегам', 'Blank = pure tag randomness')} · ${luckShort}${cfg.gachaSacrificeFailEnabled ? ` · ${tx(`Риск жертвы ${cfg.gachaSacrificeFailChance}%`, `Sacrifice risk ${cfg.gachaSacrificeFailChance}%`)}` : ''}`;
+    const gachaDrawerSummary = `${hasGachaPrefsFilled ? tx('Пожелания заданы', 'Wishes set') : tx('Пустая анкета = полный рандом по тегам', 'Blank = pure tag randomness')} · ${luckShort}${cfg.autoArtWithCards ? tx(' · С артом', ' · With Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён', ' · Safe Art') : ''}${cfg.gachaSacrificeFailEnabled ? ` · ${tx(`Риск жертвы ${cfg.gachaSacrificeFailChance}%`, `Sacrifice risk ${cfg.gachaSacrificeFailChance}%`)}` : ''}`;
 
     return `
     <!-- ATTACHED GACHA QUESTIONNAIRE & RULES DRAWER (RIGHT ABOVE SUMMONS!) -->
@@ -3018,7 +3271,7 @@ function renderGachaSummonSubScreen(sess) {
                         ${esc(tx('Анкета призыва', 'Summon Wishes'))}
                     </button>
                     <button type="button" class="nmf-seg-btn ${gTab === 'rules' ? 'nmf-active' : ''}" data-act="set-gacha-drawer-tab" data-gtab="rules">
-                        ${esc(tx('Правила, удача и таймер', 'Rules, Luck & Timer'))}
+                        ${esc(tx('Правила, арт и таймер', 'Rules, Art & Timer'))}
                     </button>
                 </div>
 
@@ -3094,8 +3347,8 @@ function renderGachaSummonSubScreen(sess) {
                 </div>` : `
                 <div class="nmf-friendly-guide">
                     ${tx(
-                        '<strong>Как работают редкость и молитвы:</strong> выбранные вами теги и роль сохраняются на любой редкости, а звёзды (1★–5★) меняют масштаб, влияние и статус героя. В честном режиме 10-я молитва без 4★+ гарантированно приносит 4★ или 5★. Ненужные карты в Коллекции можно приносить в жертву за бонусные Молитвы (+1..+5) или сливать по 2–3 штуки на Алтаре.',
-                        '<strong>How rarity & prayers work:</strong> your tags and chosen role are always respected, while stars (1★–5★) scale status and scope. In Fair mode, the 10th pull without 4★+ guarantees 4★ or 5★. Sacrifice unwanted cards for +1..+5 Bonus Prayers or fuse 2–3 cards on the Altar.',
+                        '<strong>Как работают редкость и молитвы:</strong> выбранные вами теги и роль сохраняются на любой редкости, а звёзды (1–5 зв.) меняют масштаб, влияние и статус героя. В честном режиме 10-я молитва без 4+ зв. гарантированно приносит 4 или 5 звёзд. Ненужные карты в Коллекции можно приносить в жертву за бонусные Молитвы (+1..+5) или сливать по 2–3 штуки на Алтаре.',
+                        '<strong>How rarity & prayers work:</strong> your tags and chosen role are always respected, while stars (1–5 stars) scale status and scope. In Fair mode, the 10th pull without 4+ stars guarantees 4 or 5 stars. Sacrifice unwanted cards for +1..+5 Bonus Prayers or fuse 2–3 cards on the Altar.',
                     )}
                 </div>
 
@@ -3113,6 +3366,8 @@ function renderGachaSummonSubScreen(sess) {
                             ${GACHA_RESOLUTION_OPTIONS.map((opt) => `<option value="${opt.id}" ${(gc.aspectRatio || 'sillyimages_default') === opt.id ? 'selected' : ''}>${esc(isEn() ? opt.labelEn : opt.label)}</option>`).join('')}
                         </select>
                     </div>
+
+                    ${renderArtSyncTogglesBlock(sess, cfg, { context: 'gacha' })}
 
                     <div class="nmf-toggle-line" data-act="toggle-gacha-timer-cfg">
                         <span style="font-size:12px;font-weight:600">${esc(tx('Лимит и пополнение Молитв по таймеру', 'Prayer Cycle Limit & Cooldown Timer'))}</span>
@@ -3179,10 +3434,16 @@ function renderGachaSummonSubScreen(sess) {
                 <div class="nmf-gacha-title">${esc(tx('Молитва Тегов', 'Prayer of Tags'))}</div>
             </div>
             <div class="nmf-pity-box">
-                <div class="nmf-pity-num">${esc(tx('Молитв', 'Prayers'))}: ${cfg.gachaTimerEnabled === false ? '∞' : totalWishes}</div>
+                <div class="nmf-pity-num">${cfg.gachaTimerEnabled === false
+                    ? `${esc(tx('Молитв', 'Prayers'))}: ∞`
+                    : (coolingDown
+                        ? esc(tx(`Цикл: 0/${maxCap}`, `Cycle: 0/${maxCap}`))
+                        : `${esc(tx('Молитв', 'Prayers'))}: ${totalWishes}`)}</div>
                 <div class="nmf-pity-sub">${cfg.gachaTimerEnabled === false
                     ? esc(tx(`Потрачено: ${spentInCycle}`, `Spent: ${spentInCycle}`))
-                    : esc(tx(`Цикл: ${freeWishesLeft}/${maxCap}${bonusWishes > 0 ? ` · +${bonusWishes} жертв.` : ''}`, `Cycle: ${freeWishesLeft}/${maxCap}${bonusWishes > 0 ? ` · +${bonusWishes} bonus` : ''}`))}</div>
+                    : (coolingDown
+                        ? esc(tx(`Таймер · Жертвенных: ${bonusWishes}`, `Cooldown · Bonus: ${bonusWishes}`))
+                        : esc(tx(`Базовых: ${freeWishesLeft}/${maxCap}${bonusWishes > 0 ? ` · +${bonusWishes} жертв.` : ''}`, `Base: ${freeWishesLeft}/${maxCap}${bonusWishes > 0 ? ` · +${bonusWishes} bonus` : ''}`)))}</div>
             </div>
         </div>
 
@@ -3225,10 +3486,12 @@ function renderGachaSummonSubScreen(sess) {
 
         <div class="nmf-wish-actions">
             <button type="button" class="nmf-wish-btn" id="nmf-wish-btn-1" data-act="gacha-wish" data-count="1" data-canpull="${canPull1 ? '1' : '0'}" ${state.busy || sess.frozen || !validFormula || !canPull1 ? 'disabled' : ''}>
-                ${NMF_ICONS.primogem} ${esc(tx('Молитва ×1', 'Pray ×1'))}
+                ${NMF_ICONS.primogem} ${coolingDown && bonusWishes >= 1 ? esc(tx('За жертву ×1', 'Bonus Pray ×1')) : esc(tx('Молитва ×1', 'Pray ×1'))}
             </button>
             <button type="button" class="nmf-wish-btn nmf-wish-gold" id="nmf-wish-btn-3" data-act="gacha-wish" data-count="3" data-canpull="${canPull3 ? '1' : '0'}" ${state.busy || sess.frozen || !validFormula || !canPull3 ? 'disabled' : ''}>
-                ${NMF_ICONS.spark} ${canPull3 ? esc(tx('Молитва ×3', 'Pray ×3')) : `${esc(tx('Молитва ×3', 'Pray ×3'))} (${totalWishes}/3)`}
+                ${NMF_ICONS.spark} ${canPull3
+                    ? (coolingDown ? esc(tx('За жертву ×3', 'Bonus Pray ×3')) : esc(tx('Молитва ×3', 'Pray ×3')))
+                    : `${esc(tx('Молитва ×3', 'Pray ×3'))} (${totalWishes}/3)`}
             </button>
         </div>
     </div>
@@ -3382,6 +3645,9 @@ function renderWishRevealOverlay(sess) {
                                 <button type="button" class="nmf-btn-secondary" data-act="sacrifice-gacha-id" data-id="${esc(colItem.id)}" title="${esc(tx(`Пожертвовать карту ради +${computeSacrificeWishGain(colItem.stars)} Молитв`, `Sacrifice card for +${computeSacrificeWishGain(colItem.stars)} Prayers`))}">
                                     ${NMF_ICONS.sacrifice} +${computeSacrificeWishGain(colItem.stars)} ${esc(tx('молитв', 'prayers'))}
                                 </button>
+                                <button type="button" class="nmf-btn-secondary" data-act="send-cand-to-concept" data-ref="gacha:${esc(colItem.id)}" title="${esc(tx('Отправить в Концепт-арт Бюро', 'Send to Concept Art Lab'))}">
+                                    ${NMF_ICONS.conceptBoard} ${esc(tx('В Концепт', 'To Concept'))}
+                                </button>
                                 <button type="button" class="nmf-btn-primary" style="flex:1;min-width:150px" data-act="expand-gacha-id" data-id="${esc(colItem.id)}" ${state.busy ? 'disabled' : ''}>
                                     ${NMF_ICONS.spark} ${esc(tx('Собрать Карточку V2', 'Build Full V2 Card'))}
                                 </button>
@@ -3445,23 +3711,18 @@ function renderSwipeTab(sess) {
     </div>
 
     <details class="nmf-spoiler" ${state.swipeControlsOpen ? 'open' : ''}>
-        <summary><span>Параметры колоды (×${Number(td.batchSize) || 1}) и стоп-слова (${td.dislikedTags.length + td.dislikedNotes.length})</span>${NMF_ICONS.chevronDown}</summary>
+        <summary><span>${esc(tx(`Параметры колоды (×${Number(td.batchSize) || 1}${cfg.autoArtWithCards ? ' · С артом' : ''}${cfg.safeFandomArtPrompt ? ' · Без имён' : ''}) и стоп-слова (${td.dislikedTags.length + td.dislikedNotes.length})`, `Deck Settings (×${Number(td.batchSize) || 1}${cfg.autoArtWithCards ? ' · With Art' : ''}${cfg.safeFandomArtPrompt ? ' · Safe Art' : ''}) & Bans (${td.dislikedTags.length + td.dislikedNotes.length})`))}</span>${NMF_ICONS.chevronDown}</summary>
         <div class="nmf-spoiler-body">
-            <div class="nmf-grid-2">
-                <div class="nmf-field">
-                    <label class="nmf-label">Сколько анкет делать разом</label>
-                    <select class="nmf-select" data-tinder="batchSize" ${sess.frozen ? 'disabled' : ''}>
-                        <option value="1" ${Number(td.batchSize) === 1 ? 'selected' : ''}>По 1 анкете</option>
-                        <option value="3" ${Number(td.batchSize) === 3 ? 'selected' : ''}>Пачкой по 3 анкеты</option>
-                        <option value="5" ${Number(td.batchSize) === 5 ? 'selected' : ''}>Пачкой по 5 анкет сразу</option>
-                    </select>
-                </div>
-                ${canArt ? `
-                <div class="nmf-toggle-line" data-act="toggle-tinder-autoart">
-                    <span style="font-size:12px;font-weight:700">Авто-подгрузка фото по очереди</span>
-                    <div class="nmf-switch ${td.autoArt ? 'nmf-on' : ''}"></div>
-                </div>` : ''}
+            <div class="nmf-field">
+                <label class="nmf-label">${esc(tx('Сколько анкет делать разом', 'Batch Size per Search'))}</label>
+                <select class="nmf-select" data-tinder="batchSize" ${sess.frozen ? 'disabled' : ''}>
+                    <option value="1" ${Number(td.batchSize) === 1 ? 'selected' : ''}>${esc(tx('По 1 анкете', '1 Dossier'))}</option>
+                    <option value="3" ${Number(td.batchSize) === 3 ? 'selected' : ''}>${esc(tx('Пачкой по 3 анкеты', 'Batch of 3 Dossiers'))}</option>
+                    <option value="5" ${Number(td.batchSize) === 5 ? 'selected' : ''}>${esc(tx('Пачкой по 5 анкет сразу', 'Batch of 5 Dossiers'))}</option>
+                </select>
             </div>
+
+            ${renderArtSyncTogglesBlock(sess, cfg, { context: 'swipe' })}
 
             <div class="nmf-field">
                 <label class="nmf-label">Вписать вручную, чего НЕ предлагать в Свайпах</label>
@@ -3516,6 +3777,7 @@ function renderSwipeTab(sess) {
                     <span class="nmf-match-badge">${Number(current.compatibility) || 91}% MATCH</span>
                     <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
                         <button type="button" class="nmf-art-chip-btn" data-act="send-cand-to-blitz" data-source="tinder" data-ref="queue:${esc(current.id)}" title="Раскрыть этого героя вопросами в Блице">${NMF_ICONS.blitz} В Блиц</button>
+                        <button type="button" class="nmf-art-chip-btn" data-act="send-cand-to-concept" data-ref="queue:${esc(current.id)}" title="Отправить этого героя в Концепт-арт Бюро">${NMF_ICONS.conceptBoard} Концепт</button>
                         <button type="button" class="nmf-art-chip-btn" data-act="trigger-cand-upload" data-pool="queue" data-idx="0" title="Загрузить свой арт с устройства">${NMF_ICONS.upload} Своё</button>
                         ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" data-act="open-crop-cand" data-pool="queue" data-idx="0" title="Кадрировать арт">${NMF_ICONS.crop}</button>` : ''}
                         <button type="button" class="nmf-art-chip-btn" data-act="edit-cand" data-pool="queue" data-idx="0" title="Править превью">${NMF_ICONS.editSmall}</button>
@@ -3624,8 +3886,8 @@ function renderGridSortFilterBar({ isGacha = false, totalCount = 0, shownCount =
         <div class="nmf-chip-wrap" style="gap:4px">
             <button type="button" class="nmf-chip ${validForTab === 'all' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="all">${esc(tx('Все', 'All'))} (${totalCount})</button>
             ${isGacha ? `
-            <button type="button" class="nmf-chip ${validForTab === 's5' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="s5">${esc(tx('5★', '5★'))}</button>
-            <button type="button" class="nmf-chip ${validForTab === 's4plus' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="s4plus">${esc(tx('4★+', '4★+'))}</button>
+            <button type="button" class="nmf-chip ${validForTab === 's5' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="s5">${NMF_ICONS.star} ${esc(tx('5 зв.', '5 Stars'))}</button>
+            <button type="button" class="nmf-chip ${validForTab === 's4plus' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="s4plus">${NMF_ICONS.star} ${esc(tx('4+ зв.', '4+ Stars'))}</button>
             <button type="button" class="nmf-chip ${validForTab === 'fused' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="fused">${esc(tx('Синтез', 'Fused'))}</button>` : ''}
             <button type="button" class="nmf-chip ${validForTab === 'with_art' ? 'nmf-on' : ''}" data-act="set-grid-filter" data-flt="with_art">${esc(tx('С артом', 'With Art'))}</button>
         </div>
@@ -3760,11 +4022,14 @@ function renderGachaCollectionView(sess) {
                 </div>
             </div>
             <div style="padding:0 8px 8px;display:flex;flex-direction:column;gap:4px">
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-                    <button type="button" class="nmf-btn-secondary ${inSlot ? 'nmf-active' : ''}" style="height:26px;font-size:10px;padding:0 4px;white-space:nowrap" data-act="gacha-toggle-fusion-slot" data-id="${esc(c.id)}">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
+                    <button type="button" class="nmf-btn-secondary ${inSlot ? 'nmf-active' : ''}" style="height:26px;font-size:9.5px;padding:0 3px;white-space:nowrap" data-act="gacha-toggle-fusion-slot" data-id="${esc(c.id)}">
                         ${esc(inSlot ? tx('Выбрано', 'Selected') : tx('+ Алтарь', '+ Altar'))}
                     </button>
-                    <button type="button" class="nmf-btn-secondary" style="height:26px;font-size:10px;padding:0 4px;white-space:nowrap" data-act="send-cand-to-blitz" data-source="gacha" data-ref="gacha:${esc(c.id)}" title="${esc(tx('Раскрыть в Блице', 'Deepen in Blitz'))}">
+                    <button type="button" class="nmf-btn-secondary" style="height:26px;font-size:9.5px;padding:0 3px;white-space:nowrap" data-act="send-cand-to-concept" data-ref="gacha:${esc(c.id)}" title="${esc(tx('Отправить в Концепт-арт', 'Send to Concept Lab'))}">
+                        ${esc(tx('Концепт', 'Concept'))}
+                    </button>
+                    <button type="button" class="nmf-btn-secondary" style="height:26px;font-size:9.5px;padding:0 3px;white-space:nowrap" data-act="send-cand-to-blitz" data-source="gacha" data-ref="gacha:${esc(c.id)}" title="${esc(tx('Раскрыть в Блице', 'Deepen in Blitz'))}">
                         ${esc(tx('В Блиц', 'To Blitz'))}
                     </button>
                 </div>
@@ -3861,23 +4126,35 @@ function renderMatchesTab(sess) {
     const cfg = getSettings();
     const liked = sess.tinder.liked || [];
     const gachaCol = sess.gacha?.collection || [];
+    const conceptCol = sess.conceptLab?.vault || [];
+    const photoCol = sess.photoLab?.drafts || [];
     const passed = sess.tinder.passed || [];
     const vault = cfg.savedVault || [];
-    const sub = ['liked', 'gacha_collection', 'passed', 'vault'].includes(state.matchesSubTab) ? state.matchesSubTab : 'liked';
+    const sub = ['liked', 'gacha_collection', 'concept_collection', 'photo_collection', 'passed', 'vault'].includes(state.matchesSubTab)
+        ? state.matchesSubTab
+        : 'liked';
 
     const colHead = `
     <div class="nmf-page-head" style="padding-bottom:2px">
         <h1 class="nmf-page-h1" style="font-size:clamp(22px,4.8vw,28px)">${esc(tx('Коллекция', 'Collection'))}</h1>
-        <p class="nmf-page-lead" style="margin-top:4px;font-size:12.5px">${esc(tx('Мэтчи, призывы Гачи, архив и готовые карточки Хранилища.', 'Matches, Gacha summons, passed archive, and finished cards in your Vault.'))}</p>
+        <p class="nmf-page-lead" style="margin-top:4px;font-size:12.5px">${esc(tx('Мэтчи, призывы Гачи, Концепт-арты, Герои по фото, архив и Хранилище.', 'Matches, Gacha summons, Concept Arts, Photo profiles, archive, and Vault.'))}</p>
     </div>
     <nav class="nmf-underline-tabs" aria-label="${esc(tx('Разделы коллекции', 'Collection tabs'))}">
         <button type="button" class="nmf-utab ${sub === 'liked' ? 'nmf-active' : ''}" data-act="matches-sub" data-sub="liked">${esc(tx('Мэтчи', 'Matches'))}<em>${liked.length}</em></button>
         <button type="button" class="nmf-utab ${sub === 'gacha_collection' ? 'nmf-active' : ''}" data-act="matches-sub" data-sub="gacha_collection">${esc(tx('Гача', 'Gacha'))}<em>${gachaCol.length}</em></button>
+        <button type="button" class="nmf-utab ${sub === 'concept_collection' ? 'nmf-active' : ''}" data-act="matches-sub" data-sub="concept_collection">${esc(tx('Концепт Арты', 'Concept Arts'))}<em>${conceptCol.length}</em></button>
+        <button type="button" class="nmf-utab ${sub === 'photo_collection' ? 'nmf-active' : ''}" data-act="matches-sub" data-sub="photo_collection">${esc(tx('Герой по Фото', 'From Photo'))}<em>${photoCol.length}</em></button>
         <button type="button" class="nmf-utab ${sub === 'passed' ? 'nmf-active' : ''}" data-act="matches-sub" data-sub="passed">${esc(tx('Мимо', 'Passed'))}<em>${passed.length}</em></button>
         <button type="button" class="nmf-utab ${sub === 'vault' ? 'nmf-active' : ''}" data-act="matches-sub" data-sub="vault">${esc(tx('Хранилище', 'Vault'))}<em>${vault.length}</em></button>
     </nav>`;
 
     if (sub === 'gacha_collection') return `${colHead}${renderGachaCollectionView(sess)}`;
+    if (sub === 'concept_collection') {
+        return `${colHead}${renderConceptCollectionViewHtml({ sess, state, esc, safeImgSrc, resolveDisplayOrCoverSpec, resolvePuzzleTileSpec })}`;
+    }
+    if (sub === 'photo_collection') {
+        return `${colHead}${renderPhotoCollectionViewHtml({ sess, state, esc, safeImgSrc, resolveDisplayOrCoverSpec, resolvePuzzleTileSpec })}`;
+    }
     if (sub === 'vault') return `${colHead}${renderSavedVaultView(sess)}`;
 
     const isPassedView = sub === 'passed';
@@ -3917,6 +4194,7 @@ function renderMatchesTab(sess) {
             </div>
             <div style="padding:0 8px 8px;display:flex;flex-wrap:wrap;gap:4px">
                 <button type="button" class="nmf-btn-primary" style="flex:1;height:28px;font-size:10px;padding:0 6px" data-act="${isPassedView ? 'expand-passed' : 'expand-liked'}" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>Собрать</button>
+                ${!isPassedView ? `<button type="button" class="nmf-btn-secondary" style="height:28px;font-size:10px;padding:0 6px" data-act="send-cand-to-concept" data-ref="liked:${esc(c.id)}" title="Отправить в Концепт-арт Бюро">Концепт</button>` : ''}
                 ${!isPassedView ? `<button type="button" class="nmf-btn-secondary" style="height:28px;font-size:10px;padding:0 6px" data-act="send-cand-to-blitz" data-source="tinder" data-ref="liked:${esc(c.id)}" title="Раскрыть этого героя в Блице">В Блиц</button>` : ''}
                 <button type="button" class="nmf-icon-btn nmf-sq" style="height:28px;width:28px" data-act="edit-cand" data-pool="${isPassedView ? 'passed' : 'liked'}" data-idx="${idx}">${NMF_ICONS.editSmall}</button>
                 ${isPassedView ? `<button type="button" class="nmf-icon-btn nmf-sq" style="height:28px;width:28px" data-act="restore-passed-to-deck" data-idx="${idx}">${NMF_ICONS.undo}</button>` : ''}
@@ -3965,8 +4243,9 @@ function renderBlitzTab(sess) {
     const candidatesList = listBlitzSelectableCandidates(sess);
     const seedHit = resolveBlitzSeedCandidate(sess);
     const seedEntity = seedHit?.entity || null;
-    const seedThumb = seedEntity ? safeImgSrc(resolveEntityDisplayUrl(seedEntity)) : '';
-    const sourceEnabled = (bz.useTinderContext !== false) || Boolean(bz.useGachaContext);
+    const seedPortraitEnt = seedEntity ? resolveHeroTruePortraitEntity(sess, seedEntity) : null;
+    const seedThumb = seedPortraitEnt ? safeImgSrc(resolveEntityDisplayUrl(seedPortraitEnt)) : '';
+    const sourceEnabled = (bz.useTinderContext !== false) || Boolean(bz.useGachaContext) || Boolean(bz.useConceptContext) || Boolean(bz.usePhotoContext);
     const curSelRef = bz.selectedCandidateRef === '__none__' ? '__none__' : (seedHit?.ref || '__none__');
 
     return `
@@ -4039,6 +4318,14 @@ function renderBlitzTab(sess) {
                 <div class="nmf-toggle-line" data-act="toggle-blitz-gacha-ctx">
                     <span style="font-size:12px;font-weight:600">Брать анкету из Гачи (по умолч. НЕТ)</span>
                     <div class="nmf-switch ${bz.useGachaContext ? 'nmf-on' : ''}"></div>
+                </div>
+                <div class="nmf-toggle-line" data-act="toggle-blitz-concept-ctx">
+                    <span style="font-size:12px;font-weight:600">Брать из Концепт Артов (по умолч. НЕТ)</span>
+                    <div class="nmf-switch ${bz.useConceptContext ? 'nmf-on' : ''}"></div>
+                </div>
+                <div class="nmf-toggle-line" data-act="toggle-blitz-photo-ctx">
+                    <span style="font-size:12px;font-weight:600">Брать из Герой по Фото (по умолч. НЕТ)</span>
+                    <div class="nmf-switch ${bz.usePhotoContext ? 'nmf-on' : ''}"></div>
                 </div>
             </div>
         </details>
@@ -4310,9 +4597,7 @@ function renderCreateTab(sess) {
                 </div>
                 <div class="nmf-field">
                     <label class="nmf-label">${esc(tx('Шаблон структуры карточки', 'Card Structure Template'))}</label>
-                    <select class="nmf-select" data-intake="cardFormat" ${sess.frozen ? 'disabled' : ''}>
-                        ${CARD_FORMATS.map((f) => `<option value="${f.id}" ${sess.intake.cardFormat === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
-                    </select>
+                    ${renderTemplateManagerWidgetHtml({ sess, cfg: getSettings(), state, esc, rosterChars: state.rosterChars || [] })}
                 </div>
                 <div class="nmf-field">
                     <label class="nmf-label"><span>${esc(worldMode && sess.architect.useIntake !== false ? tx('Опишите мир, систему или артефакт', 'Describe the world, system, or artifact') : tx('Опишите задумку своими словами', 'Describe your idea in your own words'))}</span></label>
@@ -5486,6 +5771,128 @@ function ensureLiveGachaCooldownTicker() {
     if (typeof gachaCooldownTickId?.unref === 'function') gachaCooldownTickId.unref();
 }
 
+function renderPhotoLabTab(sess) {
+    return renderPhotoLabTabHtml({
+        sess,
+        cfg: getSettings(),
+        state,
+        esc,
+        safeImgSrc,
+        renderStudioRoomBar,
+        rosterChars: state.rosterChars || [],
+    });
+}
+
+function renderConceptLabTab(sess) {
+    return renderConceptLabTabHtml({
+        sess,
+        cfg: getSettings(),
+        state,
+        esc,
+        safeImgSrc,
+        renderStudioRoomBar,
+        renderCheckableQuestionCard,
+    });
+}
+
+async function upsertConceptVaultEntry(sess) {
+    if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+    const cl = sess.conceptLab;
+    if (!Array.isArray(cl.vault)) cl.vault = [];
+    const seedHit = resolveConceptSeedCandidate(sess);
+    const seedEntity = seedHit?.entity || null;
+    const sourceRef = seedHit ? seedHit.ref : '__none__';
+
+    let entry = null;
+    if (sourceRef !== '__none__') {
+        entry = cl.vault.find((v) => v.sourceRef === sourceRef) || null;
+    } else if (cl.activeConceptId) {
+        entry = cl.vault.find((v) => v.id === cl.activeConceptId) || null;
+    }
+
+    const derivedName = seedEntity?.name
+        || (cl.themeBrief ? cl.themeBrief.split(/[.,;\n]/)[0].trim().slice(0, 48) : '')
+        || (cl.subjectKind === 'world' ? 'Концепт мира' : 'Концепт героя');
+
+    if (!entry) {
+        entry = {
+            id: 'concept_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+            sourceRef,
+            sourceBadge: seedHit?.badge || '',
+            name: derivedName,
+            subjectKind: cl.subjectKind || 'character',
+            conceptMode: cl.conceptMode || 'single',
+            aspectRatio: cl.aspectRatio || '3:2',
+            onArtLanguage: cl.onArtLanguage || 'English',
+            themeBrief: cl.themeBrief || '',
+            baseBrief: seedEntity ? buildCleanBriefFromEntity(seedEntity) : '',
+            artNaturalRatio: 0,
+            avatarId: '',
+            avatarDataUrl: '',
+            originalAvatarId: '',
+            anchorPhoto: { avatarId: '', avatarDataUrl: '', originalAvatarId: '' },
+            singleSheet: { avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' },
+            seriesFrames: [],
+            updatedAt: Date.now(),
+        };
+        cl.vault.unshift(entry);
+    }
+
+    cl.activeConceptId = entry.id;
+    entry.sourceRef = sourceRef;
+    entry.sourceBadge = seedHit?.badge || entry.sourceBadge || '';
+    entry.name = seedEntity?.name || entry.name || derivedName;
+    entry.subjectKind = cl.subjectKind || 'character';
+    entry.conceptMode = cl.conceptMode || 'single';
+    entry.aspectRatio = cl.aspectRatio || '3:2';
+    entry.onArtLanguage = cl.onArtLanguage ?? 'English';
+    entry.themeBrief = cl.themeBrief || '';
+    if (seedEntity) {
+        entry.baseBrief = buildCleanBriefFromEntity(seedEntity);
+        entry.epithet = seedEntity.epithet || entry.epithet || '';
+        entry.archetype = seedEntity.archetype || entry.archetype || '';
+        entry.pitch = seedEntity.pitch || entry.pitch || '';
+        entry.appearance = seedEntity.appearance || entry.appearance || '';
+        entry.quote = seedEntity.quote || entry.quote || '';
+        entry.imagePrompt = seedEntity.imagePrompt || entry.imagePrompt || '';
+        entry.tags = Array.isArray(seedEntity.tags) ? [...seedEntity.tags] : (entry.tags || []);
+        if (seedEntity.stars) entry.stars = seedEntity.stars;
+    }
+    entry.anchorPhoto = { ...(cl.anchorPhoto || { avatarId: '', avatarDataUrl: '', originalAvatarId: '' }) };
+    entry.singleSheet = { ...(cl.singleSheet || { title: '', avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' }) };
+    entry.seriesFrames = Array.isArray(cl.seriesFrames)
+        ? cl.seriesFrames.map((f) => ({ ...f }))
+        : [];
+    // Strictly store ONLY the character's portrait/anchor photo as entry avatar — NEVER overwrite with a gym/object series frame!
+    const portraitSource = (seedEntity && (seedEntity.avatarId || seedEntity.avatarDataUrl))
+        ? seedEntity
+        : ((entry.anchorPhoto.avatarId || entry.anchorPhoto.avatarDataUrl) ? entry.anchorPhoto : null);
+    if (portraitSource) {
+        entry.avatarId = portraitSource.avatarId || '';
+        entry.avatarDataUrl = portraitSource.avatarDataUrl || '';
+    } else {
+        entry.avatarId = '';
+        entry.avatarDataUrl = '';
+    }
+    entry.updatedAt = Date.now();
+    return entry;
+}
+
+function loadConceptVaultItemIntoWorkspace(sess, entry) {
+    if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+    const cl = sess.conceptLab;
+    cl.activeConceptId = entry.id;
+    cl.linkedCandidateRef = entry.sourceRef || '__none__';
+    cl.subjectKind = entry.subjectKind || 'character';
+    cl.conceptMode = entry.conceptMode || 'single';
+    cl.aspectRatio = entry.aspectRatio || '3:2';
+    cl.onArtLanguage = entry.onArtLanguage ?? 'English';
+    cl.themeBrief = entry.themeBrief || '';
+    cl.anchorPhoto = { ...(entry.anchorPhoto || { avatarId: '', avatarDataUrl: '', originalAvatarId: '' }) };
+    cl.singleSheet = { ...(entry.singleSheet || { avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' }) };
+    cl.seriesFrames = Array.isArray(entry.seriesFrames) ? entry.seriesFrames.map((f) => ({ ...f })) : [];
+}
+
 export function renderWindow() {
     if (typeof document === 'undefined') return;
     const win = document.getElementById('nmf-window');
@@ -5540,12 +5947,18 @@ export function renderWindow() {
         matches: renderMatchesTab,
         blitz: renderBlitzTab,
         create: renderCreateTab,
+        photo: renderPhotoLabTab,
+        concept: renderConceptLabTab,
         art: renderArtStudioTab,
         editor: renderEditorTab,
     }[state.activeTab]?.(sess) || renderHomeTab(sess);
 
-    const catchTotalCount = (sess.tinder?.liked || []).length + (sess.gacha?.collection || []).length + (cfg.savedVault || []).length;
-    const isStudioArea = ['home', 'swipe', 'blitz', 'create', 'art'].includes(state.activeTab);
+    const catchTotalCount = (sess.tinder?.liked || []).length
+        + (sess.gacha?.collection || []).length
+        + (sess.conceptLab?.vault || []).length
+        + (sess.photoLab?.drafts || []).length
+        + (cfg.savedVault || []).length;
+    const isStudioArea = ['home', 'swipe', 'blitz', 'create', 'photo', 'concept', 'art'].includes(state.activeTab);
 
     win.innerHTML = `
         <div class="nmf-header">
@@ -5618,6 +6031,9 @@ export function renderWindow() {
         ${renderPostCardSavedModal(sess)}
         ${renderRequestInspectorModal()}
         <input type="file" id="nmf-cand-photo-upload" accept="image/*" style="display:none"/>
+        <input type="file" id="nmf-photo-lab-upload" accept="image/*" style="display:none"/>
+        <input type="file" id="nmf-concept-anchor-upload" accept="image/*" style="display:none"/>
+        <input type="file" id="nmf-tpl-card-upload" accept=".png,.json,image/png,application/json" style="display:none"/>
         ${renderLoadingOverlay()}
     `;
 
@@ -5662,14 +6078,84 @@ export function renderWindow() {
 }
 
 function maybeAutoTriggerCurrentCardArt() {
-    if (state.activeTab !== 'swipe' || state.busy) return;
-    const cfg = getSettings();
-    const sess = getActiveSession();
-    if (!sess || sess.frozen || !sess.tinder.autoArt) return;
-    if (cfg.imageSource === 'off' || !detectImageExtensions().hasAny) return;
-    const cur = sess.tinder.queue[0];
-    if (!cur || resolveEntityAvatarUrl(cur) || state.loadingArtIds.has(cur.id) || state.artErrors.has(cur.id)) return;
-    triggerCandidateArtInBackground(cur, false);
+    // Immediate card art is now rendered upfront inside withBusy before reveal when cfg.autoArtWithCards is enabled.
+    return;
+}
+
+async function generateImmediateArtForEntity(cand, {
+    sess,
+    cfg,
+    signal,
+    isGacha = false,
+    explicitFusionRefUrls = null,
+    index = 0,
+    total = 1,
+} = {}) {
+    if (!cand) return false;
+    if (signal?.aborted) throw new Error('Cancelled');
+    if (cfg.imageSource === 'off' || !detectImageExtensions().hasAny) return false;
+
+    const prompt = sanitizeSafeFandomVisualPrompt(cand.imagePrompt, cand, Boolean(cfg.safeFandomArtPrompt));
+    const worldAnchorForRef = isGacha
+        ? (sess?.gacha?.wishPrefs?.fandomOrWorld || '')
+        : (sess?.intake?.fandomName || '');
+
+    const prefixLabel = total > 1
+        ? tx(`Рендер иллюстрации ${index + 1}/${total}`, `Rendering illustration ${index + 1}/${total}`)
+        : tx('Рендер иллюстрации карточки', 'Rendering card illustration');
+    state.busyTaskLabel = `${prefixLabel}: «${cand.name || '...'}»`;
+    syncUnifiedVisualizerDom();
+
+    try {
+        const refOpts = await buildPortraitRefOptions(
+            sess,
+            cfg,
+            `${cand.name || ''} ${(cand.tags || []).join(' ')} ${worldAnchorForRef}`,
+            explicitFusionRefUrls,
+            cand,
+        );
+        if (signal?.aborted) throw new Error('Cancelled');
+        const effectiveAspect = isGacha
+            ? (cand.gachaAspectOverride || sess?.gacha?.aspectRatio || 'sillyimages_default')
+            : (cfg.imageAspectRatio || '1:1');
+
+        const dataUrl = await generateCharacterPortrait(prompt, {
+            imageSource: cfg.imageSource,
+            imageProfileId: cfg.imageProfileId,
+            imageStyleId: cfg.imageStyleId,
+            styleWrapMode: cfg.styleWrapMode || 'plain_prefix',
+            imageNegativeId: cfg.imageNegativeId || '',
+            imageCustomNegative: cfg.imageCustomNegative || '',
+            aspectRatio: effectiveAspect,
+            safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+            ...refOpts,
+            signal,
+            onStatus: (info) => {
+                if (signal?.aborted) return;
+                const prov = info?.providerLabel ? ` · ${info.providerLabel}` : '';
+                const stg = info?.detail || info?.stage || '';
+                state.busyTaskLabel = `${prefixLabel}${prov}`;
+                if (stg) state.busyQuip = stg;
+                syncUnifiedVisualizerDom();
+            },
+        });
+        if (signal?.aborted) throw new Error('Cancelled');
+        cand.originalAvatarId = '';
+        cand.croppedAspect = '';
+        const dims = await probeImageDimensionsFromDataUrl(dataUrl);
+        if (dims.w && dims.h) cand.artNaturalRatio = dims.w / dims.h;
+        state.unseenArtIds.delete(String(cand.id));
+        await assignEntityMediaWithFallback(cand, dataUrl, cand.avatarId || '');
+        state.artErrors.delete(cand.id);
+        return true;
+    } catch (err) {
+        if (signal?.aborted || state.busyCancelRequested) {
+            throw err;
+        }
+        const errMsg = err?.message || String(err);
+        state.artErrors.set(cand.id, errMsg);
+        return false;
+    }
 }
 
 function syncCandArtStatusDom() {
@@ -5723,7 +6209,7 @@ async function triggerCandidateArtInBackground(cand, isManual = false, explicitF
 
     const cfg = getSettings();
     const sess = getActiveSession();
-    const prompt = cand.imagePrompt || `${cand.name}, ${cand.appearance || cand.archetype || 'portrait'}`;
+    const prompt = sanitizeSafeFandomVisualPrompt(cand.imagePrompt, cand, Boolean(cfg.safeFandomArtPrompt));
     const isGachaCand = String(cand.id || '').startsWith('gacha_');
     const worldAnchorForRef = isGachaCand
         ? (sess?.gacha?.wishPrefs?.fandomOrWorld || '')
@@ -5749,6 +6235,7 @@ async function triggerCandidateArtInBackground(cand, isManual = false, explicitF
             imageNegativeId: cfg.imageNegativeId || '',
             imageCustomNegative: cfg.imageCustomNegative || '',
             aspectRatio: effectiveAspect,
+            safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
             ...refOpts,
             signal: ctl.signal,
             onStatus: (info) => {
@@ -6180,9 +6667,13 @@ function bindWindowDelegation(win) {
         }
         if (el.dataset.cfgNum) {
             const cfg = getSettings();
-            const n = Math.round(Number(el.value));
-            if (Number.isFinite(n) && n > 0) {
-                cfg[el.dataset.cfgNum] = n;
+            const rawN = Math.round(Number(el.value));
+            if (Number.isFinite(rawN) && rawN > 0) {
+                const key = el.dataset.cfgNum;
+                const clamped = key === 'gachaCooldownMinutes'
+                    ? Math.max(5, Math.min(1440, rawN))
+                    : (key === 'gachaMaxPullsPerCycle' ? Math.max(3, Math.min(50, rawN)) : rawN);
+                cfg[key] = clamped;
                 scheduleSaveSettings();
             }
             return;
@@ -6386,6 +6877,85 @@ function bindWindowDelegation(win) {
         }
         if (el.id === 'nmf-lightbox-prompt' && state.lightboxInfo) {
             state.lightboxInfo.imagePrompt = el.value;
+            return;
+        }
+        if (el.dataset.customTplField) {
+            const cfg = getSettings();
+            const fmtId = el.dataset.fmt || '';
+            const hit = (cfg.customCardFormats || []).find((f) => f.id === fmtId);
+            if (hit) {
+                hit[el.dataset.customTplField] = el.value;
+                scheduleSaveSettings();
+            }
+            return;
+        }
+        if (el.dataset.newTpl) {
+            if (!state.newTplDraft) state.newTplDraft = { shortBtn: '', desc: '', instructions: '' };
+            state.newTplDraft[el.dataset.newTpl] = el.value;
+            return;
+        }
+        if (el.dataset.tplRosterFilter) {
+            state.tplExtractFilter = el.value;
+            renderWindow();
+            return;
+        }
+        if (el.dataset.tplExtractHint) {
+            state.tplExtractHint = el.value;
+            return;
+        }
+        if (el.dataset.photoLab && sess) {
+            if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
+            sess.photoLab[el.dataset.photoLab] = el.value;
+            scheduleSaveSettings();
+            return;
+        }
+        if (el.dataset.concept && sess) {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab[el.dataset.concept] = el.value;
+            scheduleSaveSettings();
+            return;
+        }
+        if (el.dataset.conceptSingle && sess) {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.singleSheet[el.dataset.conceptSingle] = el.value;
+            upsertConceptVaultEntry(sess);
+            scheduleSaveSettings();
+            return;
+        }
+        if (el.dataset.conceptQAns !== undefined && sess) {
+            const qIdx = Number(el.dataset.conceptQAns);
+            if (Array.isArray(sess.conceptLab?.questions) && sess.conceptLab.questions[qIdx]) {
+                sess.conceptLab.questions[qIdx].answer = el.value;
+                scheduleSaveSettings();
+            }
+            return;
+        }
+        if (el.dataset.conceptFrameTitle !== undefined && sess) {
+            const fIdx = Number(el.dataset.conceptFrameTitle);
+            if (sess.conceptLab?.seriesFrames?.[fIdx]) {
+                sess.conceptLab.seriesFrames[fIdx].title = el.value;
+                upsertConceptVaultEntry(sess);
+                scheduleSaveSettings();
+            }
+            return;
+        }
+        if (el.dataset.conceptFrameCap !== undefined && sess) {
+            const fIdx = Number(el.dataset.conceptFrameCap);
+            if (sess.conceptLab?.seriesFrames?.[fIdx]) {
+                sess.conceptLab.seriesFrames[fIdx].caption = el.value;
+                upsertConceptVaultEntry(sess);
+                scheduleSaveSettings();
+            }
+            return;
+        }
+        if (el.dataset.conceptFramePrompt !== undefined && sess) {
+            const fIdx = Number(el.dataset.conceptFramePrompt);
+            if (sess.conceptLab?.seriesFrames?.[fIdx]) {
+                sess.conceptLab.seriesFrames[fIdx].visualPrompt = el.value;
+                upsertConceptVaultEntry(sess);
+                scheduleSaveSettings();
+            }
+            return;
         }
     });
 
@@ -6533,6 +7103,60 @@ function bindWindowDelegation(win) {
             renderWindow();
             return;
         }
+        if (el.dataset.cfgLive && el.tagName === 'SELECT') {
+            cfg[el.dataset.cfgLive] = el.value;
+            saveSettings();
+            renderWindow();
+            return;
+        }
+        if (el.dataset.tplExtractAvatar) {
+            state.tplExtractAvatar = el.value || '';
+            state.tplExtractUploadedCard = null;
+            return;
+        }
+        if (el.dataset.conceptCand && sess) {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            const nextRef = el.value || '__none__';
+            sess.conceptLab.linkedCandidateRef = nextRef;
+            if (nextRef !== '__none__') {
+                const existingVault = (sess.conceptLab.vault || []).find((v) => v.sourceRef === nextRef);
+                if (existingVault) {
+                    loadConceptVaultItemIntoWorkspace(sess, existingVault);
+                } else {
+                    sess.conceptLab.activeConceptId = '';
+                    const hit = resolveConceptSeedCandidate(sess);
+                    if (hit?.entity) {
+                        const seedUrl = resolveEntityAvatarUrl(hit.entity);
+                        if (seedUrl) {
+                            await assignEntityMediaWithFallback(sess.conceptLab.anchorPhoto, seedUrl, '');
+                            sess.conceptLab.anchorMode = 'upload';
+                        } else if (hit.entity.imagePrompt || hit.entity.appearance) {
+                            sess.conceptLab.anchorPrompt = hit.entity.imagePrompt || hit.entity.appearance || '';
+                        }
+                    }
+                }
+            } else {
+                sess.conceptLab.activeConceptId = '';
+            }
+            saveSettings();
+            renderWindow();
+            return;
+        }
+        if (el.dataset.concept && sess) {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab[el.dataset.concept] = el.value;
+            saveSettings();
+            renderWindow();
+            return;
+        }
+        if (el.dataset.conceptFrameAspect !== undefined && sess) {
+            const fIdx = Number(el.dataset.conceptFrameAspect);
+            if (sess.conceptLab?.seriesFrames?.[fIdx]) {
+                sess.conceptLab.seriesFrames[fIdx].aspectRatio = el.value;
+                saveSettings();
+            }
+            return;
+        }
         if (el.dataset.langPreset && sess) {
             const field = el.dataset.langPreset;
             const prevScenario = field === 'userLanguage' ? resolveSimpleLangScenarioId(sess.intake) : '';
@@ -6624,6 +7248,58 @@ function bindWindowDelegation(win) {
                 renderWindow();
             } catch (err) {
                 notifyToast('Не удалось прочитать файл: ' + err.message, true);
+            } finally {
+                el.value = '';
+            }
+            return;
+        }
+        if (el.id === 'nmf-photo-lab-upload' && el.files?.[0] && sess) {
+            try {
+                if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
+                const rawDataUrl = await readLosslessImageFileAsDataUrl(el.files[0]);
+                await assignEntityMediaWithFallback(sess.photoLab.photo, rawDataUrl, sess.photoLab.photo.avatarId || '');
+                saveSettings();
+                notifySuccessToast(tx('Фото прикреплено без сжатия!', 'Photo attached losslessly!'));
+                renderWindow();
+            } catch (err) {
+                notifyToast('Не удалось прочитать фото: ' + err.message, true);
+            } finally {
+                el.value = '';
+            }
+            return;
+        }
+        if (el.id === 'nmf-concept-anchor-upload' && el.files?.[0] && sess) {
+            try {
+                if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+                const rawDataUrl = await readLosslessImageFileAsDataUrl(el.files[0]);
+                await assignEntityMediaWithFallback(sess.conceptLab.anchorPhoto, rawDataUrl, sess.conceptLab.anchorPhoto.avatarId || '');
+                saveSettings();
+                notifySuccessToast(tx('Опорное фото Концепта прикреплено!', 'Anchor photo attached!'));
+                renderWindow();
+            } catch (err) {
+                notifyToast('Не удалось прочитать опорное фото: ' + err.message, true);
+            } finally {
+                el.value = '';
+            }
+            return;
+        }
+        if (el.id === 'nmf-tpl-card-upload' && el.files?.[0]) {
+            try {
+                const file = el.files[0];
+                let rawCardObj = null;
+                if (file.name.toLowerCase().endsWith('.png') || file.type === 'image/png') {
+                    const buf = new Uint8Array(await file.arrayBuffer());
+                    rawCardObj = extractCharaJsonFromPng(buf);
+                } else {
+                    rawCardObj = JSON.parse(await file.text());
+                }
+                const cardState = createCardStateFromImportedJson(rawCardObj);
+                state.tplExtractUploadedCard = cardState;
+                state.tplExtractAvatar = '';
+                notifySuccessToast(tx(`Карточка «${cardState.name}» прочитана для извлечения шаблона!`, `Card "${cardState.name}" loaded for template extraction!`));
+                renderWindow();
+            } catch (err) {
+                notifyToast('Не удалось прочитать карточку: ' + err.message, true);
             } finally {
                 el.value = '';
             }
@@ -7280,7 +7956,9 @@ function bindWindowDelegation(win) {
 
             let updatedPrompt = '';
             const ok = await withBusy('Обновляем промпт внешности с вашим уточнением', async (signal) => {
-                const req = buildVisualPromptRefinementRequest(targetEntity, hint, sess.intake, cfg.transportMode);
+                const req = buildVisualPromptRefinementRequest(targetEntity, hint, sess.intake, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                });
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,
@@ -7587,9 +8265,28 @@ function bindWindowDelegation(win) {
         if (act === 'expand-from-dossier') {
             const ref = state.viewingCandRef;
             if (!ref) return;
-            const cand = resolveEntityFromPoolRef(sess, ref.pool, ref.idx);
+            const rawCand = resolveEntityFromPoolRef(sess, ref.pool, ref.idx);
             state.viewingCandRef = null;
-            if (cand) await expandCandidateIntoFullCard(sess, cand, cfg.transportMode, ref.pool === 'gacha_collection' ? 'gacha' : '');
+            if (!rawCand) return;
+            const linkedConcept = findLinkedConceptForCandidate(sess, ref.pool, rawCand);
+            if (ref.pool === 'photo_collection' && !linkedConcept && rawCand.cardDraft) {
+                const cloneCard = structuredClone(rawCand.cardDraft);
+                const mediaUrl = resolveEntityAvatarUrl(rawCand);
+                if (mediaUrl) {
+                    await assignEntityMediaWithFallback(cloneCard, mediaUrl, cloneCard.avatarId || '');
+                    cloneCard.avatarDirty = true;
+                }
+                assignCardIntoSessionSlot(sess, 'photo', cloneCard);
+                state.activeTab = 'editor';
+                state.editorSubTab = 'main';
+                saveSettings();
+                return renderWindow();
+            }
+            const entityToExpand = linkedConcept || rawCand;
+            const slotHint = ref.pool === 'concept_collection'
+                ? 'concept'
+                : (ref.pool === 'photo_collection' ? 'photo' : (ref.pool === 'gacha_collection' ? 'gacha' : ''));
+            await expandCandidateIntoFullCard(sess, entityToExpand, cfg.transportMode, slotHint);
             return;
         }
         if (act === 'open-crop-editor') {
@@ -8098,6 +8795,7 @@ function bindWindowDelegation(win) {
             await withBusy(count > 1 ? tx(`Молитва Призыва ×${count}`, `Summon Prayer ×${count}`) : tx('Молитва Призыва ×1', 'Summon Prayer ×1'), async (signal) => {
                 const req = buildGachaSummonRequest(sess, plusTags, roll.rarities, cfg.transportMode, {
                     savedVault: cfg.savedVault || [],
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
                 });
                 const raw = await runLlmGeneration({
                     ...req,
@@ -8108,6 +8806,21 @@ function bindWindowDelegation(win) {
                 });
                 const drops = parseGachaSummonResponse(raw, roll.rarities, plusTags, sess.intake.playerNameMode || 'macro').slice(0, count);
                 if (!drops.length) throw new Error(tx('Не удалось распознать выбитых героев.', 'Could not parse summoned characters.'));
+
+                if (cfg.autoArtWithCards && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+                    for (let i = 0; i < drops.length; i += 1) {
+                        if (signal.aborted) throw new Error('Cancelled');
+                        await generateImmediateArtForEntity(drops[i], {
+                            sess,
+                            cfg,
+                            signal,
+                            isGacha: true,
+                            index: i,
+                            total: drops.length,
+                        });
+                    }
+                }
+                if (signal.aborted) throw new Error('Cancelled');
 
                 spendGachaWalletWishes(cfg.gachaWallet, drops.length, {
                     maxCap,
@@ -8192,7 +8905,9 @@ function bindWindowDelegation(win) {
             try {
                 const ok = await withBusy(tx('Синтез Алтаря: рождение героя', 'Altar Synthesis: forging new hero'), async (signal) => {
                     const hintUsed = sess.gacha.fusionHint || '';
-                    const req = buildGachaFusionRequest(sess, donors, hintUsed, cfg.transportMode);
+                    const req = buildGachaFusionRequest(sess, donors, hintUsed, cfg.transportMode, {
+                        safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    });
                     const raw = await runLlmGeneration({
                         ...req,
                         transportMode: cfg.transportMode,
@@ -8201,6 +8916,18 @@ function bindWindowDelegation(win) {
                         signal,
                     });
                     const born = parseGachaFusionResponse(raw, donors, sess.intake.playerNameMode || 'macro', hintUsed);
+                    if (cfg.autoArtWithCards && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+                        await generateImmediateArtForEntity(born, {
+                            sess,
+                            cfg,
+                            signal,
+                            isGacha: true,
+                            explicitFusionRefUrls: donorRefUrls && donorRefUrls.length > 0 ? donorRefUrls : null,
+                            index: 0,
+                            total: 1,
+                        });
+                    }
+                    if (signal.aborted) throw new Error('Cancelled');
                     // True Altar Absorption: consume & permanently remove donor cards now that the new hero is born!
                     const consumedIds = new Set(donors.map((d) => d.id));
                     sess.gacha.collection = (sess.gacha.collection || []).filter((x) => !consumedIds.has(x.id));
@@ -8230,7 +8957,7 @@ function bindWindowDelegation(win) {
                     }
                 }, { taskType: 'llm', cancellable: true });
 
-                if (ok && synthesizedDrop && donorRefUrls && donorRefUrls.length > 0 && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+                if (ok && synthesizedDrop && !cfg.autoArtWithCards && donorRefUrls && donorRefUrls.length > 0 && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
                     // Run silently in background without stealing overlay focus from the Fusion reveal!
                     triggerCandidateArtInBackground(synthesizedDrop, false, donorRefUrls);
                 }
@@ -8266,7 +8993,9 @@ function bindWindowDelegation(win) {
             ].filter(Boolean).join(' — ');
 
             await withBusy(tx('Перерождение героя на Алтаре', 'Reforging Altar hero'), async (signal) => {
-                const req = buildGachaFusionRequest(sess, savedDonors, savedHint, cfg.transportMode);
+                const req = buildGachaFusionRequest(sess, savedDonors, savedHint, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                });
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,
@@ -8280,6 +9009,18 @@ function bindWindowDelegation(win) {
                 reborn.fusedFromNames = [...target.fusedFromNames];
                 reborn.fusedFromDonors = savedDonors;
                 reborn.fusionHintUsed = target.fusionHintUsed || '';
+
+                if (cfg.autoArtWithCards && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+                    await generateImmediateArtForEntity(reborn, {
+                        sess,
+                        cfg,
+                        signal,
+                        isGacha: true,
+                        index: 0,
+                        total: 1,
+                    });
+                }
+                if (signal.aborted) throw new Error('Cancelled');
 
                 state.unseenArtIds.delete(String(target.id));
                 if (colIdx >= 0) sess.gacha.collection[colIdx] = reborn;
@@ -8494,10 +9235,49 @@ function bindWindowDelegation(win) {
             saveSettings();
             return renderWindow();
         }
-        if (act === 'toggle-tinder-autoart') {
-            if (sess.frozen) return;
-            sess.tinder.autoArt = !sess.tinder.autoArt;
+        if (act === 'open-art-studio-room') {
+            state.gachaPrefsOpen = false;
+            state.activeTab = 'art';
+            return renderWindow();
+        }
+        if (act === 'toggle-auto-art-cards' || act === 'toggle-tinder-autoart') {
+            cfg.autoArtWithCards = !Boolean(cfg.autoArtWithCards);
+            if (sess?.tinder) sess.tinder.autoArt = cfg.autoArtWithCards;
             saveSettings();
+            if (cfg.autoArtWithCards) {
+                const hasGen = cfg.imageSource !== 'off' && detectImageExtensions().hasAny;
+                const srcSummary = humanizeImageSourceLabel(resolveAutoImageSourceSummary(cfg.imageSource, cfg.imageProfileId));
+                if (hasGen) {
+                    notifySuccessToast(tx(
+                        `Карточки сразу с артом: ВКЛ · Настройки генератора, пропорций и референсов берутся из «Арт-мастерской» (${srcSummary}).`,
+                        `Immediate Card Art: ON · Generator, aspect ratio & references are taken from Art Studio (${srcSummary}).`,
+                    ));
+                } else {
+                    notifyToast(tx(
+                        'Карточки сразу с артом: ВКЛ, но генератор картинок не активен — проверьте «Арт-мастерскую»!',
+                        'Immediate Card Art: ON, but no image generator is active — check Art Studio settings!',
+                    ), true);
+                }
+            } else {
+                notifyToast(tx(
+                    'Карточки сразу с артом: ВЫКЛ (иллюстрации можно создавать вручную по кнопке на карточке).',
+                    'Immediate Card Art: OFF (you can generate illustrations manually on any card).',
+                ));
+            }
+            return renderWindow();
+        }
+        if (act === 'toggle-safe-fandom-art') {
+            cfg.safeFandomArtPrompt = !Boolean(cfg.safeFandomArtPrompt);
+            saveSettings();
+            notifyToast(cfg.safeFandomArtPrompt
+                ? tx(
+                    'Арт-промпт без имён: ВКЛ · В запросе картинки убираются имена героев, фандомов и актёров (параметры рендера берутся из «Арт-мастерской»).',
+                    'Safe Art Prompt: ON · Character, franchise & actor names are omitted from image_prompt (render settings come from Art Studio).',
+                )
+                : tx(
+                    'Арт-промпт без имён: ВЫКЛ · Нейросеть снова может указывать имена героев в запросе картинки.',
+                    'Safe Art Prompt: OFF · AI may include canonical character names in image_prompt again.',
+                ));
             return renderWindow();
         }
         if (act === 'toggle-blitz-choices') {
@@ -8509,10 +9289,15 @@ function bindWindowDelegation(win) {
         if (act === 'send-cand-to-blitz') {
             if (sess.frozen) return;
             state.viewingCandRef = null;
+            if (state.wishRevealState) state.wishRevealState = null;
             const src = btn.dataset.source || 'tinder';
             const ref = btn.dataset.ref || '';
             if (src === 'gacha') {
                 sess.blitz.useGachaContext = true;
+            } else if (src === 'concept') {
+                sess.blitz.useConceptContext = true;
+            } else if (src === 'photo') {
+                sess.blitz.usePhotoContext = true;
             } else {
                 sess.blitz.useTinderContext = true;
             }
@@ -8538,6 +9323,772 @@ function bindWindowDelegation(win) {
             sess.blitz.useGachaContext = !sess.blitz.useGachaContext;
             saveSettings();
             return renderWindow();
+        }
+        if (act === 'toggle-blitz-concept-ctx') {
+            if (sess.frozen) return;
+            sess.blitz.useConceptContext = !sess.blitz.useConceptContext;
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'toggle-blitz-photo-ctx') {
+            if (sess.frozen) return;
+            sess.blitz.usePhotoContext = !sess.blitz.usePhotoContext;
+            saveSettings();
+            return renderWindow();
+        }
+
+        // ── v2.1.0: TEMPLATE MANAGER, PHOTO-TO-CHAR LAB & CONCEPT ART LAB ACTIONS ──
+        if (act === 'toggle-tpl-inspector') {
+            state.tplInspectorOpen = !state.tplInspectorOpen;
+            if (state.tplInspectorOpen) {
+                state.tplCreatorOpen = false;
+                state.tplExtractorOpen = false;
+            }
+            return renderWindow();
+        }
+        if (act === 'toggle-tpl-creator') {
+            state.tplCreatorOpen = !state.tplCreatorOpen;
+            if (state.tplCreatorOpen) {
+                state.tplInspectorOpen = false;
+                state.tplExtractorOpen = false;
+            }
+            return renderWindow();
+        }
+        if (act === 'toggle-tpl-extractor') {
+            state.tplExtractorOpen = !state.tplExtractorOpen;
+            if (state.tplExtractorOpen) {
+                state.tplInspectorOpen = false;
+                state.tplCreatorOpen = false;
+                refreshRosterData().then(() => renderWindow());
+            }
+            return renderWindow();
+        }
+        if (act === 'clone-builtin-tpl') {
+            if (sess.frozen) return;
+            const fmtId = btn.dataset.fmt || sess.intake.cardFormat || 'dossier_19';
+            const srcFmt = resolveCardFormat(fmtId, cfg.customCardFormats, sess.intake);
+            if (!Array.isArray(cfg.customCardFormats)) cfg.customCardFormats = [];
+            const cloned = {
+                id: 'custom_tpl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
+                shortBtn: ((srcFmt.shortBtn || srcFmt.name || 'Копия').slice(0, 32) + ' (Свой)').slice(0, 42),
+                name: `${srcFmt.name} (Своя версия)`.slice(0, 90),
+                desc: srcFmt.desc || 'Пользовательская копия шаблона.',
+                instructions: srcFmt.instructions || '',
+                isCustom: true,
+            };
+            cfg.customCardFormats.push(cloned);
+            sess.intake.cardFormat = cloned.id;
+            state.tplInspectorOpen = true;
+            saveSettings();
+            notifySuccessToast(tx('Создана редактируемая копия шаблона!', 'Editable template copy created!'));
+            return renderWindow();
+        }
+        if (act === 'delete-custom-tpl') {
+            if (sess.frozen) return;
+            const fmtId = btn.dataset.fmt || '';
+            cfg.customCardFormats = (cfg.customCardFormats || []).filter((f) => f.id !== fmtId);
+            if (sess.intake.cardFormat === fmtId) {
+                sess.intake.cardFormat = 'dossier_19';
+            }
+            saveSettings();
+            notifyToast(tx('Пользовательский шаблон удалён.', 'Custom template deleted.'));
+            return renderWindow();
+        }
+        if (act === 'save-new-custom-tpl') {
+            if (sess.frozen) return;
+            const draft = state.newTplDraft || {};
+            const instr = String(draft.instructions || '').trim();
+            if (!instr) {
+                notifyToast(tx('Впишите текст промпта структуры анкеты.', 'Please enter template instructions.'), true);
+                return;
+            }
+            if (!Array.isArray(cfg.customCardFormats)) cfg.customCardFormats = [];
+            const shortBtn = String(draft.shortBtn || 'Свой шаблон').trim().slice(0, 42);
+            const created = {
+                id: 'custom_tpl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
+                shortBtn,
+                name: shortBtn,
+                desc: String(draft.desc || 'Пользовательский шаблон анкеты.').trim().slice(0, 260),
+                instructions: instr.replace(/^(#{1,4})\s*\[([^\]\n]+)\]\s*$/gm, '$1 $2'),
+                isCustom: true,
+            };
+            cfg.customCardFormats.push(created);
+            sess.intake.cardFormat = created.id;
+            state.newTplDraft = { shortBtn: '', desc: '', instructions: '' };
+            state.tplCreatorOpen = false;
+            state.tplInspectorOpen = true;
+            saveSettings();
+            notifySuccessToast(tx(`Шаблон «${created.shortBtn}» добавлен и выбран!`, `Template "${created.shortBtn}" saved and selected!`));
+            return renderWindow();
+        }
+        if (act === 'trigger-tpl-card-upload') {
+            win.querySelector('#nmf-tpl-card-upload')?.click();
+            return;
+        }
+        if (act === 'run-extract-tpl-from-char') {
+            if (sess.frozen) return;
+            const pickedAvatar = state.tplExtractAvatar || win.querySelector('[data-tpl-extract-avatar]')?.value || '';
+            const uploadedCard = state.tplExtractUploadedCard;
+            if (!pickedAvatar && !uploadedCard) {
+                notifyToast(tx('Сначала выберите карточку из Таверны или загрузите PNG/JSON файл.', 'Select a character from Tavern or upload a PNG/JSON card first.'), true);
+                return;
+            }
+            await withBusy(tx('Извлекаем универсальный шаблон анкеты из карточки ИИ...', 'Extracting reusable template from character card...'), async (signal) => {
+                let srcCard = uploadedCard;
+                if (!srcCard && pickedAvatar) {
+                    const { fullChar } = await fetchFullTavernCharacter(pickedAvatar, { signal });
+                    srcCard = createCardStateFromTavernChar(fullChar);
+                }
+                const req = buildExtractCardTemplateRequest(srcCard, state.tplExtractHint, sess.intake, cfg.transportMode);
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const extracted = parseExtractCardTemplateResponse(raw);
+                if (!Array.isArray(cfg.customCardFormats)) cfg.customCardFormats = [];
+                cfg.customCardFormats.push(extracted);
+                cfg.customCardFormats = normalizeCustomCardFormats(cfg.customCardFormats);
+                const latest = cfg.customCardFormats[cfg.customCardFormats.length - 1] || extracted;
+                sess.intake.cardFormat = latest.id;
+                state.tplExtractorOpen = false;
+                state.tplInspectorOpen = true;
+                saveSettings();
+                notifySuccessToast(tx(`Шаблон «${latest.shortBtn}» извлечён из «${srcCard.name}»!`, `Template "${latest.shortBtn}" extracted from "${srcCard.name}"!`));
+            }, { taskType: 'llm', cancellable: true });
+            return;
+        }
+
+        // PHOTO-TO-CHAR VISION LAB ACTIONS
+        if (act === 'trigger-photo-lab-upload') {
+            win.querySelector('#nmf-photo-lab-upload')?.click();
+            return;
+        }
+        if (act === 'photo-lab-use-concept') {
+            if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
+            const srcUrl = resolveEntityAvatarUrl(sess.conceptLab?.anchorPhoto) || resolveEntityAvatarUrl(sess.conceptLab?.singleSheet);
+            if (srcUrl) {
+                await assignEntityMediaWithFallback(sess.photoLab.photo, srcUrl, sess.photoLab.photo.avatarId || '');
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'clear-photo-lab-image') {
+            if (sess.photoLab?.photo) {
+                sess.photoLab.photo = { avatarId: '', avatarDataUrl: '', originalAvatarId: '' };
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'toggle-photo-use-intake') {
+            if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
+            sess.photoLab.useIntake = !sess.photoLab.useIntake;
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'open-photo-collection') {
+            state.activeTab = 'matches';
+            state.matchesSubTab = 'photo_collection';
+            return renderWindow();
+        }
+        if (act === 'run-photo-to-card') {
+            if (sess.frozen) return;
+            if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
+            const photoDataUrl = resolveEntityAvatarUrl(sess.photoLab.photo);
+            if (!photoDataUrl) {
+                notifyToast(tx('Сначала прикрепите фото персонажа или мира.', 'Attach a character or world photo first.'), true);
+                return;
+            }
+            await withBusy(tx('Vision ИИ изучает фото и создаёт первую анкету...', 'Vision AI inspecting photo and building initial profile...'), async (signal) => {
+                const req = buildPhotoToCardRequest(sess, cfg.transportMode, {
+                    customFormats: cfg.customCardFormats,
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                });
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: [photoDataUrl],
+                    signal,
+                });
+                const parsed = parseFullCardResponse(
+                    raw,
+                    cfg.transportMode,
+                    sess.intake.playerNameMode || 'macro',
+                    { fallbackName: sess.photoLab.charName || '', maxAltGreetings: sess.intake.altGreetingsCount },
+                );
+                const cardDraft = createCardStateFromGeneratedDraft(parsed, {
+                    avatarId: '',
+                    fallbackName: sess.photoLab.charName || 'Герой по фото',
+                });
+                const dims = await probeImageDimensionsFromDataUrl(photoDataUrl);
+                if (dims.w && dims.h) cardDraft.artNaturalRatio = dims.w / dims.h;
+                await assignEntityMediaWithFallback(cardDraft, photoDataUrl, '');
+                cardDraft.avatarDirty = true;
+
+                const draftEntry = {
+                    id: 'photo_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+                    name: cardDraft.name || 'Герой по фото',
+                    archetype: (cardDraft.personality || '').split('\n')[0].slice(0, 80),
+                    pitch: (cardDraft.creator_notes || cardDraft.scenario || cardDraft.description || '').slice(0, 320),
+                    appearance: (cardDraft.description || '').slice(0, 800),
+                    quote: '',
+                    tags: String(cardDraft.tags || '').split(',').map((t) => t.trim()).filter(Boolean),
+                    imagePrompt: cardDraft.imagePrompt || '',
+                    cardFormatId: sess.intake.cardFormat || 'dossier_19',
+                    artNaturalRatio: cardDraft.artNaturalRatio || 0,
+                    croppedAspect: '',
+                    avatarId: cardDraft.avatarId || '',
+                    avatarDataUrl: cardDraft.avatarDataUrl || '',
+                    originalAvatarId: '',
+                    cardDraft,
+                    createdAt: Date.now(),
+                };
+                if (!Array.isArray(sess.photoLab.drafts)) sess.photoLab.drafts = [];
+                sess.photoLab.drafts.unshift(draftEntry);
+                sess.photoLab.lastCreatedId = draftEntry.id;
+                assignCardIntoSessionSlot(sess, 'photo', structuredClone(cardDraft));
+                saveSettings();
+                notifySuccessToast(tx(`Первая анкета «${draftEntry.name}» создана и сохранена в Коллекцию!`, `Initial profile "${draftEntry.name}" created and saved to Collection!`));
+            }, { taskType: 'llm', cancellable: true });
+            return;
+        }
+        if (act === 'open-photo-draft-v2') {
+            const pid = btn.dataset.id || '';
+            const found = (sess.photoLab?.drafts || []).find((d) => d.id === pid);
+            if (found?.cardDraft) {
+                const cloneCard = structuredClone(found.cardDraft);
+                const mediaUrl = resolveEntityAvatarUrl(found);
+                if (mediaUrl) {
+                    await assignEntityMediaWithFallback(cloneCard, mediaUrl, cloneCard.avatarId || '');
+                    cloneCard.avatarDirty = true;
+                }
+                assignCardIntoSessionSlot(sess, 'photo', cloneCard);
+                state.activeTab = 'editor';
+                state.editorSubTab = 'main';
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'del-photo-draft-item') {
+            const idx = Number(btn.dataset.idx);
+            if (Array.isArray(sess.photoLab?.drafts) && sess.photoLab.drafts[idx]) {
+                sess.photoLab.drafts.splice(idx, 1);
+                await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+
+        // CONCEPT ART LAB & COLLECTION ACTIONS
+        if (act === 'open-concept-collection') {
+            state.activeTab = 'matches';
+            state.matchesSubTab = 'concept_collection';
+            return renderWindow();
+        }
+        if (act === 'toggle-concept-edit') {
+            const key = btn.dataset.ekey || '';
+            state.editingConceptKey = state.editingConceptKey === key ? '' : key;
+            return renderWindow();
+        }
+        if (act === 'toggle-concept-send-bio') {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.sendSeedBio = !(sess.conceptLab.sendSeedBio !== false);
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'open-concept-seed-card') {
+            const hit = resolveConceptSeedCandidate(sess);
+            if (!hit?.entity) return;
+            if (hit.source === 'gacha') {
+                const idx = (sess.gacha?.collection || []).findIndex((x) => x.id === hit.entity.id);
+                if (idx >= 0) {
+                    state.viewingCandRef = { pool: 'gacha_collection', idx };
+                    return renderWindow();
+                }
+            } else if (hit.source === 'tinder') {
+                const lIdx = (sess.tinder?.liked || []).findIndex((x) => x.id === hit.entity.id);
+                if (lIdx >= 0) {
+                    state.viewingCandRef = { pool: 'liked', idx: lIdx };
+                    return renderWindow();
+                }
+                const qIdx = (sess.tinder?.queue || []).findIndex((x) => x.id === hit.entity.id);
+                if (qIdx >= 0) {
+                    state.lightboxInfo = {
+                        name: hit.entity.name || '',
+                        imageUrl: resolveEntityDisplayUrl(hit.entity) || '',
+                        appearance: [hit.entity.archetype, hit.entity.pitch, hit.entity.appearance].filter(Boolean).join('\n\n'),
+                        imagePrompt: hit.entity.imagePrompt || '',
+                    };
+                    return renderWindow();
+                }
+            } else if (hit.source === 'photo') {
+                state.lightboxInfo = {
+                    name: hit.entity.name || '',
+                    imageUrl: resolveEntityDisplayUrl(hit.entity) || '',
+                    appearance: hit.entity.cardDraft?.description || hit.entity.pitch || '',
+                    imagePrompt: hit.entity.imagePrompt || '',
+                };
+                return renderWindow();
+            }
+            return;
+        }
+        if (act === 'send-cand-to-concept') {
+            if (sess.frozen) return;
+            state.viewingCandRef = null;
+            if (state.wishRevealState) state.wishRevealState = null;
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            const ref = btn.dataset.ref || '__none__';
+            sess.conceptLab.linkedCandidateRef = ref;
+
+            const existing = (sess.conceptLab.vault || []).find((v) => v.sourceRef === ref);
+            if (existing) {
+                loadConceptVaultItemIntoWorkspace(sess, existing);
+            } else {
+                sess.conceptLab.activeConceptId = '';
+                sess.conceptLab.singleSheet = { title: '', avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' };
+                sess.conceptLab.seriesFrames = [];
+                sess.conceptLab.questions = [];
+                const hit = resolveConceptSeedCandidate(sess);
+                if (hit?.entity) {
+                    const seedUrl = resolveEntityAvatarUrl(hit.entity);
+                    if (seedUrl) {
+                        await assignEntityMediaWithFallback(sess.conceptLab.anchorPhoto, seedUrl, '');
+                        sess.conceptLab.anchorMode = 'upload';
+                    } else {
+                        sess.conceptLab.anchorPhoto = { avatarId: '', avatarDataUrl: '', originalAvatarId: '' };
+                        sess.conceptLab.anchorMode = 'generate';
+                    }
+                    sess.conceptLab.anchorPrompt = hit.entity.imagePrompt || hit.entity.appearance || '';
+                }
+            }
+            state.activeTab = 'concept';
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'set-concept-subject') {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.subjectKind = btn.dataset.kind === 'world' ? 'world' : 'character';
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'set-concept-anchor-mode') {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.anchorMode = btn.dataset.amode === 'generate' ? 'generate' : 'upload';
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'trigger-concept-anchor-upload') {
+            win.querySelector('#nmf-concept-anchor-upload')?.click();
+            return;
+        }
+        if (act === 'concept-adopt-seed-avatar') {
+            const hit = resolveConceptSeedCandidate(sess);
+            const seedUrl = hit?.entity ? resolveEntityAvatarUrl(hit.entity) : '';
+            if (seedUrl) {
+                await assignEntityMediaWithFallback(sess.conceptLab.anchorPhoto, seedUrl, '');
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'clear-concept-anchor') {
+            if (sess.conceptLab) {
+                sess.conceptLab.anchorPhoto = { avatarId: '', avatarDataUrl: '', originalAvatarId: '' };
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'gen-concept-anchor-photo') {
+            if (sess.frozen) return;
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            const seedHit = resolveConceptSeedCandidate(sess);
+            const promptRaw = String(sess.conceptLab.anchorPrompt || seedHit?.entity?.imagePrompt || seedHit?.entity?.appearance || '').trim();
+            if (!promptRaw) {
+                notifyToast(tx('Опишите главное фото чара или мира перед генерацией.', 'Describe the main photo before rendering.'), true);
+                return;
+            }
+            await withBusy(tx('Создаём главное опорное фото...', 'Rendering main anchor photo...'), async (signal) => {
+                const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                const aspect = aspectInfo.supportedIds.includes(sess.conceptLab.anchorAspect)
+                    ? sess.conceptLab.anchorAspect
+                    : (aspectInfo.supportedIds[0] || '1:1');
+                const dataUrl = await generateCharacterPortrait(promptRaw, {
+                    imageSource: cfg.imageSource,
+                    imageProfileId: cfg.imageProfileId,
+                    imageStyleId: cfg.imageStyleId,
+                    styleWrapMode: cfg.styleWrapMode,
+                    imageNegativeId: cfg.imageNegativeId,
+                    imageCustomNegative: cfg.imageCustomNegative,
+                    aspectRatio: aspect,
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    signal,
+                });
+                await assignEntityMediaWithFallback(sess.conceptLab.anchorPhoto, dataUrl, sess.conceptLab.anchorPhoto.avatarId || '');
+                saveSettings();
+                notifySuccessToast(tx('Главное фото создано!', 'Main anchor photo rendered!'));
+            }, { taskType: 'art', cancellable: true });
+            return;
+        }
+        if (act === 'set-concept-mode') {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.conceptMode = btn.dataset.cmode === 'series' ? 'series' : 'single';
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'set-concept-series-count') {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.seriesCount = Number(btn.dataset.cnt) || 4;
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'set-concept-q-count') {
+            if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+            sess.conceptLab.questionCount = Number(btn.dataset.cnt) || 4;
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'gen-concept-questions') {
+            if (sess.frozen) return;
+            const seedHit = resolveConceptSeedCandidate(sess);
+            await withBusy(tx('Готовим вопросы анкеты для серии концепт-артов...', 'Preparing Concept Series questions...'), async (signal) => {
+                const req = buildConceptSeriesQuestionsRequest(sess, seedHit?.entity || null, -1, cfg.transportMode);
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                sess.conceptLab.questions = parseBlitzQuestionsResponse(raw);
+                saveSettings();
+            }, { taskType: 'llm', cancellable: true });
+            return;
+        }
+        if (act === 'clear-concept-questions') {
+            if (sess.conceptLab) {
+                sess.conceptLab.questions = [];
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'concept-q-skip') {
+            const idx = Number(btn.dataset.idx);
+            const q = sess.conceptLab?.questions?.[idx];
+            if (q) {
+                q.skipped = !q.skipped;
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'concept-q-pick-opt') {
+            const idx = Number(btn.dataset.idx);
+            const optIdx = Number(btn.dataset.optidx);
+            const q = sess.conceptLab?.questions?.[idx];
+            const optVal = q?.options?.[optIdx];
+            if (q && optVal) {
+                if (!Array.isArray(q.selectedOptions)) q.selectedOptions = [];
+                const pos = q.selectedOptions.indexOf(optVal);
+                if (pos >= 0) q.selectedOptions.splice(pos, 1);
+                else q.selectedOptions.push(optVal);
+                q.skipped = false;
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'concept-q-regen-one') {
+            const idx = Number(btn.dataset.idx);
+            const seedHit = resolveConceptSeedCandidate(sess);
+            if (!sess.conceptLab?.questions?.[idx]) return;
+            await withBusy(tx(`Заменяем вопрос #${idx + 1}...`, `Replacing question #${idx + 1}...`), async (signal) => {
+                const req = buildConceptSeriesQuestionsRequest(sess, seedHit?.entity || null, idx, cfg.transportMode);
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const repl = parseBlitzQuestionsResponse(raw)[0];
+                if (repl) sess.conceptLab.questions[idx] = repl;
+                saveSettings();
+            }, { taskType: 'llm', cancellable: true });
+            return;
+        }
+        if (act === 'run-concept-single-plan' || act === 'run-concept-single-full') {
+            if (sess.frozen) return;
+            const doRenderArt = act === 'run-concept-single-full';
+            const seedHit = resolveConceptSeedCandidate(sess);
+            await withBusy(tx('Проектируем Концепт-лист и общую подпись...', 'Designing Concept Sheet & master caption...'), async (signal) => {
+                const req = buildConceptSinglePlanRequest(sess, seedHit?.entity || null, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                });
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const plan = parseConceptSinglePlanResponse(raw);
+                sess.conceptLab.singleSheet.title = plan.title || '';
+                sess.conceptLab.singleSheet.visualPrompt = plan.visualPrompt;
+                sess.conceptLab.singleSheet.masterCaption = plan.masterCaption;
+
+                if (doRenderArt && detectImageExtensions().hasAny && cfg.imageSource !== 'off') {
+                    state.busyTaskLabel = tx('Рисуем Концепт-лист по плану...', 'Rendering Concept Sheet artwork...');
+                    syncUnifiedVisualizerDom();
+                    const anchorUrl = resolveEntityAvatarUrl(sess.conceptLab.anchorPhoto);
+                    const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                    const aspect = aspectInfo.supportedIds.includes(sess.conceptLab.aspectRatio)
+                        ? sess.conceptLab.aspectRatio
+                        : (aspectInfo.supportedIds.includes('3:2') ? '3:2' : (aspectInfo.supportedIds[0] || '1:1'));
+                    const sheetUrl = await generateCharacterPortrait(plan.visualPrompt, {
+                        imageSource: cfg.imageSource,
+                        imageProfileId: cfg.imageProfileId,
+                        imageStyleId: cfg.imageStyleId,
+                        styleWrapMode: cfg.styleWrapMode,
+                        imageNegativeId: cfg.imageNegativeId,
+                        imageCustomNegative: cfg.imageCustomNegative,
+                        aspectRatio: aspect,
+                        refMode: anchorUrl ? 'explicit' : 'off',
+                        customRefDataUrls: anchorUrl ? [anchorUrl] : [],
+                        refInstructionOverride: anchorUrl ? CONCEPT_SHEET_REF_INSTRUCTION : '',
+                        safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                        signal,
+                    });
+                    await assignEntityMediaWithFallback(sess.conceptLab.singleSheet, sheetUrl, sess.conceptLab.singleSheet.avatarId || '');
+                }
+                const savedEntry = await upsertConceptVaultEntry(sess);
+                const dims = await probeImageDimensionsFromDataUrl(resolveEntityAvatarUrl(sess.conceptLab.singleSheet));
+                if (dims.w && dims.h) savedEntry.artNaturalRatio = dims.w / dims.h;
+                saveSettings();
+                notifySuccessToast(tx('Концепт-лист сохранён в «Коллекция → Концепт Арты»!', 'Concept Sheet saved to Collection → Concept Arts!'));
+            }, { taskType: doRenderArt ? 'art' : 'llm', cancellable: true });
+            return;
+        }
+        if (act === 'render-concept-single-art-only') {
+            if (sess.frozen) return;
+            const vPrompt = String(sess.conceptLab?.singleSheet?.visualPrompt || '').trim();
+            if (!vPrompt) return;
+            await withBusy(tx('Рисуем Концепт-лист...', 'Rendering Concept Sheet...'), async (signal) => {
+                const anchorUrl = resolveEntityAvatarUrl(sess.conceptLab.anchorPhoto);
+                const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                const aspect = aspectInfo.supportedIds.includes(sess.conceptLab.aspectRatio)
+                    ? sess.conceptLab.aspectRatio
+                    : (aspectInfo.supportedIds.includes('3:2') ? '3:2' : (aspectInfo.supportedIds[0] || '1:1'));
+                const sheetUrl = await generateCharacterPortrait(vPrompt, {
+                    imageSource: cfg.imageSource,
+                    imageProfileId: cfg.imageProfileId,
+                    imageStyleId: cfg.imageStyleId,
+                    styleWrapMode: cfg.styleWrapMode,
+                    imageNegativeId: cfg.imageNegativeId,
+                    imageCustomNegative: cfg.imageCustomNegative,
+                    aspectRatio: aspect,
+                    refMode: anchorUrl ? 'explicit' : 'off',
+                    customRefDataUrls: anchorUrl ? [anchorUrl] : [],
+                    refInstructionOverride: anchorUrl ? CONCEPT_SHEET_REF_INSTRUCTION : '',
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    signal,
+                });
+                await assignEntityMediaWithFallback(sess.conceptLab.singleSheet, sheetUrl, sess.conceptLab.singleSheet.avatarId || '');
+                const savedEntry = await upsertConceptVaultEntry(sess);
+                const dims = await probeImageDimensionsFromDataUrl(sheetUrl);
+                if (dims.w && dims.h) savedEntry.artNaturalRatio = dims.w / dims.h;
+                saveSettings();
+            }, { taskType: 'art', cancellable: true });
+            return;
+        }
+        if (act === 'download-concept-single') {
+            const url = resolveEntityAvatarUrl(sess.conceptLab?.singleSheet);
+            if (url) {
+                triggerDownload(dataUrlToPureBlob(url), 'concept_sheet.png');
+            }
+            return;
+        }
+        if (act === 'run-concept-series-plan' || act === 'run-concept-series-all') {
+            if (sess.frozen) return;
+            const doAllArt = act === 'run-concept-series-all';
+            const seedHit = resolveConceptSeedCandidate(sess);
+            await withBusy(tx('Составляем план серии концепт-артов и подписи...', 'Planning Concept Series frames & captions...'), async (signal) => {
+                const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                const aspect = aspectInfo.supportedIds.includes(sess.conceptLab.aspectRatio)
+                    ? sess.conceptLab.aspectRatio
+                    : (aspectInfo.supportedIds[0] || '1:1');
+                const req = buildConceptSeriesPlanRequest(sess, seedHit?.entity || null, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                });
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const frames = parseConceptSeriesPlanResponse(raw, aspect);
+                sess.conceptLab.seriesFrames = frames;
+
+                if (doAllArt && detectImageExtensions().hasAny && cfg.imageSource !== 'off') {
+                    const anchorUrl = resolveEntityAvatarUrl(sess.conceptLab.anchorPhoto);
+                    for (let i = 0; i < frames.length; i++) {
+                        if (signal?.aborted) break;
+                        const fr = frames[i];
+                        state.busyTaskLabel = tx(`Рисуем кадр серии ${i + 1}/${frames.length}: «${fr.title}»`, `Rendering frame ${i + 1}/${frames.length}: "${fr.title}"`);
+                        syncUnifiedVisualizerDom();
+                        const useAnchor = Boolean(anchorUrl && fr.needsAnchorRef !== false);
+                        const imgUrl = await generateCharacterPortrait(fr.visualPrompt, {
+                            imageSource: cfg.imageSource,
+                            imageProfileId: cfg.imageProfileId,
+                            imageStyleId: cfg.imageStyleId,
+                            styleWrapMode: cfg.styleWrapMode,
+                            imageNegativeId: cfg.imageNegativeId,
+                            imageCustomNegative: cfg.imageCustomNegative,
+                            aspectRatio: fr.aspectRatio || aspect,
+                            refMode: useAnchor ? 'explicit' : 'off',
+                            customRefDataUrls: useAnchor ? [anchorUrl] : [],
+                            refInstructionOverride: useAnchor ? CONCEPT_SHEET_REF_INSTRUCTION : '',
+                            safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                            signal,
+                        });
+                        await assignEntityMediaWithFallback(fr, imgUrl, fr.avatarId || '');
+                    }
+                }
+                await upsertConceptVaultEntry(sess);
+                saveSettings();
+                notifySuccessToast(tx('Серия Концепт-артов сохранена в «Коллекция → Концепт Арты»!', 'Concept Series saved to Collection → Concept Arts!'));
+            }, { taskType: doAllArt ? 'art' : 'llm', cancellable: true });
+            return;
+        }
+        if (act === 'toggle-concept-frame-ref') {
+            const fIdx = Number(btn.dataset.idx);
+            const fr = sess.conceptLab?.seriesFrames?.[fIdx];
+            if (fr) {
+                fr.needsAnchorRef = !(fr.needsAnchorRef !== false);
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'render-concept-frame-one') {
+            const fIdx = Number(btn.dataset.idx);
+            const fr = sess.conceptLab?.seriesFrames?.[fIdx];
+            if (!fr || !fr.visualPrompt) return;
+            await withBusy(tx(`Рисуем кадр #${fIdx + 1}: «${fr.title}»...`, `Rendering frame #${fIdx + 1}: "${fr.title}"...`), async (signal) => {
+                const anchorUrl = resolveEntityAvatarUrl(sess.conceptLab.anchorPhoto);
+                const useAnchor = Boolean(anchorUrl && fr.needsAnchorRef !== false);
+                const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                const aspect = aspectInfo.supportedIds.includes(fr.aspectRatio)
+                    ? fr.aspectRatio
+                    : (aspectInfo.supportedIds[0] || '1:1');
+                const imgUrl = await generateCharacterPortrait(fr.visualPrompt, {
+                    imageSource: cfg.imageSource,
+                    imageProfileId: cfg.imageProfileId,
+                    imageStyleId: cfg.imageStyleId,
+                    styleWrapMode: cfg.styleWrapMode,
+                    imageNegativeId: cfg.imageNegativeId,
+                    imageCustomNegative: cfg.imageCustomNegative,
+                    aspectRatio: aspect,
+                    refMode: useAnchor ? 'explicit' : 'off',
+                    customRefDataUrls: useAnchor ? [anchorUrl] : [],
+                    refInstructionOverride: useAnchor ? CONCEPT_SHEET_REF_INSTRUCTION : '',
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    signal,
+                });
+                await assignEntityMediaWithFallback(fr, imgUrl, fr.avatarId || '');
+                await upsertConceptVaultEntry(sess);
+                saveSettings();
+            }, { taskType: 'art', cancellable: true });
+            return;
+        }
+        if (act === 'download-concept-frame') {
+            const fIdx = Number(btn.dataset.idx);
+            const fr = sess.conceptLab?.seriesFrames?.[fIdx];
+            const url = fr ? resolveEntityAvatarUrl(fr) : '';
+            if (url) {
+                triggerDownload(dataUrlToPureBlob(url), `concept_frame_${fIdx + 1}.png`);
+            }
+            return;
+        }
+        if (act === 'send-concept-to-blitz') {
+            if (sess.frozen) return;
+            const savedEntry = await upsertConceptVaultEntry(sess);
+            sess.blitz.useConceptContext = true;
+            sess.blitz.selectedCandidateRef = `concept:${savedEntry.id}`;
+            state.activeTab = 'blitz';
+            saveSettings();
+            notifySuccessToast(tx(`Профиль Концепта «${savedEntry.name}» отправлен в Блиц!`, `Concept profile "${savedEntry.name}" sent to Blitz!`));
+            return renderWindow();
+        }
+        if (act === 'build-card-from-concept') {
+            if (sess.frozen) return;
+            const savedEntry = await upsertConceptVaultEntry(sess);
+            await expandCandidateIntoFullCard(sess, savedEntry, cfg.transportMode, 'concept');
+            return;
+        }
+        if (act === 'expand-concept-vault') {
+            const idx = Number(btn.dataset.idx);
+            const cv = sess.conceptLab?.vault?.[idx];
+            if (cv) {
+                await expandCandidateIntoFullCard(sess, cv, cfg.transportMode, 'concept');
+            }
+            return;
+        }
+        if (act === 'open-concept-vault-item') {
+            const idx = Number(btn.dataset.idx);
+            const cv = sess.conceptLab?.vault?.[idx];
+            if (cv) {
+                state.viewingCandRef = null;
+                loadConceptVaultItemIntoWorkspace(sess, cv);
+                state.activeTab = 'concept';
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'del-concept-vault-item') {
+            const idx = Number(btn.dataset.idx);
+            if (Array.isArray(sess.conceptLab?.vault) && sess.conceptLab.vault[idx]) {
+                const removed = sess.conceptLab.vault.splice(idx, 1)[0];
+                if (sess.conceptLab.activeConceptId === removed?.id) {
+                    sess.conceptLab.activeConceptId = '';
+                }
+                await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'open-raw-lightbox') {
+            const src = btn.dataset.src || '';
+            const title = btn.dataset.title || 'Иллюстрация';
+            if (src) {
+                state.lightboxInfo = { name: title, imageUrl: src, appearance: '', imagePrompt: '' };
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'open-slot-in-editor') {
+            const slotId = btn.dataset.slot || 'manual';
+            if (sess.cardSlots?.[slotId]) {
+                sess.activeCardSlot = slotId;
+                sess.card = sess.cardSlots[slotId];
+                state.activeTab = 'editor';
+                state.editorSubTab = 'main';
+                saveSettings();
+                renderWindow();
+            }
+            return;
         }
 
         // MANUAL BAN & ARCHIVE CONTROLS
@@ -8663,7 +10214,9 @@ function bindWindowDelegation(win) {
             await withBusy('Подбираем анкеты для вашей ленты', async (signal) => {
                 const rawBatch = Number(sess.tinder.batchSize) || 1;
                 const count = [1, 3, 5].includes(rawBatch) ? rawBatch : 1;
-                const req = buildTinderPreviewRequest(sess, count, cfg.transportMode);
+                const req = buildTinderPreviewRequest(sess, count, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                });
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,
@@ -8673,6 +10226,20 @@ function bindWindowDelegation(win) {
                 });
                 const cands = parseTinderPreviewResponse(raw, sess.intake.playerNameMode || 'macro');
                 if (!cands.length) throw new Error('Модель вернула пустую ленту. Попробуйте ещё раз.');
+                if (cfg.autoArtWithCards && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+                    for (let i = 0; i < cands.length; i += 1) {
+                        if (signal.aborted) throw new Error('Cancelled');
+                        await generateImmediateArtForEntity(cands[i], {
+                            sess,
+                            cfg,
+                            signal,
+                            isGacha: false,
+                            index: i,
+                            total: cands.length,
+                        });
+                    }
+                }
+                if (signal.aborted) throw new Error('Cancelled');
                 sess.tinder.queue.push(...cands);
                 sess.tinder.lastDislikedCandidate = null;
                 addedCount = cands.length;
@@ -8850,7 +10417,18 @@ function bindWindowDelegation(win) {
             await withBusy(busyLabel, async (signal) => {
                 const gachaOnlyNoSeed = !seedHit && sess.blitz?.useTinderContext === false && Boolean(sess.blitz?.useGachaContext);
                 const blitzCtxMode = (seedHit?.source === 'gacha' || gachaOnlyNoSeed) ? 'gacha' : 'blitz';
-                const req = buildFullCardRequest(sess, brief, cfg.transportMode, { modeContext: blitzCtxMode });
+                const liveSrcForBlitz = (seedEntity && (seedEntity.singleSheet || Array.isArray(seedEntity.seriesFrames)))
+                    ? resolveLiveSourceEntityForConcept(sess, seedEntity)
+                    : seedEntity;
+                const inheritedImgPrompt = String(liveSrcForBlitz?.imagePrompt || seedEntity?.imagePrompt || '').trim();
+                const portraitEnt = seedEntity ? resolveHeroTruePortraitEntity(sess, seedEntity) : null;
+                const seedMediaUrl = portraitEnt ? resolveEntityAvatarUrl(portraitEnt) : '';
+                const req = buildFullCardRequest(sess, brief, cfg.transportMode, {
+                    modeContext: blitzCtxMode,
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    customFormats: cfg.customCardFormats,
+                    skipImagePrompt: Boolean(seedEntity),
+                });
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,
@@ -8867,20 +10445,21 @@ function bindWindowDelegation(win) {
                 const built = createCardStateFromGeneratedDraft(parsed, {
                     avatarId: '',
                     fallbackName: seedEntity?.name || '',
-                    fallbackImagePrompt: seedEntity?.imagePrompt || '',
+                    fallbackImagePrompt: inheritedImgPrompt,
                 });
-                if (seedEntity) {
-                    const seedMediaUrl = resolveEntityAvatarUrl(seedEntity);
-                    if (seedMediaUrl) {
-                        await assignEntityMediaWithFallback(built, seedMediaUrl, '');
-                        built.avatarDirty = true;
-                        if (seedEntity.croppedAspect) built.croppedAspect = seedEntity.croppedAspect;
-                        if (seedEntity.artNaturalRatio) built.artNaturalRatio = seedEntity.artNaturalRatio;
-                    }
+                if (seedMediaUrl) {
+                    await assignEntityMediaWithFallback(built, seedMediaUrl, '');
+                    built.avatarDirty = true;
+                    if (portraitEnt?.croppedAspect) built.croppedAspect = portraitEnt.croppedAspect;
+                    if (portraitEnt?.artNaturalRatio) built.artNaturalRatio = portraitEnt.artNaturalRatio;
                 }
                 const targetSlot = seedHit?.source === 'tinder'
                     ? 'swipe'
-                    : (seedHit?.source === 'gacha' ? 'gacha' : 'blitz');
+                    : (seedHit?.source === 'gacha'
+                        ? 'gacha'
+                        : (seedHit?.source === 'concept'
+                            ? 'concept'
+                            : (seedHit?.source === 'photo' ? 'photo' : 'blitz')));
                 assignCardIntoSessionSlot(sess, targetSlot, built);
                 if (targetSlot !== 'blitz' && sess.cardSlots) {
                     const blitzClone = structuredClone(built);
@@ -8973,6 +10552,7 @@ function bindWindowDelegation(win) {
                         scope,
                         updateArtPrompt: updateArt,
                         mode: cfg.transportMode,
+                        safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
                     });
                     const raw = await runLlmGeneration({
                         ...req,
@@ -9024,6 +10604,8 @@ function bindWindowDelegation(win) {
                         originKind: 'au_rework',
                         sourceCard: baseState,
                         mode: cfg.transportMode,
+                        safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                        customFormats: cfg.customCardFormats,
                     });
                     const raw = await runLlmGeneration({
                         ...req,
@@ -9056,6 +10638,8 @@ function bindWindowDelegation(win) {
                         originKind,
                         useIntake: sess.architect?.useIntake !== false,
                         mode: cfg.transportMode,
+                        safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                        customFormats: cfg.customCardFormats,
                     });
                     const raw = await runLlmGeneration({
                         ...req,
@@ -9105,6 +10689,8 @@ function bindWindowDelegation(win) {
                 const req = buildFullCardRequest(sess, sess.architect.freeConcept, cfg.transportMode, {
                     modeContext: 'architect',
                     useIntake: withIntake,
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    customFormats: cfg.customCardFormats,
                 });
                 const raw = await runLlmGeneration({
                     ...req,
@@ -9304,7 +10890,10 @@ function bindWindowDelegation(win) {
                     mes_example: baseState.mes_example,
                     system_prompt: baseState.system_prompt,
                     post_history_instructions: baseState.post_history_instructions,
-                }, cfg.transportMode);
+                }, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    customFormats: cfg.customCardFormats,
+                });
 
                 const raw = await runLlmGeneration({
                     ...req,
@@ -9395,7 +10984,7 @@ function bindWindowDelegation(win) {
             state.editorArtAbort = ctl;
             renderWindow();
             try {
-                const p = sess.card.imagePrompt || `${sess.card.name}, detailed artwork`;
+                const p = sanitizeSafeFandomVisualPrompt(sess.card.imagePrompt, sess.card, Boolean(cfg.safeFandomArtPrompt));
                 const refOpts = await buildPortraitRefOptions(
                     sess,
                     cfg,
@@ -9411,6 +11000,7 @@ function bindWindowDelegation(win) {
                     imageNegativeId: cfg.imageNegativeId || '',
                     imageCustomNegative: cfg.imageCustomNegative || '',
                     aspectRatio: cfg.imageAspectRatio || '1:1',
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
                     ...refOpts,
                     signal: ctl.signal,
                     onStatus: (info) => {
@@ -9531,7 +11121,19 @@ async function expandCandidateIntoFullCard(sess, cand, transportMode, slotTarget
     ].join('\n');
 
     await withBusy(`Собираем полную карточку «${cand.name}»`, async (signal) => {
-        const req = buildFullCardRequest(sess, brief, transportMode, { modeContext: isGachaItem ? 'gacha' : 'swipe' });
+        const liveSrcHero = (cand && (cand.singleSheet || Array.isArray(cand.seriesFrames)))
+            ? resolveLiveSourceEntityForConcept(sess, cand)
+            : cand;
+        const inheritedImgPrompt = String(liveSrcHero?.imagePrompt || cand?.imagePrompt || '').trim();
+        const portraitEnt = resolveHeroTruePortraitEntity(sess, cand);
+        const candMediaUrl = portraitEnt ? resolveEntityAvatarUrl(portraitEnt) : '';
+
+        const req = buildFullCardRequest(sess, brief, transportMode, {
+            modeContext: isGachaItem ? 'gacha' : 'swipe',
+            safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+            customFormats: cfg.customCardFormats,
+            skipImagePrompt: true,
+        });
         const raw = await runLlmGeneration({
             ...req,
             transportMode,
@@ -9545,17 +11147,16 @@ async function expandCandidateIntoFullCard(sess, cand, transportMode, slotTarget
             sess.intake.playerNameMode || 'macro',
             { fallbackName: cand.name, maxAltGreetings: sess.intake.altGreetingsCount },
         );
-        const candMediaUrl = resolveEntityAvatarUrl(cand);
         const built = createCardStateFromGeneratedDraft(parsed, {
             avatarId: '',
             fallbackName: cand.name,
-            fallbackImagePrompt: cand.imagePrompt || '',
+            fallbackImagePrompt: inheritedImgPrompt,
         });
         if (candMediaUrl) {
             await assignEntityMediaWithFallback(built, candMediaUrl, '');
             built.avatarDirty = true;
-            if (cand.croppedAspect) built.croppedAspect = cand.croppedAspect;
-            if (cand.artNaturalRatio) built.artNaturalRatio = cand.artNaturalRatio;
+            if (portraitEnt?.croppedAspect) built.croppedAspect = portraitEnt.croppedAspect;
+            if (portraitEnt?.artNaturalRatio) built.artNaturalRatio = portraitEnt.artNaturalRatio;
         }
         assignCardIntoSessionSlot(sess, resolvedSlot, built);
         state.lastOverwriteAlert = null;

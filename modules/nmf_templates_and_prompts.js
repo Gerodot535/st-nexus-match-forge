@@ -1,9 +1,9 @@
 // 8 Character, World & RPG Card Formats synthesized from ST / Chub / JanitorAI / GM-Authoring guides
 // Note (NMF-017): World Sandbox and RPG GM Engine are structured content templates packaged inside standard Character Card V2 (chara_card_v2).
-import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js';
-import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js';
+import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js?v=2.1.1';
+import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js?v=2.1.1';
 
-export const SETTINGS_SCHEMA_VERSION = 7;
+export const SETTINGS_SCHEMA_VERSION = 8;
 export const MAX_LIKED_CANDIDATES = 100;
 export const MAX_PASSED_CANDIDATES = 50;
 export const MAX_GACHA_COLLECTION = 80;
@@ -12,6 +12,8 @@ export const GACHA_CYCLE_LIMIT = 10;
 export const DEFAULT_GACHA_COOLDOWN_MINUTES = 120;
 export const BLITZ_COUNT_OPTIONS = Object.freeze([5, 7, 10, 12, 15, 20]);
 export const AU_QUESTION_COUNT_OPTIONS = Object.freeze([3, 5, 7, 10, 12]);
+export const CONCEPT_SERIES_COUNT_OPTIONS = Object.freeze([2, 3, 4, 5, 6]);
+export const CONCEPT_QUESTION_COUNT_OPTIONS = Object.freeze([3, 4, 5, 6]);
 export const SACRIFICE_FAIL_CHANCE_OPTIONS = Object.freeze([15, 25, 40, 50]);
 
 export const GACHA_RESOLUTION_OPTIONS = Object.freeze([
@@ -167,6 +169,8 @@ export const CARD_SLOT_DEFS = Object.freeze([
     { id: 'swipe', label: 'Свайпы' },
     { id: 'gacha', label: 'Гача' },
     { id: 'blitz', label: 'Блиц' },
+    { id: 'photo', label: 'По фото' },
+    { id: 'concept', label: 'Концепт' },
     { id: 'architect', label: 'Генератор' },
     { id: 'manual', label: 'Ручной' },
 ]);
@@ -313,41 +317,89 @@ export const IMAGE_REF_MODE_OPTIONS = Object.freeze([
     { id: 'custom_photo', label: 'Своё реф-фото внешности' },
 ]);
 
-export const CARD_META_PURITY_RULE =
-    'META-PURITY LAW (STRICTLY MANDATORY): NEVER write word counts (e.g. "(600 words)", "[Word count: 580]"), star ratings ("1-star".."5-star"), gacha rarity tiers ("N", "R", "SR", "SSR", "UR", "Legendary", "Epic"), or forge UI telemetry inside ANY card field, tag list, or opening scene.';
+export const CLEAN_HEADINGS_RULE =
+    'CLEAN HEADINGS RULE: When writing Markdown headings inside Description, always write token-clean headings like "## Heading" or "### Heading" — NEVER wrap heading titles in square brackets (never "## [HEADING]" or "### [HEADING]").';
+
+export const GACHA_META_PURITY_RULE =
+    'META-PURITY LAW (STRICTLY MANDATORY): NEVER write word counts (e.g. "(600 words)", "[Word count: 580]"), star ratings ("1-star".."5-star"), gacha rarity tiers ("N", "R", "SR", "SSR", "UR", "Legendary", "Epic"), or UI telemetry inside ANY card text or tags.';
+
+export const CARD_META_PURITY_RULE = GACHA_META_PURITY_RULE;
 
 /**
  * Adapted flexible <ART_MECHANISM> director specification for Avatar / Cover imagePrompt generation.
  * Supports: Single Character, 2-3 Characters (with INTERACTION), World/Vista (no characters), and Focal Object/Artifact.
  * Strictly medium-neutral so the user's external SillyImages style preset controls the rendering medium 100%.
  */
-export function buildFlexibleAvatarArtMechanismRule(intake = {}) {
+export function buildFlexibleAvatarArtMechanismRule(intake = {}, { safeFandomArtPrompt = false } = {}) {
     const origin = intake?.originType || 'oc';
     const isWorld = origin === 'world_sandbox' || origin === 'rpg_gm' || intake?.cardFormat === 'world_sandbox' || intake?.cardFormat === 'rpg_gm_engine';
     const isArtifact = origin === 'artifact_object';
     const isGroup = origin === 'duo_group' || intake?.cardFormat === 'cast_hub';
+    const safeMode = Boolean(safeFandomArtPrompt);
+
+    const fig1Tag = safeMode ? 'FIGURE 1:' : 'FIGURE 1 (NAME):';
+    const fig2Tag = safeMode ? 'FIGURE 2:' : 'FIGURE 2 (NAME):';
+    const figNTag = safeMode ? 'FIGURE N:' : 'FIGURE N (NAME):';
+    const objTag = safeMode ? 'OBJECT:' : 'OBJECT (NAME):';
+
+    const safeFandomRule = safeMode
+        ? `- STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD (FOR image_prompt / IMG BLOCK ONLY): Keep all canonical character names, codenames, and franchise lore intact inside the text card fields, ONLY sanitize this visual prompt! Inside image_prompt / IMG block, NEVER write copyrighted character names, superhero/villain aliases, franchise or studio titles (e.g., Marvel, Avengers, X-Men, DC, Disney, Star Wars), trademarked logos/emblems, or real-life actor/celebrity names. Translate any recognizable character and iconic costume purely into concrete physical traits, facial geometry, hairstyle, color palette, fabric/armor materials, and lighting without naming any IP or public figure.`
+        : '';
 
     const subjectBranch = isArtifact
-        ? `- Because this card centers on a Special Object / Artifact (unless a wielder is essential), set "CHARACTERS IN THE IMAGE: no." (adding zero people or silhouettes) and include "OBJECT (NAME):" describing its exact visible form, scale, material texture, wear/inscriptions, light reflections, and placement in frame.`
+        ? `- Because this card centers on a Special Object / Artifact (unless a wielder is essential), set "CHARACTERS IN THE IMAGE: no." (adding zero people or silhouettes) and include "${objTag}" describing its exact visible form, scale, material texture, wear/inscriptions, light reflections, and placement in frame.`
         : (isWorld
             ? `- Because this is a World / Setting card, set "CHARACTERS IN THE IMAGE: no." (unless iconic figures are explicitly needed at distance) and focus on grand architectural/environmental composition, scale, depth, and atmospheric light.`
             : (isGroup
-                ? `- Because this card features 2-3 characters together, set "CHARACTERS IN THE IMAGE: yes.", write paired "FIGURE 1 (NAME):" + "[Figure 1 is styled in: ...]" and "FIGURE 2 (NAME):" + "[Figure 2 is styled in: ...]" (and FIGURE 3 if applicable), followed by "INTERACTION:" detailing exact spatial overlap, height difference, eye line, and physical contact points.`
-                : `- For a single character avatar, set "CHARACTERS IN THE IMAGE: yes." and write "FIGURE 1 (NAME):" + "[Figure 1 is styled in: ...]". (If the concept explicitly centers on 2-3 characters or a pure object/vista, adapt CHARACTERS IN THE IMAGE, FIGURE N, INTERACTION, or OBJECT accordingly.)`));
+                ? `- Because this card features 2-3 characters together, set "CHARACTERS IN THE IMAGE: yes.", write paired "${fig1Tag}" + "[Figure 1 is styled in: ...]" and "${fig2Tag}" + "[Figure 2 is styled in: ...]" (and FIGURE 3 if applicable), followed by "INTERACTION:" detailing exact spatial overlap, height difference, eye line, and physical contact points.`
+                : `- For a single character avatar, set "CHARACTERS IN THE IMAGE: yes." and write "${fig1Tag}" + "[Figure 1 is styled in: ...]". (If the concept explicitly centers on 2-3 characters or a pure object/vista, adapt CHARACTERS IN THE IMAGE, FIGURE N, INTERACTION, or OBJECT accordingly.)`));
 
     return [
         `[AVATAR ART MECHANISM FOR image_prompt / IMG BLOCK]`,
         `Compose the English visual prompt like a visual director framing a dramatic key avatar/cover shot:`,
         `- STYLE SOURCE RULE: Do NOT invent or mention any rendering style on your own — rendering style comes strictly from SillyImages or from what the user explicitly wrote (if the user explicitly requested a visual style, preserve the user's exact words; otherwise describe ONLY the scene, lighting, and subject).`,
+        safeFandomRule,
         `- Prefer bold, dynamic framing (chest-up three-quarter portrait, low-angle waist-up, intimate close-up, or dramatic focal shot) centered cleanly on the subject's head/upper torso or focal object so the avatar never crops off the top of the head. Describe ONLY what physically falls inside the cropped frame.`,
         `- Structure the prompt cleanly in this exact order:`,
         `  1) SCENE: Exact framing boundaries (from top edge cutoff with clear headroom above crown/ears down to bottom edge cutoff), viewing height/angle, foreground/midground depth, visible environment in the gaps around the subject (focused, up to 55 words), directional key light vs secondary rim/ambient light sculpting forms, surface reflections, contrast, and mood color palette.`,
         `  2) CHARACTERS IN THE IMAGE: yes or no.`,
-        `  3) If characters appear — FIGURE N (NAME): Exact body orientation, posture, shoulder tension, visible build, skin/fur/surface tone and sheen, head tilt, gaze direction, micro-expression of eyes and lips, hair/mane and loose strands, and explicit visible placement of Left arm / hand and Right arm / hand. Follow immediately with [Figure N is styled in: ONLY garments, layers, folds, scars, accessories, and held items actually visible inside the crop — never mention footwear/pants if cropped above waist — contrasting matte fabric vs metallic/glass/wet highlights].`,
+        `  3) If characters appear — ${figNTag} Exact body orientation, posture, shoulder tension, visible build, skin/fur/surface tone and sheen, head tilt, gaze direction, micro-expression of eyes and lips, hair/mane and loose strands, and explicit visible placement of Left arm / hand and Right arm / hand. Follow immediately with [Figure N is styled in: ONLY garments, layers, folds, scars, accessories, and held items actually visible inside the crop — never mention footwear/pants if cropped above waist — contrasting matte fabric vs metallic/glass/wet highlights].`,
         `  4) If 2+ figures appear — INTERACTION: Spatial overlap, proximity, height difference, eye line, and contact points.`,
-        `  5) If a standalone focal item/relic is central — OBJECT (NAME): Visible form, scale, material texture, wear/damage, reflections, and frame position.`,
+        `  5) If a standalone focal item/relic is central — ${objTag} Visible form, scale, material texture, wear/damage, reflections, and frame position.`,
         subjectBranch,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
+}
+
+export function sanitizeSafeFandomVisualPrompt(rawPrompt = '', fallbackEntity = null, safeFandomArtPrompt = false) {
+    const cleanRaw = String(rawPrompt || '').trim();
+    const safeMode = Boolean(safeFandomArtPrompt);
+    const entityName = String(fallbackEntity?.name || '').trim();
+    const fallbackVisual = String(fallbackEntity?.appearance || fallbackEntity?.archetype || 'detailed character portrait').trim();
+
+    if (!cleanRaw) {
+        if (safeMode || !entityName) {
+            return fallbackVisual || 'detailed character portrait';
+        }
+        return `${entityName}, ${fallbackVisual}`;
+    }
+
+    if (!safeMode) return cleanRaw;
+
+    let out = cleanRaw
+        .replace(/\b(FIGURE\s+\d+|OBJECT)\s*\([^)\n]{1,90}\)\s*:/gi, '$1:')
+        .replace(/\b(Figure\s+\d+)\s*\([^)\n]{1,90}\)\s+(is\s+styled\s+in\s*:)/gi, '$1 $2');
+
+    // Strip multi-word canonical names / aliases if the LLM echoed them verbatim inside image_prompt
+    const nameParts = entityName
+        .split(/[\/|(),—–-]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length >= 4 && /\s/.test(s));
+    for (const phrase of nameParts) {
+        const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), 'the subject');
+    }
+
+    return out.replace(/\s{2,}/g, ' ').trim();
 }
 
 
@@ -404,23 +456,23 @@ export const CARD_FORMATS = [
         id: 'dossier_19',
         name: 'NexusMatch 19-Point Dossier (Полное досье героя)',
         desc: 'Фирменная структура из 19 пунктов: Ядро личности, Внешность, Психология и Лор, Динамика, Сценарий.',
-        instructions: `Structure the character's Description strictly using the 19-Point NexusMatch Dossier with Markdown headings:
-### [CORE IDENTITY]
+        instructions: `Structure the character's Description strictly using the 19-Point NexusMatch Dossier with clean Markdown "## Heading" sections (without square brackets around headings):
+## CORE IDENTITY
 1. Name & Titles | 2. Age & Lifespan | 3. Species / Origin | 4. Gender & Pronouns
-### [PHYSICALITY]
+## PHYSICALITY
 5. Facial Features & Expressions | 6. Body Type & Anatomy | 7. Clothing & Accessories | 8. Distinctive Marks
-### [PSYCHOLOGY & LORE]
+## PSYCHOLOGY & LORE
 9. Core Personality Traits | 10. Flaws & Fears | 11. Backstory | 12. Motivations & Goals | 13. Speech Patterns & Voice
-### [INTERACTIVE DYNAMICS]
+## INTERACTIVE DYNAMICS
 14. World & Environment | 15. Dynamic with { {user} } | 16. SFW Habits & Hobbies | 17. Intimacy / Boundaries (matching selected Rating)
-### [SCENARIO CONTEXT]
+## SCENARIO CONTEXT
 18. Active Situation | 19. Roleplay & Voice Anchors`,
     },
     {
         id: 'jed_hybrid',
         name: 'JED Hybrid (Стандарт Chub / JanitorAI)',
         desc: 'Сжатые списки для внешности и черт + живая проза для биографии и речи.',
-        instructions: `Use the modern JED (Just Enough Definitions) Hybrid structure inside Description:
+        instructions: `Use the modern JED (Just Enough Definitions) Hybrid structure inside Description with clean "## Heading" titles (without square brackets):
 - Concise bullet lists ONLY for Overview, Appearance, Attire, and Core Traits.
 - Rich, concrete prose paragraphs for Backstory, Behavioral Habits, Relationship with { {user} }, and Speech Style.`,
     },
@@ -428,7 +480,7 @@ export const CARD_FORMATS = [
         id: 'behavioral_prose',
         name: 'Behavioral Prose (Живая проза фактами)',
         desc: 'Современный формат без сухих анкет: привычки, реакции под давлением, отношение к игроку.',
-        instructions: `Write Description as clean, high-signal natural prose in present tense divided into 5 crisp sections:
+        instructions: `Write Description as clean, high-signal natural prose in present tense divided into 5 crisp "## Heading" sections (without square brackets):
 1. Who { {char} } Is | 2. What { {char} } Wants | 3. How { {char} } Speaks | 4. Under Pressure | 5. Dynamic with { {user} }.`,
     },
     {
@@ -442,46 +494,93 @@ export const CARD_FORMATS = [
         name: 'Compact PList + Ali:Chat (Экономия токенов)',
         desc: 'Сжатая строка атрибутов + мини-интервью в голосе героя.',
         instructions: `Use token-efficient PList + Ali:Chat style:
-- Start Description with a compact bracketed attribute block: [{ {char} }'s persona: ...; Appearance: ...; Attire: ...; Likes: ...; Dislikes: ...].
+- Start Description with a compact attribute summary block: [{ {char} }'s persona: ...; Appearance: ...; Attire: ...; Likes: ...; Dislikes: ...].
 - Follow with 3 vivid short Ali:Chat interview exchanges ({ {user} }: question / { {char} }: in-character action + dialogue reply).`,
     },
     {
         id: 'cast_hub',
         name: 'Multi-Character / Cast Hub (Ансамбль героев)',
         desc: 'Компания из 2–4 колоритных персонажей с чётким разделением характеров.',
-        instructions: `Structure Description as a Multi-Character Cast Hub:
-- Start with [SETTING & NARRATOR RULES] (AI plays the cast, never { {user} }).
-- Provide distinct profiles for each key character (Appearance, Personality, Role, Speech quirk, Attitude toward { {user} }).`,
+        instructions: `Structure Description as a Multi-Character Cast Hub using clean "## Heading" titles (without square brackets):
+- Start with "## SETTING & NARRATOR RULES" (AI plays the cast, never { {user} }).
+- Provide distinct "## Character Name" profiles for each key character (Appearance, Personality, Role, Speech quirk, Attitude toward { {user} }).`,
     },
     {
         id: 'world_sandbox',
         name: 'World Sandbox / Карточка Мира-Песочницы (Рассказчик, V2)',
         desc: 'Шаблон живого сеттинга внутри Character Card V2: законы мира, локации, фракции и ведущий-рассказчик.',
-        instructions: `Build a dedicated WORLD SANDBOX / SETTING NARRATOR card where { {char} } is the living World & Storyteller (NOT a single person):
-### [WORLD FOUNDATION & LAWS]
+        instructions: `Build a dedicated WORLD SANDBOX / SETTING NARRATOR card where { {char} } is the living World & Storyteller (NOT a single person), using clean "## Heading" sections without square brackets:
+## WORLD FOUNDATION & LAWS
 Core truths, atmosphere, magic/tech rules, social hierarchy, and daily life.
-### [KEY LOCATIONS & FACTIONS]
+## KEY LOCATIONS & FACTIONS
 3–5 distinct locations and power groups with their own agendas and conflicts.
-### [NOTABLE NPCS IN THE WORLD]
+## NOTABLE NPCS IN THE WORLD
 Brief hooks for 3–4 autonomous NPCs with distinct voices and personal goals (each pursues their own interest, not passive service to { {user} }).
-### [STORYTELLER PRINCIPLES]
+## STORYTELLER PRINCIPLES
 Reactive world with consequences; describe the scene and NPC actions vividly, then STOP and hand agency back to { {user} }.`,
     },
     {
         id: 'rpg_gm_engine',
         name: 'RPG Game Master / РПГ-Система (Шаблон в Character Card V2)',
         desc: 'Шаблон Гейм-Мастера внутри Character Card V2: мир, ранги, живые НПС, квесты и компактный статус-блок.',
-        instructions: `Build a dedicated RPG GAME MASTER / SYSTEM ENGINE card where { {char} } runs an interactive RPG campaign:
-### [CAMPAIGN SETTING & PREMISE]
+        instructions: `Build a dedicated RPG GAME MASTER / SYSTEM ENGINE card where { {char} } runs an interactive RPG campaign, using clean "## Heading" sections without square brackets:
+## CAMPAIGN SETTING & PREMISE
 Irreducible world facts, danger level, economy/currency, and power/rank progression.
-### [RPG MECHANICS & STATE TRACKING]
+## RPG MECHANICS & STATE TRACKING
 Clear, lightweight rules for { {user} }'s status/inventory/quests/reputation (keep any HUD tracker concise at the end of replies) + fair consequence adjudication (setup checks/dangers and STOP — never decide { {user} }'s choices or roll outcomes on { {user} }'s behalf).
-### [FACTIONS, THREATS & AUTONOMOUS NPCS]
+## FACTIONS, THREATS & AUTONOMOUS NPCS
 Key factions, threats/monsters, and 3–4 memorable NPCs with distinct registers and hidden motives.
-### [GM OPERATING RULES]
+## GM OPERATING RULES
 Advance world pressure, time, and NPC goals naturally; end every turn on an actionable situation or choice hook without railroading { {user} }.`,
     },
 ];
+
+export const MAX_CUSTOM_CARD_FORMATS = 30;
+
+export function normalizeCustomCardFormats(rawList) {
+    if (!Array.isArray(rawList)) return [];
+    const seen = new Set(CARD_FORMATS.map((f) => f.id));
+    const out = [];
+    for (let i = 0; i < rawList.length && out.length < MAX_CUSTOM_CARD_FORMATS; i++) {
+        const item = rawList[i];
+        if (!item || typeof item !== 'object') continue;
+        let id = String(item.id || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+        if (!id || seen.has(id)) {
+            id = `custom_tpl_${Date.now().toString(36)}_${i}`;
+        }
+        const instructions = String(item.instructions || '').trim();
+        if (!instructions) continue;
+        const shortBtn = String(item.shortBtn || item.name || `Шаблон #${out.length + 1}`).trim().slice(0, 42);
+        const name = String(item.name || shortBtn).trim().slice(0, 90);
+        const desc = String(item.desc || 'Пользовательский шаблон структуры анкеты.').trim().slice(0, 260);
+        seen.add(id);
+        out.push({
+            id,
+            shortBtn,
+            name,
+            desc,
+            instructions: instructions.slice(0, 8000),
+            isCustom: true,
+        });
+    }
+    return out;
+}
+
+export function getAllCardFormats(customFormats = []) {
+    const cleanCustom = Array.isArray(customFormats) ? customFormats : [];
+    return [...CARD_FORMATS, ...cleanCustom];
+}
+
+export function resolveCardFormat(fmtId, customFormats = [], effectiveIntake = {}) {
+    const all = getAllCardFormats(customFormats);
+    let targetId = String(fmtId || effectiveIntake?.cardFormat || 'dossier_19').trim();
+    if (targetId === 'dossier_19') {
+        if (effectiveIntake?.originType === 'rpg_gm') targetId = 'rpg_gm_engine';
+        else if (effectiveIntake?.originType === 'world_sandbox') targetId = 'world_sandbox';
+        else if (effectiveIntake?.originType === 'duo_group') targetId = 'cast_hub';
+    }
+    return all.find((f) => f.id === targetId) || CARD_FORMATS[0];
+}
 
 export const GREETING_STYLES = [
     {
@@ -708,6 +807,43 @@ export const FULL_CARD_JSON_SCHEMA = Object.freeze({
             post_history_instructions: { type: 'string' },
             tags: { type: 'array', items: { type: 'string' } },
             image_prompt: { type: 'string' },
+        },
+    },
+});
+
+export const FULL_CARD_NO_IMG_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_full_card_no_img_v2',
+    description: 'Complete Character Card V2 synthesis payload (artwork already attached)',
+    strict: true,
+    returnInvalid: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'name',
+            'description',
+            'personality',
+            'scenario',
+            'first_mes',
+            'alternate_greetings',
+            'mes_example',
+            'creator_notes',
+            'system_prompt',
+            'post_history_instructions',
+            'tags',
+        ],
+        properties: {
+            name: { type: 'string' },
+            description: { type: 'string' },
+            personality: { type: 'string' },
+            scenario: { type: 'string' },
+            first_mes: { type: 'string' },
+            alternate_greetings: { type: 'array', items: { type: 'string' } },
+            mes_example: { type: 'string' },
+            creator_notes: { type: 'string' },
+            system_prompt: { type: 'string' },
+            post_history_instructions: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
         },
     },
 });
@@ -1126,11 +1262,56 @@ export function createBlankCardSlot() {
     };
 }
 
+export function createDefaultPhotoLabState() {
+    return {
+        photo: { avatarId: '', avatarDataUrl: '', originalAvatarId: '' },
+        useIntake: false,
+        charName: '',
+        roleVibeHint: '',
+        extraNotes: '',
+        lastCreatedId: '',
+        drafts: [],
+    };
+}
+
+export function createDefaultConceptLabState() {
+    return {
+        activeConceptId: '',
+        linkedCandidateRef: '__none__',
+        sendSeedBio: true,
+        subjectKind: 'character', // 'character' | 'world'
+        anchorMode: 'upload', // 'upload' | 'generate'
+        anchorPrompt: '',
+        anchorAspect: '2:3',
+        anchorPhoto: { avatarId: '', avatarDataUrl: '', originalAvatarId: '' },
+        conceptMode: 'single', // 'single' | 'series'
+        aspectRatio: '3:2',
+        onArtLanguage: 'English',
+        themeBrief: '',
+        singleSheet: {
+            title: '',
+            avatarId: '',
+            avatarDataUrl: '',
+            originalAvatarId: '',
+            visualPrompt: '',
+            masterCaption: '',
+        },
+        seriesCount: 4,
+        questionCount: 4,
+        includeChoices: true,
+        questions: [],
+        seriesFrames: [],
+        vault: [],
+    };
+}
+
 export function createDefaultSession(index = 1) {
     const initialSlots = {
         swipe: createBlankCardSlot(),
         gacha: createBlankCardSlot(),
         blitz: createBlankCardSlot(),
+        photo: createBlankCardSlot(),
+        concept: createBlankCardSlot(),
         architect: createBlankCardSlot(),
         manual: createBlankCardSlot(),
     };
@@ -1216,9 +1397,13 @@ export function createDefaultSession(index = 1) {
             includeChoices: true,
             useTinderContext: true,
             useGachaContext: false,
+            useConceptContext: false,
+            usePhotoContext: false,
             selectedCandidateRef: '',
             questions: [],
         },
+        photoLab: createDefaultPhotoLabState(),
+        conceptLab: createDefaultConceptLabState(),
         architect: {
             subMode: 'idea',
             useIntake: true,
@@ -1666,10 +1851,165 @@ export function normalizeSession(rawSession, index = 1) {
         includeChoices: rawBlitz.includeChoices !== undefined ? Boolean(rawBlitz.includeChoices) : true,
         useTinderContext: rawBlitz.useTinderContext !== undefined ? Boolean(rawBlitz.useTinderContext) : true,
         useGachaContext: rawBlitz.useGachaContext !== undefined ? Boolean(rawBlitz.useGachaContext) : false,
+        useConceptContext: rawBlitz.useConceptContext !== undefined ? Boolean(rawBlitz.useConceptContext) : false,
+        usePhotoContext: rawBlitz.usePhotoContext !== undefined ? Boolean(rawBlitz.usePhotoContext) : false,
         selectedCandidateRef: String(rawBlitz.selectedCandidateRef ?? ''),
         questions: Array.isArray(rawBlitz.questions)
             ? rawBlitz.questions.map(normalizeQuestionEntry).filter(Boolean)
             : [],
+    };
+
+    const rawPhotoLab = rawSession.photoLab && typeof rawSession.photoLab === 'object' && !Array.isArray(rawSession.photoLab)
+        ? rawSession.photoLab
+        : {};
+    const rawPhotoEnt = rawPhotoLab.photo && typeof rawPhotoLab.photo === 'object' ? rawPhotoLab.photo : {};
+    const photoDrafts = Array.isArray(rawPhotoLab.drafts)
+        ? rawPhotoLab.drafts.slice(0, 60).map((d, idx) => {
+            if (!d || typeof d !== 'object') return null;
+            return {
+                id: String(d.id || `photo_${idx + 1}`),
+                name: String(d.name || 'Герой по фото').trim(),
+                archetype: String(d.archetype ?? '').trim(),
+                pitch: String(d.pitch ?? '').trim(),
+                appearance: String(d.appearance ?? '').trim(),
+                quote: String(d.quote ?? '').trim(),
+                tags: Array.isArray(d.tags) ? d.tags.map(String).filter(Boolean) : [],
+                imagePrompt: String(d.imagePrompt ?? ''),
+                cardFormatId: String(d.cardFormatId || 'dossier_19'),
+                artNaturalRatio: Number.isFinite(Number(d.artNaturalRatio)) ? Number(d.artNaturalRatio) : 0,
+                croppedAspect: String(d.croppedAspect ?? ''),
+                avatarId: String(d.avatarId ?? ''),
+                avatarDataUrl: typeof d.avatarDataUrl === 'string' && d.avatarDataUrl.startsWith('data:') ? d.avatarDataUrl : '',
+                originalAvatarId: String(d.originalAvatarId ?? ''),
+                cardDraft: d.cardDraft && typeof d.cardDraft === 'object' ? normalizeSingleCardSlotObject(d.cardDraft) : null,
+                createdAt: Number.isFinite(Number(d.createdAt)) ? Number(d.createdAt) : Date.now(),
+            };
+        }).filter(Boolean)
+        : [];
+    const photoLab = {
+        photo: {
+            avatarId: String(rawPhotoEnt.avatarId ?? ''),
+            avatarDataUrl: typeof rawPhotoEnt.avatarDataUrl === 'string' && rawPhotoEnt.avatarDataUrl.startsWith('data:')
+                ? rawPhotoEnt.avatarDataUrl
+                : '',
+            originalAvatarId: String(rawPhotoEnt.originalAvatarId ?? ''),
+        },
+        useIntake: Boolean(rawPhotoLab.useIntake),
+        charName: String(rawPhotoLab.charName ?? ''),
+        roleVibeHint: String(rawPhotoLab.roleVibeHint ?? ''),
+        extraNotes: String(rawPhotoLab.extraNotes ?? ''),
+        lastCreatedId: String(rawPhotoLab.lastCreatedId ?? ''),
+        drafts: photoDrafts,
+    };
+
+    const rawConceptLab = rawSession.conceptLab && typeof rawSession.conceptLab === 'object' && !Array.isArray(rawSession.conceptLab)
+        ? rawSession.conceptLab
+        : {};
+    const rawAnchorEnt = rawConceptLab.anchorPhoto && typeof rawConceptLab.anchorPhoto === 'object' ? rawConceptLab.anchorPhoto : {};
+    const rawSingleEnt = rawConceptLab.singleSheet && typeof rawConceptLab.singleSheet === 'object' ? rawConceptLab.singleSheet : {};
+    const parsedSeriesCnt = Number(rawConceptLab.seriesCount);
+    const parsedConceptQCnt = Number(rawConceptLab.questionCount);
+    const normalizeConceptFramesList = (arr, defAspect = '3:2') => (Array.isArray(arr)
+        ? arr.slice(0, 8).map((fr, idx) => ({
+            id: String(fr?.id || `cframe_${idx + 1}`),
+            title: String(fr?.title || `Кадр #${idx + 1}`).trim(),
+            needsAnchorRef: fr?.needsAnchorRef !== false,
+            visualPrompt: String(fr?.visualPrompt ?? ''),
+            caption: String(fr?.caption ?? ''),
+            aspectRatio: String(fr?.aspectRatio || defAspect || '3:2'),
+            avatarId: String(fr?.avatarId ?? ''),
+            avatarDataUrl: typeof fr?.avatarDataUrl === 'string' && fr.avatarDataUrl.startsWith('data:')
+                ? fr.avatarDataUrl
+                : '',
+            originalAvatarId: String(fr?.originalAvatarId ?? ''),
+        }))
+        : []);
+    const conceptVault = Array.isArray(rawConceptLab.vault)
+        ? rawConceptLab.vault.slice(0, 60).map((cv, idx) => {
+            if (!cv || typeof cv !== 'object') return null;
+            const cvAnchor = cv.anchorPhoto && typeof cv.anchorPhoto === 'object' ? cv.anchorPhoto : {};
+            const cvSingle = cv.singleSheet && typeof cv.singleSheet === 'object' ? cv.singleSheet : {};
+            return {
+                id: String(cv.id || `concept_${idx + 1}`),
+                sourceRef: String(cv.sourceRef || '__none__'),
+                sourceBadge: String(cv.sourceBadge || ''),
+                name: String(cv.name || 'Концепт-арт').trim(),
+                epithet: String(cv.epithet ?? '').trim(),
+                archetype: String(cv.archetype ?? '').trim(),
+                pitch: String(cv.pitch ?? '').trim(),
+                appearance: String(cv.appearance ?? '').trim(),
+                quote: String(cv.quote ?? '').trim(),
+                tags: Array.isArray(cv.tags) ? cv.tags.map(String).filter(Boolean) : [],
+                stars: Number.isFinite(Number(cv.stars)) ? Number(cv.stars) : 0,
+                subjectKind: cv.subjectKind === 'world' ? 'world' : 'character',
+                conceptMode: cv.conceptMode === 'series' ? 'series' : 'single',
+                aspectRatio: String(cv.aspectRatio || '3:2'),
+                onArtLanguage: String(cv.onArtLanguage ?? 'English'),
+                themeBrief: String(cv.themeBrief ?? ''),
+                baseBrief: String(cv.baseBrief ?? ''),
+                artNaturalRatio: Number.isFinite(Number(cv.artNaturalRatio)) ? Number(cv.artNaturalRatio) : 0,
+                avatarId: String(cv.avatarId ?? ''),
+                avatarDataUrl: typeof cv.avatarDataUrl === 'string' && cv.avatarDataUrl.startsWith('data:') ? cv.avatarDataUrl : '',
+                originalAvatarId: String(cv.originalAvatarId ?? ''),
+                anchorPhoto: {
+                    avatarId: String(cvAnchor.avatarId ?? ''),
+                    avatarDataUrl: typeof cvAnchor.avatarDataUrl === 'string' && cvAnchor.avatarDataUrl.startsWith('data:') ? cvAnchor.avatarDataUrl : '',
+                    originalAvatarId: String(cvAnchor.originalAvatarId ?? ''),
+                },
+                singleSheet: {
+                    title: String(cvSingle.title ?? ''),
+                    avatarId: String(cvSingle.avatarId ?? ''),
+                    avatarDataUrl: typeof cvSingle.avatarDataUrl === 'string' && cvSingle.avatarDataUrl.startsWith('data:') ? cvSingle.avatarDataUrl : '',
+                    originalAvatarId: String(cvSingle.originalAvatarId ?? ''),
+                    visualPrompt: String(cvSingle.visualPrompt ?? ''),
+                    masterCaption: String(cvSingle.masterCaption ?? ''),
+                },
+                seriesFrames: normalizeConceptFramesList(cv.seriesFrames, cv.aspectRatio || '3:2'),
+                updatedAt: Number.isFinite(Number(cv.updatedAt)) ? Number(cv.updatedAt) : Date.now(),
+            };
+        }).filter(Boolean)
+        : [];
+    const conceptLab = {
+        activeConceptId: String(rawConceptLab.activeConceptId ?? ''),
+        linkedCandidateRef: String(rawConceptLab.linkedCandidateRef ?? '__none__') || '__none__',
+        sendSeedBio: rawConceptLab.sendSeedBio !== false,
+        subjectKind: rawConceptLab.subjectKind === 'world' ? 'world' : 'character',
+        anchorMode: rawConceptLab.anchorMode === 'generate' ? 'generate' : 'upload',
+        anchorPrompt: String(rawConceptLab.anchorPrompt ?? ''),
+        anchorAspect: String(rawConceptLab.anchorAspect ?? '2:3') || '2:3',
+        anchorPhoto: {
+            avatarId: String(rawAnchorEnt.avatarId ?? ''),
+            avatarDataUrl: typeof rawAnchorEnt.avatarDataUrl === 'string' && rawAnchorEnt.avatarDataUrl.startsWith('data:')
+                ? rawAnchorEnt.avatarDataUrl
+                : '',
+            originalAvatarId: String(rawAnchorEnt.originalAvatarId ?? ''),
+        },
+        conceptMode: rawConceptLab.conceptMode === 'series' ? 'series' : 'single',
+        aspectRatio: String(rawConceptLab.aspectRatio ?? '3:2') || '3:2',
+        onArtLanguage: String(rawConceptLab.onArtLanguage ?? 'English'),
+        themeBrief: String(rawConceptLab.themeBrief ?? ''),
+        singleSheet: {
+            title: String(rawSingleEnt.title ?? ''),
+            avatarId: String(rawSingleEnt.avatarId ?? ''),
+            avatarDataUrl: typeof rawSingleEnt.avatarDataUrl === 'string' && rawSingleEnt.avatarDataUrl.startsWith('data:')
+                ? rawSingleEnt.avatarDataUrl
+                : '',
+            originalAvatarId: String(rawSingleEnt.originalAvatarId ?? ''),
+            visualPrompt: String(rawSingleEnt.visualPrompt ?? ''),
+            masterCaption: String(rawSingleEnt.masterCaption ?? ''),
+        },
+        seriesCount: Number.isFinite(parsedSeriesCnt) && parsedSeriesCnt >= 2 && parsedSeriesCnt <= 6
+            ? Math.round(parsedSeriesCnt)
+            : 4,
+        questionCount: Number.isFinite(parsedConceptQCnt) && parsedConceptQCnt >= 2 && parsedConceptQCnt <= 8
+            ? Math.round(parsedConceptQCnt)
+            : 4,
+        includeChoices: rawConceptLab.includeChoices !== false,
+        questions: Array.isArray(rawConceptLab.questions)
+            ? rawConceptLab.questions.map(normalizeQuestionEntry).filter(Boolean)
+            : [],
+        seriesFrames: normalizeConceptFramesList(rawConceptLab.seriesFrames, rawConceptLab.aspectRatio || '3:2'),
+        vault: conceptVault,
     };
 
     const rawArch = rawSession.architect && typeof rawSession.architect === 'object' && !Array.isArray(rawSession.architect)
@@ -1712,6 +2052,8 @@ export function normalizeSession(rawSession, index = 1) {
         swipe: rawSlots?.swipe ? normalizeSingleCardSlotObject(rawSlots.swipe) : createBlankCardSlot(),
         gacha: rawSlots?.gacha ? normalizeSingleCardSlotObject(rawSlots.gacha) : createBlankCardSlot(),
         blitz: rawSlots?.blitz ? normalizeSingleCardSlotObject(rawSlots.blitz) : createBlankCardSlot(),
+        photo: rawSlots?.photo ? normalizeSingleCardSlotObject(rawSlots.photo) : createBlankCardSlot(),
+        concept: rawSlots?.concept ? normalizeSingleCardSlotObject(rawSlots.concept) : createBlankCardSlot(),
         architect: rawSlots?.architect ? normalizeSingleCardSlotObject(rawSlots.architect) : createBlankCardSlot(),
         manual: rawSlots?.manual ? normalizeSingleCardSlotObject(rawSlots.manual) : createBlankCardSlot(),
     };
@@ -1780,6 +2122,8 @@ export function normalizeSession(rawSession, index = 1) {
         tinder,
         gacha,
         blitz,
+        photoLab,
+        conceptLab,
         architect,
         rework,
         cardSlots,
@@ -1831,6 +2175,8 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             imageRefMode: 'off',
             imagePickedRefUid: '',
             imagePickedRefUids: [],
+            autoArtWithCards: false,
+            safeFandomArtPrompt: false,
             gachaTimerEnabled: true,
             gachaCooldownMinutes: DEFAULT_GACHA_COOLDOWN_MINUTES,
             gachaMaxPullsPerCycle: GACHA_CYCLE_LIMIT,
@@ -1838,6 +2184,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             gachaSacrificeFailEnabled: true,
             gachaSacrificeFailChance: 25,
             gachaWallet: createDefaultGachaWallet(),
+            customCardFormats: [],
             userTagLibrary: [],
             savedVault: [],
             activeSessionId: '',
@@ -1940,6 +2287,10 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             if (arr.length === 0 && legacySingle) return [legacySingle];
             return [...new Set(arr)];
         })(),
+        autoArtWithCards: rawCfg.autoArtWithCards !== undefined
+            ? Boolean(rawCfg.autoArtWithCards)
+            : sessions.some((s) => Boolean(s?.tinder?.autoArt)),
+        safeFandomArtPrompt: Boolean(rawCfg.safeFandomArtPrompt),
         gachaTimerEnabled: rawCfg.gachaTimerEnabled !== false,
         gachaCooldownMinutes: Number.isFinite(parsedCooldownMin) && parsedCooldownMin >= 5 && parsedCooldownMin <= 1440
             ? Math.round(parsedCooldownMin)
@@ -1955,6 +2306,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
             ? Math.round(parsedFailChance)
             : 25,
         gachaWallet,
+        customCardFormats: normalizeCustomCardFormats(rawCfg.customCardFormats),
         userTagLibrary: normalizeUserTagLibrary(rawCfg.userTagLibrary),
         savedVault,
         activeSessionId,
@@ -2258,7 +2610,7 @@ export function summarizeMinimalDirectIdeaBlock(session) {
     return (it.playerNameMode || 'macro') === 'macro' ? shieldMacrosForPrompt(rawText) : rawText;
 }
 
-export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_user_msg', { modeContext = 'architect', useIntake = true } = {}) {
+export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_user_msg', { modeContext = 'architect', useIntake = true, safeFandomArtPrompt = false, customFormats = [], skipImagePrompt = false } = {}) {
     const effectiveIntake = modeContext === 'gacha'
         ? {
             ...session.intake,
@@ -2266,12 +2618,7 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
         }
         : session.intake;
     const worldMode = isWorldOrRpgMode(effectiveIntake);
-    const effectiveFmtId = effectiveIntake.originType === 'rpg_gm' && effectiveIntake.cardFormat === 'dossier_19'
-        ? 'rpg_gm_engine'
-        : (effectiveIntake.originType === 'world_sandbox' && effectiveIntake.cardFormat === 'dossier_19'
-            ? 'world_sandbox'
-            : (effectiveIntake.originType === 'duo_group' && effectiveIntake.cardFormat === 'dossier_19' ? 'cast_hub' : effectiveIntake.cardFormat));
-    const fmt = CARD_FORMATS.find((f) => f.id === effectiveFmtId) || CARD_FORMATS[0];
+    const fmt = resolveCardFormat(effectiveIntake.cardFormat, customFormats, effectiveIntake);
 
     const descWords = resolveWordTarget(effectiveIntake);
     const greetWords = resolveGreetingTarget(effectiveIntake);
@@ -2286,7 +2633,7 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
     const altCnt = effectiveIntake.altGreetingsCount !== undefined
         ? Math.max(0, Math.min(4, Math.round(Number(effectiveIntake.altGreetingsCount))))
         : 1;
-    const artMechRule = buildFlexibleAvatarArtMechanismRule(effectiveIntake);
+    const artMechRule = skipImagePrompt ? '' : buildFlexibleAvatarArtMechanismRule(effectiveIntake, { safeFandomArtPrompt });
 
     const gmExtraRule = worldMode
         ? `WORLD / RPG CARD SPECIAL REQUIREMENT:\n- Because this is a World/RPG Narrator card, ALSO populate [[NMF_SYS_PROMPT]] with a crisp Game Master / Narrator operating instruction (act as reactive GM/world, voice autonomous NPCs with distinct agendas, never control or speak for the player) and [[NMF_POST_HISTORY]] with a concise anti-drift turn-ending rule (end turns on actionable hooks/consequences; keep any status block clean).`
@@ -2302,7 +2649,7 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
         `Target length for Description: approximately ${descWords} words.`,
         `Target length for First Message (Opening Scene): approximately ${greetWords} words.`,
         `Write human-facing Creator Notes (creator_notes / [[NMF_CREATOR_NOTES]]) in ${userLangSpec.shortLabel} so the user can read the card overview and play tips in their own language even if the card itself is in another language.`,
-        CARD_META_PURITY_RULE,
+        CLEAN_HEADINGS_RULE,
         `Formatting Standard: ${fmt.name}\n${fmt.instructions}`,
         gmExtraRule,
         artMechRule,
@@ -2310,10 +2657,13 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
 
     if (mode === 'json_schema') {
         const jsonAltSample = altCnt === 0 ? '[]' : JSON.stringify(Array.from({ length: altCnt }, (_, i) => `alt_greeting_${i + 1}`));
+        const jsonSampleStr = skipImagePrompt
+            ? `{"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1","tag2"]}`
+            : `{"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1","tag2"],"image_prompt":""}`;
         return {
-            system: shieldMacrosForPrompt(coreRules) + `\nOutput ONLY valid JSON matching this exact object structure:\n{"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","tags":["tag1","tag2"],"image_prompt":""}`,
+            system: shieldMacrosForPrompt(coreRules) + `\nOutput ONLY valid JSON matching this exact object structure:\n${jsonSampleStr}`,
             user: `${intakeSummary}\n\n[USER CONCEPT / EXTRA DATA]\n${safeBrief || 'Create an unforgettable card matching all intake parameters above.'}`,
-            jsonSchema: FULL_CARD_JSON_SCHEMA,
+            jsonSchema: skipImagePrompt ? FULL_CARD_NO_IMG_JSON_SCHEMA : FULL_CARD_JSON_SCHEMA,
         };
     }
 
@@ -2347,8 +2697,8 @@ export function buildFullCardRequest(session, extraBrief = '', mode = 'prefill_u
             `[[NMF_POST_HISTORY]]${worldMode ? 'Post-history anti-drift / HUD reminder' : ''}[[/NMF_POST_HISTORY]]`,
             `[[NMF_CREATOR_NOTES]]Brief creator notes & play tips for the user[[/NMF_CREATOR_NOTES]]`,
             `[[NMF_TAGS]]comma-separated tags[[/NMF_TAGS]]`,
-            `[[NMF_IMG_PROMPT]]Detailed English visual prompt[[/NMF_IMG_PROMPT]]`,
-        ].join('\n')),
+            skipImagePrompt ? '' : `[[NMF_IMG_PROMPT]]Detailed English visual prompt[[/NMF_IMG_PROMPT]]`,
+        ].filter(Boolean).join('\n')),
         jsonSchema: null,
     };
 }
@@ -2444,13 +2794,13 @@ export function parseFullCardResponse(raw, mode = 'prefill_user_msg', playerName
     };
 }
 
-export function buildTinderPreviewRequest(session, count = 1, mode = 'prefill_user_msg') {
+export function buildTinderPreviewRequest(session, count = 1, mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
     const intakeSummary = summarizeIntakeBlock(session, { modeContext: 'swipe' });
     const worldMode = isWorldOrRpgMode(session.intake);
     const pMode = session.intake.playerNameMode || 'macro';
     // Swipe preview cards are read directly by the human user -> use userLanguage!
     const previewLangSpec = resolveUserLanguageSpec(session.intake);
-    const artMechRule = buildFlexibleAvatarArtMechanismRule(session.intake);
+    const artMechRule = buildFlexibleAvatarArtMechanismRule(session.intake, { safeFandomArtPrompt });
     const hint = session.tinder.promptHint ? `\nExtra Swipe Wish: ${shieldMacrosForPrompt(session.tinder.promptHint)}` : '';
     const macroRule = buildUniversalMacroRule(pMode);
 
@@ -2570,6 +2920,16 @@ export function listBlitzSelectableCandidates(session) {
             if (g && g.id) out.push({ ref: `gacha:${g.id}`, source: 'gacha', badge: `Гача ${g.stars || 3} зв.`, entity: g });
         }
     }
+    if (bz.useConceptContext) {
+        for (const cv of (session?.conceptLab?.vault || [])) {
+            if (cv && cv.id) out.push({ ref: `concept:${cv.id}`, source: 'concept', badge: 'Концепт', entity: cv });
+        }
+    }
+    if (bz.usePhotoContext) {
+        for (const pd of (session?.photoLab?.drafts || [])) {
+            if (pd && pd.id) out.push({ ref: `photo:${pd.id}`, source: 'photo', badge: 'По фото', entity: pd });
+        }
+    }
     return out;
 }
 
@@ -2611,15 +2971,17 @@ export function buildBlitzQuestionsRequest(session, singleIndexToReplace = -1, m
     const seedCharacterBlock = seedEntity
         ? `\n[SELECTED CHARACTER SEED TO DEEPEN IN THIS BLITZ — MANDATORY SUBJECT]\n` +
           shieldMacrosForPrompt(buildCleanBriefFromEntity(seedEntity)) +
-          `\nCRITICAL RULE: Every single question MUST be specifically about THIS exact character ("${seedEntity.name}") — refer to ${seedEntity.name} directly by name, build directly on their existing pitch/appearance/archetype above, and ask the user clarifying questions about ${seedEntity.name}'s hidden past, habits, relationship dynamic with the player, and opening scene! NEVER invent a separate character!`
+          `\nCRITICAL RULE: Every single question MUST be specifically about THIS exact character ("${seedEntity.name}") — refer to ${seedEntity.name} directly by name, build directly on their existing dossier/concept details above, and ask the user clarifying questions about ${seedEntity.name}'s hidden past, psychology, relationship dynamic with the player, and opening scene! Do NOT ask again about details already settled in their Concept notes above, and NEVER invent a separate character!`
         : '';
+
+    const fullSeedAndConceptBlock = seedCharacterBlock;
 
     const naturalQuestionToneRule = `Write questions in clean, natural human language in ${langSpec.shortLabel} — do NOT put raw technical curly-brace macros like {{char}} or {{user}} inside the question text itself.`;
 
     if (mode === 'json_schema') {
         return {
             system: shieldMacrosForPrompt(`Generate ${count} sharp, engaging quiz question(s) in ${langSpec.shortLabel}. ${naturalQuestionToneRule} ${withChoices ? 'Include 3 concise clickable option suggestions per question.' : 'Keep options empty [].'}\nOutput ONLY valid JSON: {"questions":[{"question":"","options":[]}]}`),
-            user: `Topic: ${topic}\n${intakeSummary}${seedCharacterBlock}${existingList}`,
+            user: `Topic: ${topic}\n${intakeSummary}${fullSeedAndConceptBlock}${existingList}`,
             jsonSchema: BLITZ_QUESTIONS_JSON_SCHEMA,
         };
     }
@@ -2636,7 +2998,7 @@ export function buildBlitzQuestionsRequest(session, singleIndexToReplace = -1, m
                     ? `Cover distinct worldbuilding & RPG angles (magic/tech level, danger & lethality, factions, starting status of player, quests/HUD mechanics, tone).`
                     : `Cover distinct character angles (core paradox, visual impression, secret/past, dynamic with player, voice/habit, tension).`),
             withChoices ? `For each question, also provide 3 concise suggested answer options separated by " | ".` : `Do NOT add multiple-choice options unless requested.`,
-            intakeSummary + seedCharacterBlock + existingList,
+            intakeSummary + fullSeedAndConceptBlock + existingList,
             ``,
             `[STRICT INDEXED OUTPUT FORMAT]`,
             `Wrap each question in [[NMF_Q]]...[[/NMF_Q]]:`,
@@ -2752,7 +3114,7 @@ export function buildAuReworkQuestionsRequest(session, sourceCard, singleIndexTo
     };
 }
 
-export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user_msg') {
+export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user_msg', { safeFandomArtPrompt = false, customFormats = [] } = {}) {
     const rw = session.rework;
     const isAuPreserve = rw.reworkMode === 'au_shift';
     const targetEra = rw.targetSettingEra || session.intake.settingEra || 'Alternate Universe';
@@ -2767,8 +3129,8 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
     const altCnt = session.intake?.altGreetingsCount !== undefined
         ? Math.max(0, Math.min(4, Math.round(Number(session.intake.altGreetingsCount))))
         : 1;
-    const artMechRule = buildFlexibleAvatarArtMechanismRule(session.intake);
-    const fmt = CARD_FORMATS.find((f) => f.id === session.intake.cardFormat) || CARD_FORMATS[0];
+    const artMechRule = buildFlexibleAvatarArtMechanismRule(session.intake, { safeFandomArtPrompt });
+    const fmt = resolveCardFormat(session.intake.cardFormat, customFormats, session.intake);
 
     const answeredAuDecisions = Array.isArray(rw.questions)
         ? rw.questions
@@ -2826,7 +3188,7 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
     if (mode === 'json_schema') {
         const jsonAltSample = altCnt === 0 ? '[]' : JSON.stringify(Array.from({ length: altCnt }, (_, i) => `alt_greeting_${i + 1}`));
         return {
-            system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\nTarget Output Language: ${langSpec.directive}.\n${notesLangRule}\nNever write actions, thoughts, or dialogue for the player inside the opening scene.\n${macroRule}\n${greetStyleBlock}\n${greetLangCountBlock}\n${CARD_META_PURITY_RULE}\n${artMechRule}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
+            system: shieldMacrosForPrompt(`You are NexusMatch Multiverse Adapter.\n${auDirective}\nTarget Output Language: ${langSpec.directive}.\n${notesLangRule}\nNever write actions, thoughts, or dialogue for the player inside the opening scene.\n${macroRule}\n${greetStyleBlock}\n${greetLangCountBlock}\n${CLEAN_HEADINGS_RULE}\n${artMechRule}\nOutput ONLY valid JSON: {"name":"","description":"","personality":"","scenario":"","first_mes":"","alternate_greetings":${jsonAltSample},"mes_example":"","system_prompt":"","post_history_instructions":"","creator_notes":"","tags":["AU"],"image_prompt":""}`),
             user: `${intakeSummary}${userAuDecisionsBlock}\n\n${srcDump}`,
             jsonSchema: FULL_CARD_JSON_SCHEMA,
         };
@@ -2847,7 +3209,7 @@ export function buildReworkCardRequest(session, sourceCard, mode = 'prefill_user
             macroRule,
             greetStyleBlock,
             greetLangCountBlock,
-            CARD_META_PURITY_RULE,
+            CLEAN_HEADINGS_RULE,
             `Target Output Language: ${langSpec.directive}.`,
             notesLangRule,
             artMechRule,
@@ -2889,8 +3251,8 @@ export function parseGachaPlusTags(rawInput) {
         .slice(0, 10);
 }
 
-export function buildVisualPromptRefinementRequest(entity, userHint = '', intake = {}, mode = 'prefill_user_msg') {
-    const artMechRule = buildFlexibleAvatarArtMechanismRule(intake);
+export function buildVisualPromptRefinementRequest(entity, userHint = '', intake = {}, mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
+    const artMechRule = buildFlexibleAvatarArtMechanismRule(intake, { safeFandomArtPrompt });
     const name = String(entity?.name || 'Character').trim();
     const looks = String(entity?.appearance || entity?.description || '').slice(0, 1800).trim();
     const prevPrompt = String(entity?.imagePrompt || '').trim();
@@ -3062,21 +3424,46 @@ export const computeSacrificeResetGain = computeSacrificeWishGain;
 
 export function syncGachaWalletState(
     wallet,
-    { maxCap = GACHA_CYCLE_LIMIT, timerEnabled = true, nowMs = Date.now() } = {},
+    {
+        maxCap = GACHA_CYCLE_LIMIT,
+        timerEnabled = true,
+        cooldownMinutes = DEFAULT_GACHA_COOLDOWN_MINUTES,
+        nowMs = Date.now(),
+    } = {},
 ) {
     const cap = Math.max(3, Math.min(50, Math.round(Number(maxCap) || GACHA_CYCLE_LIMIT)));
+    const cdMin = Math.max(5, Math.min(1440, Math.round(Number(cooldownMinutes) || DEFAULT_GACHA_COOLDOWN_MINUTES)));
     if (!wallet || typeof wallet !== 'object') {
         return { coolingDown: false, leftMs: 0, maxCap: cap, freeWishesLeft: cap, bonusWishes: 0, totalWishes: cap, changed: false };
     }
     let changed = false;
-    const endsAt = Number(wallet.cooldownEndsAt) || 0;
+    let endsAt = Number(wallet.cooldownEndsAt) || 0;
+
+    // Only refill the base pool when the wall-clock deadline has genuinely passed!
     if (endsAt > 0 && nowMs >= endsAt) {
         wallet.cooldownEndsAt = 0;
         wallet.freeSpentInCycle = 0;
         wallet.updatedAt = nowMs;
+        endsAt = 0;
         changed = true;
     }
-    const spent = Math.max(0, Math.min(cap, Math.round(Number(wallet.freeSpentInCycle) || 0)));
+
+    let spent = Math.max(0, Math.min(cap, Math.round(Number(wallet.freeSpentInCycle) || 0)));
+
+    // Self-heal: if all free wishes in the cycle are spent while timer is enabled, ensure cooldown is actively running!
+    if (timerEnabled !== false && spent >= cap && endsAt <= nowMs) {
+        endsAt = nowMs + cdMin * 60 * 1000;
+        wallet.cooldownEndsAt = endsAt;
+        wallet.updatedAt = nowMs;
+        changed = true;
+    }
+    // Conversely, if an active cooldown is running, free wishes MUST remain locked at 0 until endsAt!
+    if (timerEnabled !== false && endsAt > nowMs && spent < cap) {
+        spent = cap;
+        wallet.freeSpentInCycle = cap;
+        changed = true;
+    }
+
     const freeCooling = timerEnabled !== false && endsAt > nowMs;
     const freeWishesLeft = timerEnabled === false
         ? cap
@@ -3104,13 +3491,14 @@ export function spendGachaWalletWishes(
         nowMs = Date.now(),
     } = {},
 ) {
-    const status = syncGachaWalletState(wallet, { maxCap, timerEnabled, nowMs });
+    const status = syncGachaWalletState(wallet, { maxCap, timerEnabled, cooldownMinutes, nowMs });
     const want = Math.max(1, Math.min(5, Math.round(Number(requestedCount) || 1)));
     const actualCount = timerEnabled === false ? want : Math.min(want, status.totalWishes);
     if (actualCount <= 0) {
         return { spentTotal: 0, spentFree: 0, spentBonus: 0, startedCooldown: false };
     }
     if (timerEnabled === false) {
+        wallet.freeSpentInCycle = Math.min(status.maxCap, Math.max(0, Math.round(Number(wallet.freeSpentInCycle) || 0)) + actualCount);
         wallet.updatedAt = nowMs;
         return { spentTotal: actualCount, spentFree: actualCount, spentBonus: 0, startedCooldown: false };
     }
@@ -3169,12 +3557,12 @@ function isValidGachaDropsShape(val) {
     return arr.every((c) => c && typeof c === 'object' && !Array.isArray(c) && typeof c.name === 'string' && c.name.trim());
 }
 
-export function buildGachaSummonRequest(session, plusTags = [], rarities = [3], mode = 'prefill_user_msg', { savedVault = [] } = {}) {
+export function buildGachaSummonRequest(session, plusTags = [], rarities = [3], mode = 'prefill_user_msg', { savedVault = [], safeFandomArtPrompt = false } = {}) {
     const intakeSummary = summarizeGachaWishPrefsBlock(session);
     const pMode = session.intake.playerNameMode || 'macro';
     const previewLangSpec = resolveUserLanguageSpec(session.intake);
     const gachaOrigin = mapGachaTargetToOriginType(session.gacha?.wishPrefs?.targetType);
-    const artMechRule = buildFlexibleAvatarArtMechanismRule({ ...session.intake, originType: gachaOrigin });
+    const artMechRule = buildFlexibleAvatarArtMechanismRule({ ...session.intake, originType: gachaOrigin }, { safeFandomArtPrompt });
     const macroRule = buildUniversalMacroRule(pMode);
     const cleanTags = (Array.isArray(plusTags) ? plusTags : parseGachaPlusTags(plusTags)).slice(0, 10);
     const count = Math.max(1, rarities.length);
@@ -3307,12 +3695,12 @@ export function parseGachaSummonResponse(raw, rarities = [3], plusTags = [], pla
     return arr.map((item, idx) => buildEntry(item, idx));
 }
 
-export function buildGachaFusionRequest(session, donorCards = [], fusionHint = '', mode = 'prefill_user_msg') {
+export function buildGachaFusionRequest(session, donorCards = [], fusionHint = '', mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
     const intakeSummary = summarizeGachaWishPrefsBlock(session);
     const pMode = session.intake.playerNameMode || 'macro';
     const previewLangSpec = resolveUserLanguageSpec(session.intake);
     const gachaOrigin = mapGachaTargetToOriginType(session.gacha?.wishPrefs?.targetType);
-    const artMechRule = buildFlexibleAvatarArtMechanismRule({ ...session.intake, originType: gachaOrigin });
+    const artMechRule = buildFlexibleAvatarArtMechanismRule({ ...session.intake, originType: gachaOrigin }, { safeFandomArtPrompt });
     const macroRule = buildUniversalMacroRule(pMode);
     const safeHint = String(fusionHint || '').trim();
 
@@ -3430,7 +3818,6 @@ export function buildCardTranslationRequest(card, targetLangLabel = 'Русск�
         `- Preserve 100% of Markdown headings, XML tag names, bullet lists, dialogue formatting, and <START> markers.`,
         `- Whenever you encounter { {user} } or { {char} } (spaced in the input only to prevent client macro expansion), output the exact unspaced SillyTavern macros {{user}} and {{char}} without translating the words user or char inside braces.`,
         `- Do NOT summarize, censor, or omit details — translate every paragraph completely.`,
-        CARD_META_PURITY_RULE,
     ].join('\n');
 
     const sourceBlock = shieldMacrosForPrompt([
@@ -3538,10 +3925,37 @@ export function parseCardTranslationResponse(raw, sourceCard = {}, targetLangLab
  */
 export function buildCleanBriefFromEntity(entity) {
     if (!entity || typeof entity !== 'object') return '';
+    // Unified Concept Art Vault Entry (Base Hero + Concept Captions)
+    if (entity.singleSheet || Array.isArray(entity.seriesFrames)) {
+        const masterCap = String(entity.singleSheet?.masterCaption || '').trim();
+        const seriesCaps = Array.isArray(entity.seriesFrames)
+            ? entity.seriesFrames
+                .filter((fr) => String(fr?.caption || '').trim())
+                .map((fr, idx) => `${idx + 1}. [${fr.title || `Frame #${idx + 1}`}]: ${String(fr.caption).trim()}`)
+            : [];
+        return [
+            `Chosen Subject & Concept Art Profile:`,
+            `Name: ${sanitizeCardMetaPollution(entity.name || '')}`,
+            entity.baseBrief ? `\n[BASE HERO DOSSIER]\n${entity.baseBrief}` : '',
+            entity.themeBrief ? `\n[CONCEPT THEME]: ${entity.themeBrief}` : '',
+            (masterCap || seriesCaps.length > 0)
+                ? [
+                    `\n[CONCEPT ART VISUAL & WORLD INSPIRATION — WEAVE NATURALLY INTO CARD TEMPLATE]`,
+                    `IMPORTANT: Organically weave all physical details, belongings, outfits, expressions, habits, and locations below into the selected Card Template sections. NEVER paste or append these concept captions verbatim as a raw block inside Description!`,
+                    masterCap ? `Concept Sheet Details:\n${masterCap}` : '',
+                    seriesCaps.length > 0 ? `Concept Series Frame Notes:\n${seriesCaps.join('\n')}` : '',
+                ].filter(Boolean).join('\n')
+                : '',
+        ].filter(Boolean).join('\n');
+    }
+
     const cleanTags = sanitizeCardMetaPollution(
         Array.isArray(entity.tags) ? entity.tags.join(', ') : String(entity.tags || ''),
         { isTags: true },
     );
+    const cardExcerpt = entity.cardDraft?.description
+        ? `\nInitial Base Profile Excerpt:\n${sanitizeCardMetaPollution(String(entity.cardDraft.description).slice(0, 2400))}`
+        : '';
     return [
         `Chosen Character Concept:`,
         `Name: ${sanitizeCardMetaPollution(entity.name || '')}`,
@@ -3552,6 +3966,7 @@ export function buildCleanBriefFromEntity(entity) {
         entity.quote ? `Signature Voice Quote: "${sanitizeCardMetaPollution(entity.quote)}"` : '',
         cleanTags ? `Thematic Tags: ${cleanTags}` : '',
         entity.imagePrompt ? `Visual Portrait Direction: ${entity.imagePrompt}` : '',
+        cardExcerpt,
     ].filter(Boolean).join('\n');
 }
 
@@ -3577,7 +3992,7 @@ export function buildSurgicalCardEditRequest(
     session,
     currentCard,
     userInstruction = '',
-    { scope = 'auto', updateArtPrompt = false, mode = 'prefill_user_msg' } = {},
+    { scope = 'auto', updateArtPrompt = false, mode = 'prefill_user_msg', safeFandomArtPrompt = false } = {},
 ) {
     const it = session?.intake || createDefaultSession(1).intake;
     const cardLangSpec = resolveCardLanguageSpec(it);
@@ -3585,7 +4000,7 @@ export function buildSurgicalCardEditRequest(
     const pMode = it.playerNameMode || 'macro';
     const macroRule = buildUniversalMacroRule(pMode);
     const greetStyleBlock = buildGreetingStyleDirective(it);
-    const artMechRule = updateArtPrompt ? buildFlexibleAvatarArtMechanismRule(it) : '';
+    const artMechRule = updateArtPrompt ? buildFlexibleAvatarArtMechanismRule(it, { safeFandomArtPrompt }) : '';
     const cleanInstruction = String(userInstruction || '').trim()
         || 'Remove generic AI clichés/slop, sharpen repetitive phrasing, and improve weak expressions while preserving 100% of existing lore, structure, and character identity.';
 
@@ -3634,7 +4049,7 @@ export function buildSurgicalCardEditRequest(
         `SEPARATE ART PROMPT RULE: NEVER put visual art tags or SCENE/FIGURE prompts inside Description, First Message, or Tags! ${updateArtPrompt ? 'Update ONLY the separate image_prompt / [[NMF_IMG_PROMPT]] slot to reflect visual changes.' : 'Leave image_prompt empty or unchanged.'}`,
         macroRule,
         greetStyleBlock,
-        CARD_META_PURITY_RULE,
+        CLEAN_HEADINGS_RULE,
         artMechRule,
     ].filter(Boolean).join('\n');
 
@@ -3755,6 +4170,8 @@ export function buildFullCardRegenerateRequest(
         sourceCard = null,
         useIntake = true,
         mode = 'prefill_user_msg',
+        safeFandomArtPrompt = false,
+        customFormats = [],
     } = {},
 ) {
     const cleanInstruction = String(userInstruction || '').trim();
@@ -3784,7 +4201,7 @@ export function buildFullCardRegenerateRequest(
         ].join('\n');
 
     if (originKind === 'au_rework' && sourceCard) {
-        const baseAuReq = buildReworkCardRequest(session, sourceCard, mode);
+        const baseAuReq = buildReworkCardRequest(session, sourceCard, mode, { safeFandomArtPrompt });
         const extraBlock = shieldMacrosForPrompt(`\n\n${prevDraftContext}\n\n${feedbackDirective}`);
         return {
             system: baseAuReq.system,
@@ -3826,6 +4243,7 @@ export function buildFullCardRegenerateRequest(
         const combinedBlitzBrief = [blitzCoreBrief, prevDraftContext, feedbackDirective].filter(Boolean).join('\n\n');
         return buildFullCardRequest(session, combinedBlitzBrief, mode, {
             modeContext: blitzCtxMode,
+            safeFandomArtPrompt,
         });
     }
 
@@ -3844,6 +4262,520 @@ export function buildFullCardRegenerateRequest(
     return buildFullCardRequest(session, combinedBrief, mode, {
         modeContext: effectiveModeCtx,
         useIntake: effectiveModeCtx === 'architect' ? useIntake : true,
+        safeFandomArtPrompt,
+        customFormats,
     });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v2.1.0 — AI TEMPLATE EXTRACTOR, PHOTO-TO-CHAR VISION LAB & CONCEPT ART LAB
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const TEMPLATE_EXTRACT_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_extracted_template',
+    strict: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['short_btn', 'name', 'desc', 'instructions'],
+        properties: {
+            short_btn: { type: 'string' },
+            name: { type: 'string' },
+            desc: { type: 'string' },
+            instructions: { type: 'string' },
+        },
+    },
+});
+
+export function buildExtractCardTemplateRequest(sourceCard = {}, userHint = '', intake = {}, mode = 'prefill_user_msg') {
+    const userLangSpec = resolveUserLanguageSpec(intake);
+    const srcName = String(sourceCard.name || 'Character').trim();
+    const srcDesc = String(sourceCard.description || '').trim().slice(0, 12000);
+    const srcPers = String(sourceCard.personality || '').trim().slice(0, 2000);
+    const srcHint = String(userHint || '').trim();
+
+    const coreRules = [
+        `You are NexusMatch Template Reverse-Engineer.`,
+        `Analyze the structural layout, section headings, bullet/prose balance, XML/Markdown conventions, and information density of the provided Character Card Description.`,
+        `Extract a REUSABLE, UNIVERSAL Card Formatting Template prompt ("instructions") that will instruct an AI to build brand-new characters in this exact same structural format.`,
+        `STRICT RULES:`,
+        `1. Strip away 100% of "${srcName}"'s specific personal lore, names, places, and plot facts — keep ONLY the structural blueprint, section names, field order, formatting style (bullets vs prose vs XML), and tone guidance.`,
+        `2. Replace character/player references with universal placeholders { {char} } and { {user} }.`,
+        `3. Convert any Markdown headings into clean token-efficient "## Heading" or "### Heading" format WITHOUT square brackets around heading titles (never "## [HEADING]"). (If the source card uses semantic XML tags like <appearance>, preserve those clean XML tags).`,
+        `4. Write "short_btn" (short chip title, 2–3 words) and "desc" (1–2 sentence human explanation) in ${userLangSpec.shortLabel}. Write "instructions" as clear, precise formatting instructions ready to insert into a card-generation system prompt.`,
+    ].join('\n');
+
+    const sourceDump = [
+        `[SOURCE CHARACTER NAME]: ${srcName}`,
+        `[SOURCE DESCRIPTION TO REVERSE-ENGINEER INTO A REUSABLE TEMPLATE]:`,
+        srcDesc || '(empty)',
+        srcPers ? `\n[SOURCE PERSONALITY FIELD]:\n${srcPers}` : '',
+        srcHint ? `\n[USER EXTRA WISHES FOR THIS TEMPLATE]:\n${srcHint}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (mode === 'json_schema') {
+        return {
+            system: shieldMacrosForPrompt(coreRules + `\nOutput ONLY valid JSON: {"short_btn":"","name":"","desc":"","instructions":""}`),
+            user: shieldMacrosForPrompt(sourceDump),
+            jsonSchema: TEMPLATE_EXTRACT_JSON_SCHEMA,
+        };
+    }
+
+    return {
+        system: '',
+        user: shieldMacrosForPrompt([
+            `[NEXUSMATCH FORGE // EXTRACT REUSABLE CARD TEMPLATE FROM CHARACTER]`,
+            coreRules,
+            ``,
+            sourceDump,
+            ``,
+            `[STRICT INDEXED OUTPUT FORMAT]`,
+            `[[NMF_TPL_SHORT]]Short button label (2-3 words)[[/NMF_TPL_SHORT]]`,
+            `[[NMF_TPL_NAME]]Full template title[[/NMF_TPL_NAME]]`,
+            `[[NMF_TPL_DESC]]Short human explanation of how this template structures cards[[/NMF_TPL_DESC]]`,
+            `[[NMF_TPL_INSTR]]Complete reusable formatting instructions with clean ## Headings and { {char} } / { {user} }[[/NMF_TPL_INSTR]]`,
+        ].join('\n')),
+        jsonSchema: null,
+    };
+}
+
+export function parseExtractCardTemplateResponse(raw) {
+    const clean = stripReasoning(raw);
+    const shortTag = extractTagBlock(clean, 'NMF_TPL_SHORT');
+    const nameTag = extractTagBlock(clean, 'NMF_TPL_NAME');
+    const descTag = extractTagBlock(clean, 'NMF_TPL_DESC');
+    const instrTag = extractTagBlock(clean, 'NMF_TPL_INSTR');
+
+    let shortBtn = shortTag;
+    let name = nameTag;
+    let desc = descTag;
+    let instructions = instrTag;
+
+    if (!instructions) {
+        const j = extractJsonLoose(clean, (v) => v && typeof v === 'object' && typeof v.instructions === 'string' && v.instructions.trim());
+        if (j) {
+            shortBtn = String(j.short_btn || j.shortBtn || j.name || '').trim();
+            name = String(j.name || shortBtn || '').trim();
+            desc = String(j.desc || '').trim();
+            instructions = String(j.instructions || '').trim();
+        }
+    }
+
+    // Ensure no bracketed ## [HEADING] slipped in
+    instructions = String(instructions || '')
+        .replace(/^(#{1,4})\s*\[([^\]\n]+)\]\s*$/gm, '$1 $2')
+        .trim();
+
+    if (!instructions) {
+        throw new Error('ИИ не вернул текст шаблона. Попробуйте ещё раз или переключите режим отправки.');
+    }
+    const finalShort = (shortBtn || name || 'Шаблон чара').trim().slice(0, 42);
+    return {
+        id: 'custom_tpl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
+        shortBtn: finalShort,
+        name: (name || finalShort).trim().slice(0, 90),
+        desc: (desc || 'Шаблон анкеты, извлечённый ИИ по образцу готовой карточки.').trim().slice(0, 260),
+        instructions: instructions.slice(0, 8000),
+        isCustom: true,
+    };
+}
+
+export function buildPhotoToCardRequest(session, mode = 'prefill_user_msg', { customFormats = [], safeFandomArtPrompt = false } = {}) {
+    const pl = session.photoLab || createDefaultPhotoLabState();
+    const useIntake = Boolean(pl.useIntake);
+    const charNameHint = String(pl.charName || '').trim();
+    const roleHint = String(pl.roleVibeHint || '').trim();
+    const extraNotes = String(pl.extraNotes || '').trim();
+
+    const visionBriefLines = [
+        `[VISION CHARACTER / WORLD SYNTHESIS FROM ATTACHED ARTWORK — MANDATORY]`,
+        `Carefully inspect the attached reference image/photo! Every visible detail on the artwork is canonical truth:`,
+        `- Observe face, eyes, hair/fur/horns/ears/tail, build & physique, posture, scars/markings, clothing layers, fabrics, accessories, held objects, background setting, lighting, and overall emotional vibe.`,
+        `- Translate those visual details into living personality, habits, voice, backstory, and starting encounter — strictly structured according to the selected Card Template!`,
+        charNameHint ? `- Requested Name: ${charNameHint}` : `- Invent a memorable, fitting name matching the visual design and setting.`,
+        roleHint ? `- Requested Role / Archetype / Dynamic with Player: ${roleHint}` : '',
+        extraNotes ? `- Additional User Parameters & Wishes: ${extraNotes}` : '',
+    ].filter(Boolean).join('\n');
+
+    return buildFullCardRequest(session, visionBriefLines, mode, {
+        modeContext: 'architect',
+        useIntake,
+        safeFandomArtPrompt,
+        customFormats,
+        skipImagePrompt: true,
+    });
+}
+
+export function listConceptSelectableCandidates(session) {
+    const out = [];
+    for (const c of (session?.tinder?.liked || [])) {
+        if (c && c.id) out.push({ ref: `liked:${c.id}`, source: 'tinder', badge: 'Мэтч', entity: c });
+    }
+    for (const c of (session?.tinder?.queue || [])) {
+        if (c && c.id && !out.some((x) => x.entity.id === c.id)) {
+            out.push({ ref: `queue:${c.id}`, source: 'tinder', badge: 'Лента', entity: c });
+        }
+    }
+    for (const g of (session?.gacha?.collection || [])) {
+        if (g && g.id) out.push({ ref: `gacha:${g.id}`, source: 'gacha', badge: `Гача ${g.stars || 3} зв.`, entity: g });
+    }
+    for (const pd of (session?.photoLab?.drafts || [])) {
+        if (pd && pd.id) out.push({ ref: `photo:${pd.id}`, source: 'photo', badge: 'По фото', entity: pd });
+    }
+    return out;
+}
+
+export function resolveConceptSeedCandidate(session) {
+    const cl = session?.conceptLab;
+    const ref = String(cl?.linkedCandidateRef || '__none__').trim();
+    if (!ref || ref === '__none__') return null;
+    const list = listConceptSelectableCandidates(session);
+    return list.find((item) => item.ref === ref) || null;
+}
+
+export function hasActiveConceptCaptions(session, targetCandidateRef = '') {
+    const cl = session?.conceptLab;
+    if (!cl) return false;
+    const linked = String(cl.linkedCandidateRef || '__none__');
+    if (targetCandidateRef && linked !== '__none__' && linked !== targetCandidateRef) {
+        return false;
+    }
+    const hasSingle = Boolean(String(cl.singleSheet?.masterCaption || '').trim());
+    const hasSeries = Array.isArray(cl.seriesFrames) && cl.seriesFrames.some((fr) => Boolean(String(fr?.caption || '').trim()));
+    return hasSingle || hasSeries;
+}
+
+export function buildConceptInspirationBlock(session, targetCandidateRef = '') {
+    if (!hasActiveConceptCaptions(session, targetCandidateRef)) return '';
+    const cl = session.conceptLab;
+    const parts = [];
+    const masterCap = String(cl?.singleSheet?.masterCaption || '').trim();
+    const seriesCaps = Array.isArray(cl?.seriesFrames)
+        ? cl.seriesFrames
+            .filter((fr) => String(fr?.caption || '').trim())
+            .map((fr, idx) => `${idx + 1}. [${fr.title || `Frame #${idx + 1}`}]: ${String(fr.caption).trim()}`)
+        : [];
+
+    if (cl.conceptMode === 'single' && masterCap) {
+        parts.push(`Concept Sheet Summary:\n${masterCap}`);
+        if (seriesCaps.length > 0) parts.push(`Additional Concept Series Notes:\n${seriesCaps.join('\n')}`);
+    } else if (seriesCaps.length > 0) {
+        parts.push(`Concept Art Series Notes:\n${seriesCaps.join('\n')}`);
+        if (masterCap) parts.push(`Main Concept Sheet Summary:\n${masterCap}`);
+    } else if (masterCap) {
+        parts.push(`Concept Sheet Summary:\n${masterCap}`);
+    }
+
+    if (parts.length === 0) return '';
+    return [
+        `[CONCEPT ART VISUAL & WORLD INSPIRATION — WEAVE NATURALLY INTO CARD SYNTHESIS]`,
+        `IMPORTANT: The textual notes below describe visual details, belongings, outfits, expressions, habits, and locations established on the character/world Concept Art.`,
+        `Treat them just like Blitz answers: organically weave these details into the appropriate sections of the selected Card Template (Appearance, Belongings, Habits, World, Scenario).`,
+        `NEVER paste or append these concept captions verbatim as a raw caption block inside Description!`,
+        parts.join('\n\n'),
+    ].join('\n');
+}
+
+export const CONCEPT_SINGLE_PLAN_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_concept_single_plan',
+    strict: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sheet_title', 'sheet_visual_prompt', 'master_caption'],
+        properties: {
+            sheet_title: { type: 'string' },
+            sheet_visual_prompt: { type: 'string' },
+            master_caption: { type: 'string' },
+        },
+    },
+});
+
+export function buildConceptSinglePlanRequest(session, seedEntity = null, mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
+    const cl = session.conceptLab || createDefaultConceptLabState();
+    const userLangSpec = resolveUserLanguageSpec(session.intake);
+    const isWorld = cl.subjectKind === 'world' || isWorldOrRpgMode(session.intake);
+    const onArtLang = String(cl.onArtLanguage || '').trim();
+    const noTextOnArt = /^(нет|без\s*текста|без\s*надписей|none|no\s*text|empty|-)$/i.test(onArtLang);
+    const labelLangRule = noTextOnArt
+        ? `CRITICAL TEXT-ON-IMAGE RULE: Render ZERO text, words, or labels on the illustration itself — pure visual panels and icons only.`
+        : `CRITICAL TEXT-ON-IMAGE RULE: All title headers, callout labels, palette names, and short annotations rendered directly ON the concept sheet artwork MUST be written cleanly in: ${onArtLang || 'English'}.`;
+
+    const subjectBrief = seedEntity
+        ? (cl.sendSeedBio !== false ? buildCleanBriefFromEntity(seedEntity) : `Subject Name: ${seedEntity.name} (Use only visual anchor & user's theme brief below without prior card bio).`)
+        : (String(cl.anchorPrompt || '').trim() || summarizeIntakeBlock(session, { modeContext: 'architect' }));
+    const themeHint = String(cl.themeBrief || '').trim();
+    const aspectHint = String(cl.aspectRatio || '3:2');
+
+    const coreRules = [
+        `You are an elite Concept Art Sheet Director & Character/World Storyteller.`,
+        `Design a cohesive, richly detailed SINGLE-IMAGE ${isWorld ? 'WORLD / SETTING CONCEPT ART SHEET' : 'CHARACTER REFERENCE & CONCEPT SHEET'} formatted for aspect ratio ${aspectHint}.`,
+        `You must produce THREE distinct outputs:`,
+        `1) "sheet_title" (in ${userLangSpec.shortLabel}): a short, evocative editorial title for this concept sheet (4–7 words, e.g. "Личное дело и закулисье Медового Грома").`,
+        `2) "sheet_visual_prompt" (in clear, vivid English for image generation models like Gemini Image, GPT Image, Grok):`,
+        `   - Compose a clean, well-organized multi-panel illustrated reference sheet matching the anchor subject.`,
+        isWorld
+            ? `   - Include: 1 main atmospheric vista panel, architectural/landmark breakdown, 4-5 color palette swatches, key faction/culture emblems or artifacts, local food/currency/tools close-ups, and 2-3 slice-of-life street/interior vignettes.`
+            : `   - Include: 1 large hero portrait/full-body pose on one side, front/side/back turnaround views, 5-6 color palette swatches, 4-6 expressive face close-ups, close-up detail boxes of signature belongings/bag contents/tools/accessories/markings, and 1-2 slice-of-life or emotional moment vignettes (adapted to user's theme brief if given).`,
+        `   - ${labelLangRule}`,
+        safeFandomArtPrompt ? `   - SAFE VISUAL MODE: Describe physical features purely visually without trademarked franchise/celebrity names.` : '',
+        `3) "master_caption" (in ${userLangSpec.shortLabel}):`,
+        `   - Write a warm, living, atmospheric NARRATIVE STORY-PORTRAIT (заметка-рассказ о самом персонаже или мире, ~140–220 слов) weaving all the visual traits, clothes, habits, expressions, favorite food, belongings, and places from the concept into one cohesive living story!`,
+        `   - STRICT ANTI-POSTER RULE: NEVER describe the graphic layout of the illustration ("на белом фоне", "слева изображён портрет", "фото-врезка справа", "блок ЛЮБИМАЯ ЕДА показывает", "внизу палитра из пяти мазков") and do NOT divide into dry categories! Write directly about the living person/world as an engaging character sketch that inspires both the reader and the card-building AI.`,
+    ].filter(Boolean).join('\n');
+
+    const userInput = [
+        `[SUBJECT BASELINE]`,
+        subjectBrief || 'Original subject.',
+        themeHint ? `\n[USER THEME & DESIRED DETAILS ON THE CONCEPT SHEET]\n${themeHint}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (mode === 'json_schema') {
+        return {
+            system: shieldMacrosForPrompt(coreRules + `\nOutput ONLY valid JSON: {"sheet_title":"","sheet_visual_prompt":"","master_caption":""}`),
+            user: shieldMacrosForPrompt(userInput),
+            jsonSchema: CONCEPT_SINGLE_PLAN_JSON_SCHEMA,
+        };
+    }
+
+    return {
+        system: '',
+        user: shieldMacrosForPrompt([
+            `[NEXUSMATCH FORGE // SINGLE CONCEPT SHEET ARCHITECT]`,
+            coreRules,
+            ``,
+            userInput,
+            ``,
+            `[STRICT INDEXED OUTPUT FORMAT]`,
+            `[[NMF_CONCEPT_TITLE]]Short evocative title in ${userLangSpec.shortLabel}[[/NMF_CONCEPT_TITLE]]`,
+            `[[NMF_CONCEPT_PROMPT]]Detailed English multi-panel concept sheet visual prompt[[/NMF_CONCEPT_PROMPT]]`,
+            `[[NMF_CONCEPT_CAPTION]]Living narrative story-sketch in ${userLangSpec.shortLabel} about the character/world (without describing poster layout)[[/NMF_CONCEPT_CAPTION]]`,
+        ].join('\n')),
+        jsonSchema: null,
+    };
+}
+
+export function parseConceptSinglePlanResponse(raw) {
+    const clean = stripReasoning(raw);
+    let title = extractTagBlock(clean, 'NMF_CONCEPT_TITLE');
+    let visualPrompt = extractTagBlock(clean, 'NMF_CONCEPT_PROMPT');
+    let masterCaption = extractTagBlock(clean, 'NMF_CONCEPT_CAPTION');
+
+    if (!visualPrompt && !masterCaption) {
+        const j = extractJsonLoose(clean, (v) => v && typeof v === 'object' && (v.sheet_visual_prompt || v.master_caption));
+        if (j) {
+            title = String(j.sheet_title || j.title || '').trim();
+            visualPrompt = String(j.sheet_visual_prompt || j.visual_prompt || '').trim();
+            masterCaption = String(j.master_caption || j.caption || '').trim();
+        }
+    }
+    if (!visualPrompt) {
+        throw new Error('ИИ не вернул визуальный план концепт-листа. Попробуйте ещё раз.');
+    }
+    return {
+        title: title || 'Концепт-лист образа',
+        visualPrompt,
+        masterCaption: masterCaption || visualPrompt,
+    };
+}
+
+export function buildConceptSeriesQuestionsRequest(session, seedEntity = null, singleIndexToReplace = -1, mode = 'prefill_user_msg') {
+    const cl = session.conceptLab || createDefaultConceptLabState();
+    const langSpec = resolveUserLanguageSpec(session.intake);
+    const seriesCnt = Math.min(6, Math.max(2, Number(cl.seriesCount) || 4));
+    const qCnt = singleIndexToReplace >= 0 ? 1 : Math.min(6, Math.max(3, Number(cl.questionCount) || 4));
+    const withChoices = cl.includeChoices !== false;
+    const isWorld = cl.subjectKind === 'world' || isWorldOrRpgMode(session.intake);
+
+    const subjectBrief = seedEntity
+        ? (cl.sendSeedBio !== false ? buildCleanBriefFromEntity(seedEntity) : `Subject Name: ${seedEntity.name} (Use only visual anchor & user's theme brief below without prior card bio).`)
+        : (String(cl.anchorPrompt || '').trim() || summarizeIntakeBlock(session, { modeContext: 'architect' }));
+    const themeBrief = String(cl.themeBrief || '').trim();
+    const existingList = singleIndexToReplace >= 0
+        ? `\nExisting questions (do NOT repeat these; generate 1 replacement question for #${singleIndexToReplace + 1}):\n` +
+          cl.questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n')
+        : '';
+
+    const coreGuide = [
+        `Generate ${qCnt} focused, inspiring Concept Art Series planning question(s) in ${langSpec.shortLabel} to help the user decide what should be depicted across a series of ${seriesCnt} concept illustrations.`,
+        `IMPORTANT: Remind & inspire the user that concept frames do NOT all have to show the character standing there! Ask smart questions covering:`,
+        isWorld
+            ? `- Landmark architecture/geography, interior hangout or tavern/headquarters, technology/magic artifacts & everyday items, faction attire/creatures, and mood/weather moments.`
+            : `- Alternate outfits/work gear, close-up personal belongings/bag contents/tools/weapons, personal space (bedroom, workshop, ship, vehicle, cafe), expressive habits/hobbies, or a meaningful scene moment.`,
+        `Write clean human language in ${langSpec.shortLabel} without raw {{char}} / {{user}} macros.`,
+    ].join('\n');
+
+    if (mode === 'json_schema') {
+        return {
+            system: shieldMacrosForPrompt(`${coreGuide}\n${withChoices ? 'Provide 3 concise clickable ideas per question.' : 'Keep options [].'}\nOutput ONLY valid JSON: {"questions":[{"question":"","options":[]}]}`),
+            user: shieldMacrosForPrompt(`[SUBJECT]\n${subjectBrief}\n${themeBrief ? `[SERIES THEME]: ${themeBrief}\n` : ''}${existingList}`),
+            jsonSchema: BLITZ_QUESTIONS_JSON_SCHEMA,
+        };
+    }
+
+    return {
+        system: '',
+        user: shieldMacrosForPrompt([
+            `[NEXUSMATCH FORGE // CONCEPT ART SERIES QUESTIONNAIRE (${seriesCnt} FRAMES)]`,
+            coreGuide,
+            withChoices ? `For each question, include 3 vivid clickable option ideas separated by " | ".` : ``,
+            `[SUBJECT]\n${subjectBrief}`,
+            themeBrief ? `[SERIES THEME]: ${themeBrief}` : ``,
+            existingList,
+            ``,
+            `[STRICT INDEXED OUTPUT FORMAT]`,
+            `[[NMF_Q]]`,
+            `[[NMF_Q_TEXT]]Question text[[/NMF_Q_TEXT]]`,
+            withChoices ? `[[NMF_Q_OPTS]]Option 1 | Option 2 | Option 3[[/NMF_Q_OPTS]]` : ``,
+            `[[/NMF_Q]]`,
+        ].filter(Boolean).join('\n')),
+        jsonSchema: null,
+    };
+}
+
+export const CONCEPT_SERIES_PLAN_JSON_SCHEMA = Object.freeze({
+    name: 'nmf_concept_series_plan',
+    strict: true,
+    value: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['frames'],
+        properties: {
+            frames: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['title', 'needs_anchor_ref', 'visual_prompt', 'caption'],
+                    properties: {
+                        title: { type: 'string' },
+                        needs_anchor_ref: { type: 'boolean' },
+                        visual_prompt: { type: 'string' },
+                        caption: { type: 'string' },
+                    },
+                },
+            },
+        },
+    },
+});
+
+export function buildConceptSeriesPlanRequest(session, seedEntity = null, mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
+    const cl = session.conceptLab || createDefaultConceptLabState();
+    const userLangSpec = resolveUserLanguageSpec(session.intake);
+    const seriesCnt = Math.min(6, Math.max(2, Number(cl.seriesCount) || 4));
+    const onArtLang = String(cl.onArtLanguage || '').trim();
+    const noTextOnArt = /^(нет|без\s*текста|без\s*надписей|none|no\s*text|empty|-)$/i.test(onArtLang);
+    const labelLangRule = noTextOnArt
+        ? `Render ZERO text or labels on the illustrations themselves.`
+        : `Any callout labels or short titles rendered directly ON the artwork MUST be written in: ${onArtLang || 'English'}.`;
+
+    const subjectBrief = seedEntity
+        ? (cl.sendSeedBio !== false ? buildCleanBriefFromEntity(seedEntity) : `Subject Name: ${seedEntity.name} (Use only visual anchor & user's theme brief below without prior card bio).`)
+        : (String(cl.anchorPrompt || '').trim() || summarizeIntakeBlock(session, { modeContext: 'architect' }));
+    const themeBrief = String(cl.themeBrief || '').trim();
+    const answered = Array.isArray(cl.questions)
+        ? cl.questions
+            .map((q, idx) => {
+                const dec = formatQuestionUserDecision(q);
+                return dec ? `Q${idx + 1} (${q.question}): ${dec}` : '';
+            })
+            .filter(Boolean)
+            .join('\n')
+        : '';
+
+    const coreRules = [
+        `You are a Concept Art Series Director.`,
+        `Plan a cohesive series of EXACTLY ${seriesCnt} distinct concept art frames (aspect ratio ${cl.aspectRatio || '3:2'}).`,
+        `Frames do NOT all need to feature the character — mix character sheets/expressions/outfits with pure item flat-lays (belongings, tools, bag contents), personal room/workstation/vehicle, or atmospheric world locations according to the user's theme and answers!`,
+        `For EACH frame (1..${seriesCnt}), output:`,
+        `- "title": short frame title in ${userLangSpec.shortLabel} (e.g. "Содержимое сумки и инструменты", "Каюта корабля", "Эмоции и мимика").`,
+        `- "needs_anchor_ref": true if the main character/subject directly appears in this frame (so the anchor portrait reference should be attached), or false if this frame depicts ONLY objects, interiors, food, or scenery without the character.`,
+        `- "visual_prompt": detailed English art prompt for this single frame (uncluttered, easy for any model to render cleanly in one frame). ${labelLangRule}`,
+        safeFandomArtPrompt ? `- SAFE VISUAL MODE: Avoid trademarked franchise/character names inside visual_prompt.` : '',
+        `- "caption": a short, atmospheric, story-like note in ${userLangSpec.shortLabel} (2–4 vivid sentences) telling the story behind these items, place, or habits in the character's real life (do NOT describe graphic layout like "this image shows a 3x3 grid" — write a living character/world note!).`,
+    ].filter(Boolean).join('\n');
+
+    const userInput = [
+        `[SUBJECT BASELINE]`,
+        subjectBrief || 'Original subject.',
+        themeBrief ? `\n[SERIES THEME & WISHES]\n${themeBrief}` : '',
+        answered ? `\n[USER CONCEPT QUESTIONNAIRE ANSWERS — MANDATORY]\n${answered}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (mode === 'json_schema') {
+        return {
+            system: shieldMacrosForPrompt(coreRules + `\nOutput ONLY valid JSON: {"frames":[{"title":"","needs_anchor_ref":true,"visual_prompt":"","caption":""}]}`),
+            user: shieldMacrosForPrompt(userInput),
+            jsonSchema: CONCEPT_SERIES_PLAN_JSON_SCHEMA,
+        };
+    }
+
+    return {
+        system: '',
+        user: shieldMacrosForPrompt([
+            `[NEXUSMATCH FORGE // CONCEPT ART SERIES PLAN (${seriesCnt} FRAMES)]`,
+            coreRules,
+            ``,
+            userInput,
+            ``,
+            `[STRICT INDEXED OUTPUT FORMAT]`,
+            `Output EXACTLY ${seriesCnt} [[NMF_CFRAME]]...[[/NMF_CFRAME]] blocks:`,
+            `[[NMF_CFRAME]]`,
+            `[[NMF_CF_TITLE]]Short title in ${userLangSpec.shortLabel}[[/NMF_CF_TITLE]]`,
+            `[[NMF_CF_REF]]yes or no[[/NMF_CF_REF]]`,
+            `[[NMF_CF_PROMPT]]Detailed English visual prompt for this frame[[/NMF_CF_PROMPT]]`,
+            `[[NMF_CF_CAPTION]]Concise 2-4 sentence textual caption in ${userLangSpec.shortLabel}[[/NMF_CF_CAPTION]]`,
+            `[[/NMF_CFRAME]]`,
+        ].join('\n')),
+        jsonSchema: null,
+    };
+}
+
+export function parseConceptSeriesPlanResponse(raw, fallbackAspect = '3:2') {
+    const clean = stripReasoning(raw);
+    const frameMatches = [...clean.matchAll(/\[\[NMF_CFRAME\]\]([\s\S]*?)\[\[\/NMF_CFRAME\]\]/gi)];
+    let frames = [];
+
+    if (frameMatches.length > 0) {
+        frames = frameMatches.map((m, idx) => {
+            const body = m[1] || '';
+            const title = extractTagBlock(body, 'NMF_CF_TITLE') || `Кадр #${idx + 1}`;
+            const refRaw = extractTagBlock(body, 'NMF_CF_REF').toLowerCase();
+            const needsAnchorRef = !/^(no|false|0|нет)$/i.test(refRaw.trim());
+            const visualPrompt = extractTagBlock(body, 'NMF_CF_PROMPT');
+            const caption = extractTagBlock(body, 'NMF_CF_CAPTION');
+            return {
+                id: `cframe_${Date.now().toString(36)}_${idx + 1}`,
+                title,
+                needsAnchorRef,
+                visualPrompt,
+                caption: caption || title,
+                aspectRatio: fallbackAspect,
+                avatarId: '',
+                avatarDataUrl: '',
+                originalAvatarId: '',
+            };
+        }).filter((f) => Boolean(f.visualPrompt));
+    } else {
+        const j = extractJsonLoose(clean, (v) => v && typeof v === 'object' && Array.isArray(v.frames) && v.frames.length > 0);
+        if (j) {
+            frames = j.frames.map((item, idx) => ({
+                id: `cframe_${Date.now().toString(36)}_${idx + 1}`,
+                title: String(item?.title || `Кадр #${idx + 1}`).trim(),
+                needsAnchorRef: item?.needs_anchor_ref !== false && item?.needsAnchorRef !== false,
+                visualPrompt: String(item?.visual_prompt || item?.visualPrompt || '').trim(),
+                caption: String(item?.caption || '').trim(),
+                aspectRatio: fallbackAspect,
+                avatarId: '',
+                avatarDataUrl: '',
+                originalAvatarId: '',
+            })).filter((f) => Boolean(f.visualPrompt));
+        }
+    }
+
+    if (frames.length === 0) {
+        throw new Error('ИИ не вернул план кадров концепт-серии. Попробуйте ещё раз.');
+    }
+    return frames;
 }
 

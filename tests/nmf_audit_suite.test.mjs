@@ -46,7 +46,7 @@ import {
     parseBlitzQuestionsResponse,
     buildAuReworkQuestionsRequest,
     buildReworkCardRequest,
-} from '../modules/nmf_templates_and_prompts.js';
+} from '../modules/nmf_templates_and_prompts.js?v=2.1.1';
 
 import {
     setTestTavernContext,
@@ -80,7 +80,7 @@ import {
     buildPresetAlignedMessages,
     runLlmGeneration,
     detectPocketCodex,
-} from '../modules/nmf_card_io_and_art.js';
+} from '../modules/nmf_card_io_and_art.js?v=2.1.1';
 
 import {
     saveMediaDataUrl,
@@ -95,7 +95,7 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     clearMemoryVaultForTests,
-} from '../modules/nmf_media_vault.js';
+} from '../modules/nmf_media_vault.js?v=2.1.1';
 
 import {
     state,
@@ -2191,7 +2191,8 @@ test('v1.7.0 Dual Languages (User Preview/Notes vs AI Card) & Strict Card Meta-P
     assert.ok(fullReq.user.includes('Target Output Language for AI Card Fields (Description, Personality, Scenario, First Message, Dialogue): English'));
     assert.ok(fullReq.user.includes('Target Language for Human-Facing Creator Notes & Summaries: Русский'));
     assert.equal(fullReq.user.includes('[[NMF_DESC]]Full Description[[/NMF_DESC]]'), true);
-    assert.ok(fullReq.user.includes('META-PURITY LAW'));
+    assert.ok(fullReq.user.includes('CLEAN HEADINGS RULE'));
+    assert.equal(fullReq.user.includes('META-PURITY LAW'), false);
 
     const pollutedLlmOutput = [
         '[[NMF_NAME]]Kaelen Vance [5\u2605 SSR][[/NMF_NAME]]',
@@ -2478,7 +2479,7 @@ test('v1.7.1 Real Tinder/Gacha -> Blitz Character Selection, Fast Blob Display U
 });
 
 test('v1.7.2 Gacha Prayer Economy (Sacrifice -> +Wishes, Zero Timer Reset), Unresettable Global Cooldown & 13-Theme Rituals', async () => {
-    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js');
+    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js?v=2.1.1');
 
     // 1. Every single one of the 13 themes has its own distinct sinister first-sacrifice warning with hero name & zero emojis
     const seenTitles = new Set();
@@ -2680,10 +2681,10 @@ test('v1.8.1 Guided Home Screen, Procedural Cover Lifecycle, Zero Prefill/4K Lab
 });
 
 test('v1.9.0 Bilingual UI (RU/EN), Dynamic Placeholder Cover Lang, 39 Themed Unpack Labels, Safe Gacha Resolution, Luck Rigging & Sacrifice Failure', async () => {
-    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js');
-    const { setUiLang, getThemeUnpackCopy, getThemedSacrificeFailMessage } = await import('../modules/nmf_i18n.js');
-    const { sanitizeAspectForProvider } = await import('../modules/nmf_card_io_and_art.js');
-    const { rollSacrificeOutcome } = await import('../modules/nmf_templates_and_prompts.js');
+    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js?v=2.1.1');
+    const { setUiLang, getThemeUnpackCopy, getThemedSacrificeFailMessage } = await import('../modules/nmf_i18n.js?v=2.1.1');
+    const { sanitizeAspectForProvider } = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
+    const { rollSacrificeOutcome } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
 
     // 1. All 13 themes have distinct Match, Gacha & Art unpack labels in BOTH RU and EN
     for (const lang of ['ru', 'en']) {
@@ -2747,7 +2748,7 @@ test('v1.9.0 Bilingual UI (RU/EN), Dynamic Placeholder Cover Lang, 39 Themed Unp
 
 test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vault Media Isolation Across Prune & Studio Home Layout', async () => {
     const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
-    const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js');
+    const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js?v=2.1.1');
 
     // 1. Studio showcases & Session Setup sections exist on Home Screen
     assert.ok(entryTxt.includes('data-hcard="intake"'));
@@ -2775,7 +2776,7 @@ test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vau
 });
 
 test('v1.9.2 Start-First Launch, Clean Inner Tabs & 100% Zero Mixing Between Main Questionnaire and Gacha Questionnaire', async () => {
-    const { summarizeGachaWishPrefsBlock, summarizeIntakeBlock, buildGachaSummonRequest, buildTinderPreviewRequest } = await import('../modules/nmf_templates_and_prompts.js');
+    const { summarizeGachaWishPrefsBlock, summarizeIntakeBlock, buildGachaSummonRequest, buildTinderPreviewRequest } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
     const sess = createDefaultSession(1);
 
     // Populate Main Questionnaire with distinct values
@@ -2821,7 +2822,7 @@ test('v1.9.2 Start-First Launch, Clean Inner Tabs & 100% Zero Mixing Between Mai
 });
 
 test('v1.9.5 Altar Donor Snapshot + Altar-Only Regenerate & Zero Secondary Double-Cropping', async () => {
-    const { parseGachaFusionResponse } = await import('../modules/nmf_templates_and_prompts.js');
+    const { parseGachaFusionResponse } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
     const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
     const cssTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../modules/nmf_themes_and_icons.js'), 'utf8');
 
@@ -2863,8 +2864,8 @@ test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite),
         buildSurgicalCardEditRequest,
         applySurgicalCardEditResult,
         buildFullCardRegenerateRequest,
-    } = await import('../modules/nmf_templates_and_prompts.js');
-    const { applyReworkResultToTavernBase, buildV2CardObject } = await import('../modules/nmf_card_io_and_art.js');
+    } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const { applyReworkResultToTavernBase, buildV2CardObject } = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
 
     const sess = createDefaultSession(1);
     sess.architect.freeConcept = 'Gritty harbor detective';
@@ -2950,7 +2951,7 @@ test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite),
 });
 
 test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, [ ] expander, and Vault -> Tavern flow', async () => {
-    const mod = await import('../modules/nmf_templates_and_prompts.js');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
     const sess = mod.createDefaultSession(1);
 
     // 1. Zero alt greetings mode
@@ -3009,7 +3010,7 @@ test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, 
     assert.ok(entrySrc.includes('data-act="post-save-clear-sheet"'), 'Post-save compact popup must ask before clearing');
 
     // 5. Verify stalled HTTP 200 body stream aborts on timeout & masks API keys in lastRequestDiagnostics
-    const ioMod = await import('../modules/nmf_card_io_and_art.js');
+    const ioMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
     const origFetch = globalThis.fetch;
     globalThis.fetch = async (_url, { signal }) => ({
         ok: true,
@@ -3045,7 +3046,7 @@ test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, 
 });
 
 test('CANDY CRUSH & Google AI Studio Preset Regression: preserves ALL assistant blocks, enhanceDefinitions prefill, Depth-0 notes, and "\\n" empty toggles', async () => {
-    const ioMod = await import('../modules/nmf_card_io_and_art.js');
+    const ioMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
     const mockCtx = {
         chatCompletionSettings: {
             assistant_prefill: '',
@@ -3100,8 +3101,8 @@ test('CANDY CRUSH & Google AI Studio Preset Regression: preserves ALL assistant 
 });
 
 test('v1.9.8-beta: 3 simple language presets, live similar-tag autocomplete + library, blank-first + bilingual preset sessions, and bottom Home nav', async () => {
-    const tp = await import('../modules/nmf_tags_and_presets.js');
-    const mod = await import('../modules/nmf_templates_and_prompts.js');
+    const tp = await import('../modules/nmf_tags_and_presets.js?v=2.1.1');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
 
     // 1. Fresh install ALWAYS starts on a clean blank session
     const { settings } = mod.normalizeAndMigrateSettings(null);
@@ -3152,8 +3153,8 @@ test('v1.9.8-beta: 3 simple language presets, live similar-tag autocomplete + li
 });
 
 test('v2.0.0-beta: muted Calm Kit + Gustave Dore palettes, 4-pillar nav, 5 Studio showcases (with Art Studio room), and independent language selectors', async () => {
-    const themesMod = await import('../modules/nmf_themes_and_icons.js');
-    const mod = await import('../modules/nmf_templates_and_prompts.js');
+    const themesMod = await import('../modules/nmf_themes_and_icons.js?v=2.1.1');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
     const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
 
     // 1. Harsh neon accents removed from theme definitions & CSS
@@ -3191,5 +3192,168 @@ test('v2.0.0-beta: muted Calm Kit + Gustave Dore palettes, 4-pillar nav, 5 Studi
     assert.ok(dir.includes('distinct alternative opening scene hook in Español'));
 });
 
+test('v2.0.2-beta: Manual Safe Fandom Art Prompt (A1) & Synced Immediate Card Art Toggles', async () => {
+    const fs = await import('node:fs');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const cardArtSrc = fs.readFileSync(new URL('../modules/nmf_card_io_and_art.js', import.meta.url), 'utf8');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+
+    // 1. Default settings keep both toggles OFF (strictly manual control) + migrate legacy tinder.autoArt
+    const freshRes = mod.normalizeAndMigrateSettings(null);
+    assert.equal(freshRes.settings.autoArtWithCards, false);
+    assert.equal(freshRes.settings.safeFandomArtPrompt, false);
+
+    const legacySess = mod.createDefaultSession(1);
+    legacySess.tinder.autoArt = true;
+    const migratedRes = mod.normalizeAndMigrateSettings({ sessions: [legacySess] });
+    assert.equal(migratedRes.settings.autoArtWithCards, true);
+
+    // 2. Manual A1 toggle: OFF preserves FIGURE 1 (NAME):, ON removes (NAME) & adds anti-copyright shield
+    const sess = mod.createDefaultSession(1);
+    sess.intake.originType = 'canon';
+    sess.intake.fandomName = 'Marvel';
+
+    const defaultArtRule = mod.buildFlexibleAvatarArtMechanismRule(sess.intake, { safeFandomArtPrompt: false });
+    assert.ok(defaultArtRule.includes('FIGURE 1 (NAME):'), 'Default mode must allow character names in FIGURE 1');
+    assert.equal(defaultArtRule.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'), false);
+
+    const safeArtRule = mod.buildFlexibleAvatarArtMechanismRule(sess.intake, { safeFandomArtPrompt: true });
+    assert.equal(safeArtRule.includes('FIGURE 1 (NAME):'), false, 'Safe fandom mode must remove (NAME) from FIGURE 1');
+    assert.ok(safeArtRule.includes('FIGURE 1:'), 'Safe fandom mode must use plain FIGURE 1:');
+    assert.ok(safeArtRule.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+
+    // Propagates cleanly to Tinder, Gacha, and Full Card builders across both transport modes
+    const gachaSafe = mod.buildGachaSummonRequest(sess, ['iron', 'genius', 'workshop'], [5], 'prefill_user_msg', {
+        safeFandomArtPrompt: true,
+    });
+    assert.equal(gachaSafe.user.includes('FIGURE 1 (NAME):'), false);
+    assert.ok(gachaSafe.user.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+
+    const gachaSafeJson = mod.buildGachaSummonRequest(sess, ['iron', 'genius', 'workshop'], [5], 'json_schema', {
+        safeFandomArtPrompt: true,
+    });
+    assert.equal(gachaSafeJson.system.includes('FIGURE 1 (NAME):'), false);
+    assert.ok(gachaSafeJson.system.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+
+    const tinderSafe = mod.buildTinderPreviewRequest(sess, 1, 'prefill_user_msg', { safeFandomArtPrompt: true });
+    assert.equal(tinderSafe.user.includes('FIGURE 1 (NAME):'), false);
+    assert.ok(tinderSafe.user.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+
+    // 3. Runtime visual prompt sanitizer & SillyImages reference label stripping
+    const rawWithNames = 'SCENE: Workshop. CHARACTERS IN THE IMAGE: yes. FIGURE 1 (Tony Stark / Iron Man): Tall man with goatee, Tony Stark smirk.';
+    const candObj = { name: 'Tony Stark / Iron Man', appearance: 'dark goatee, sharp brown eyes' };
+    assert.equal(mod.sanitizeSafeFandomVisualPrompt(rawWithNames, candObj, false), rawWithNames);
+    const cleaned = mod.sanitizeSafeFandomVisualPrompt(rawWithNames, candObj, true);
+    assert.equal(cleaned.includes('Tony Stark'), false);
+    assert.equal(cleaned.includes('Iron Man'), false);
+    assert.ok(cleaned.includes('FIGURE 1: Tall man'));
+
+    const fallbackNoRaw = mod.sanitizeSafeFandomVisualPrompt('', candObj, true);
+    assert.equal(fallbackNoRaw.includes('Tony Stark'), false);
+    assert.ok(fallbackNoRaw.includes('dark goatee'));
+
+    assert.ok(cardArtSrc.includes('(!safeFandomArtPrompt && r.label)'), 'Reference labels must be omitted from prompt text when safeFandomArtPrompt is active');
+
+    // 4. Compact toggles & Art Studio reminder wired in Studio, Match, and Gacha settings
+    assert.ok(entrySrc.includes('data-act="toggle-auto-art-cards"'));
+    assert.ok(entrySrc.includes('data-act="toggle-safe-fandom-art"'));
+    assert.ok(entrySrc.includes('nmf-art-studio-reminder'));
+    assert.ok(entrySrc.includes('generateImmediateArtForEntity'));
+});
 
 
+
+
+test('v2.0.3-beta: Gacha cooldown timer never leaks free prayers before deadline & self-heals exhausted cycle', () => {
+    const now = 1_800_000_000_000;
+    const w = {
+        freeSpentInCycle: 10,
+        bonusWishes: 0,
+        cooldownEndsAt: 0,
+        pitySince4Plus: 3,
+        firstSacrificeConfirmed: true,
+        updatedAt: now - 1000,
+    };
+
+    // Exhausted 10/10 cycle with missing cooldownEndsAt MUST immediately lock free wishes to 0 and start cooldown!
+    const st1 = syncGachaWalletState(w, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: now });
+    assert.equal(st1.coolingDown, true);
+    assert.equal(st1.freeWishesLeft, 0);
+    assert.equal(st1.totalWishes, 0);
+    assert.equal(w.cooldownEndsAt, now + 120 * 60 * 1000);
+
+    // Even if freeSpentInCycle was accidentally corrupted to 0 while cooldownEndsAt > now, free wishes stay 0!
+    w.freeSpentInCycle = 0;
+    const st2 = syncGachaWalletState(w, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: now + 30 * 60 * 1000 });
+    assert.equal(st2.coolingDown, true);
+    assert.equal(st2.freeWishesLeft, 0);
+    assert.equal(w.freeSpentInCycle, 10);
+
+    // Trying to spend while cooling down with 0 bonus wishes spends 0!
+    const sp0 = spendGachaWalletWishes(w, 3, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: now + 30 * 60 * 1000 });
+    assert.equal(sp0.spentTotal, 0);
+
+    // Only after full 120 minutes pass do the 10 free prayers unlock!
+    const stAfter = syncGachaWalletState(w, { maxCap: 10, timerEnabled: true, cooldownMinutes: 120, nowMs: now + 120 * 60 * 1000 + 1 });
+    assert.equal(stAfter.coolingDown, false);
+    assert.equal(stAfter.freeWishesLeft, 10);
+});
+
+test('v2.1.0-beta: clean ## Headings across all templates, Custom Templates & AI Extractor, Photo Vision Lab, Concept Art Lab, Collection tabs & strict Blitz isolation', async () => {
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const aMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
+
+    // 1. Zero bracketed Markdown headings (## [HEADING]) across ALL built-in templates!
+    for (const fmt of tMod.CARD_FORMATS) {
+        assert.equal(/#{1,4}\s*\[[^\]\n]+\]/.test(fmt.instructions), false, `Template ${fmt.id} must not have bracketed headings`);
+    }
+
+    // 2. Custom templates & AI Template Extractor strip bracketed headings and persist in settings
+    const extracted = tMod.parseExtractCardTemplateResponse([
+        '[[NMF_TPL_SHORT]]Досье Феннеко[[/NMF_TPL_SHORT]]',
+        '[[NMF_TPL_NAME]]Чистое досье[[/NMF_TPL_NAME]]',
+        '[[NMF_TPL_DESC]]Экономные заголовки[[/NMF_TPL_DESC]]',
+        '[[NMF_TPL_INSTR]]## [ЛИЧНОСТЬ]\n- Who {{char}} is\n## ВНЕШНОСТЬ\n- Details[[/NMF_TPL_INSTR]]',
+    ].join('\n'));
+    assert.equal(extracted.instructions.includes('## [ЛИЧНОСТЬ]'), false);
+    assert.equal(extracted.instructions.includes('## ЛИЧНОСТЬ'), true);
+
+    const mig = tMod.normalizeAndMigrateSettings({ customCardFormats: [extracted] });
+    assert.equal(mig.settings.customCardFormats.length, 1);
+
+    // 3. Blitz defaults strictly to Tinder ON, while Gacha, Concept Arts, and Photo are OFF!
+    const sess = tMod.createDefaultSession(1);
+    assert.equal(sess.blitz.useTinderContext, true);
+    assert.equal(sess.blitz.useGachaContext, false);
+    assert.equal(sess.blitz.useConceptContext, false);
+    assert.equal(sess.blitz.usePhotoContext, false);
+
+    sess.photoLab.drafts.push({ id: 'photo_1', name: 'Ленивец-техник', pitch: 'Сонный инженер' });
+    sess.conceptLab.vault.push({
+        id: 'concept_1',
+        sourceRef: 'photo:photo_1',
+        name: 'Ленивец-техник',
+        conceptMode: 'single',
+        baseBrief: 'Сонный системный администратор.',
+        singleSheet: { visualPrompt: 'sheet', masterCaption: 'Очки в тонкой оправе, комбинезон, дискеты в кармане.' },
+        seriesFrames: [],
+    });
+
+    // Neither Photo nor Concept leaks into Blitz when checkboxes are OFF!
+    assert.equal(tMod.listBlitzSelectableCandidates(sess).length, 0);
+
+    // Enabling Concept checkbox exposes unified Concept profile (Base + Caption) without raw-dumping into Description!
+    sess.blitz.useConceptContext = true;
+    const blitzCands = tMod.listBlitzSelectableCandidates(sess);
+    assert.equal(blitzCands.length, 1);
+    assert.equal(blitzCands[0].ref, 'concept:concept_1');
+    const conceptBrief = tMod.buildCleanBriefFromEntity(sess.conceptLab.vault[0]);
+    assert.ok(conceptBrief.includes('Очки в тонкой оправе'));
+    assert.ok(conceptBrief.includes('NEVER paste or append these concept captions verbatim'));
+
+    // 4. All 10 aspect ratios (including 4:5, 5:4, 21:9) supported in sanitizeAspectForProvider & Gemini vs GPT filtering
+    assert.equal(aMod.sanitizeAspectForProvider('4:5', 'gemini'), '4:5');
+    assert.equal(aMod.sanitizeAspectForProvider('5:4', 'gemini'), '5:4');
+    assert.equal(aMod.sanitizeAspectForProvider('21:9', 'gemini'), '21:9');
+    assert.equal(aMod.CONCEPT_ALL_ASPECT_OPTIONS.length, 10);
+});

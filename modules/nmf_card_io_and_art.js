@@ -3,7 +3,7 @@ import {
     getCardBackupById,
     base64ToBytes,
     isValidNonEmptyPngBytes,
-} from './nmf_media_vault.js';
+} from './nmf_media_vault.js?v=2.1.1';
 
 // CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {
@@ -691,23 +691,42 @@ export function computeCardDiff(card, liveOrigData = null) {
     };
 }
 
+export const CONCEPT_ALL_ASPECT_OPTIONS = Object.freeze([
+    { id: '1:1', label: '1:1 (Квадрат)', labelEn: '1:1 (Square)' },
+    { id: '2:3', label: '2:3 (Портрет)', labelEn: '2:3 (Portrait)' },
+    { id: '3:2', label: '3:2 (Альбом)', labelEn: '3:2 (Landscape)' },
+    { id: '3:4', label: '3:4 (Портрет)', labelEn: '3:4 (Portrait)' },
+    { id: '4:3', label: '4:3 (Альбом)', labelEn: '4:3 (Landscape)' },
+    { id: '4:5', label: '4:5 (Портрет)', labelEn: '4:5 (Portrait)' },
+    { id: '5:4', label: '5:4 (Альбом)', labelEn: '5:4 (Landscape)' },
+    { id: '9:16', label: '9:16 (Вертикальный)', labelEn: '9:16 (Vertical)' },
+    { id: '16:9', label: '16:9 (Широкий)', labelEn: '16:9 (Wide)' },
+    { id: '21:9', label: '21:9 (Ультраширокий)', labelEn: '21:9 (Ultrawide)' },
+]);
+
 function getTargetCanvasDimensions(aspectRatio = '1:1') {
     if (aspectRatio === '2:3') return { width: 1024, height: 1536 };
     if (aspectRatio === '3:4') return { width: 1152, height: 1536 };
+    if (aspectRatio === '4:5') return { width: 1152, height: 1440 };
     if (aspectRatio === '3:2') return { width: 1536, height: 1024 };
     if (aspectRatio === '4:3') return { width: 1536, height: 1152 };
+    if (aspectRatio === '5:4') return { width: 1440, height: 1152 };
     if (aspectRatio === '16:9') return { width: 1536, height: 864 };
     if (aspectRatio === '9:16') return { width: 864, height: 1536 };
+    if (aspectRatio === '21:9') return { width: 1792, height: 768 };
     return { width: 1024, height: 1024 };
 }
 
 function parseAspectRatioNumber(aspectRatio = '1:1') {
     if (aspectRatio === '2:3') return 2 / 3;
     if (aspectRatio === '3:4') return 3 / 4;
+    if (aspectRatio === '4:5') return 4 / 5;
     if (aspectRatio === '3:2') return 3 / 2;
     if (aspectRatio === '4:3') return 4 / 3;
+    if (aspectRatio === '5:4') return 5 / 4;
     if (aspectRatio === '16:9') return 16 / 9;
     if (aspectRatio === '9:16') return 9 / 16;
+    if (aspectRatio === '21:9') return 21 / 9;
     if (aspectRatio === '1:1') return 1;
     return null;
 }
@@ -717,13 +736,19 @@ export function sanitizeAspectForProvider(rawAspect = 'native', apiType = '') {
     if (!clean || clean === 'native' || clean === 'sillyimages_default' || clean === 'auto') {
         return 'native';
     }
-    const allowedAll = new Set(['1:1', '2:3', '3:4', '3:2', '4:3', '16:9', '9:16']);
+    const allowedAll = new Set(['1:1', '2:3', '3:4', '4:5', '3:2', '4:3', '5:4', '16:9', '9:16', '21:9']);
     if (!allowedAll.has(clean)) return 'native';
 
     const pLow = String(apiType || '').toLowerCase();
     if (pLow === 'novelai' || pLow === 'naistera') {
-        if (clean === '3:4') return '2:3';
-        if (clean === '4:3') return '3:2';
+        if (clean === '3:4' || clean === '4:5') return '2:3';
+        if (clean === '4:3' || clean === '5:4') return '3:2';
+        if (clean === '21:9') return '16:9';
+    }
+    if (pLow === 'xai') {
+        if (clean === '4:5') return '3:4';
+        if (clean === '5:4') return '4:3';
+        if (clean === '21:9') return '16:9';
     }
     return clean;
 }
@@ -2027,7 +2052,18 @@ export const MAX_IMAGE_DOWNLOAD_BYTES = 60 * 1024 * 1024; // 60 MB guard for unc
 export function computeLosslessCropGeometry(imgW, imgH, { aspectRatio = '1:1', zoom = 1, panX = 50, panY = 10 } = {}) {
     const w = Math.max(1, Number(imgW) || 1024);
     const h = Math.max(1, Number(imgH) || 1024);
-    const ratioMap = { '1:1': 1, '3:4': 3 / 4, '2:3': 2 / 3, '4:3': 4 / 3, '16:9': 16 / 9 };
+    const ratioMap = {
+        '1:1': 1,
+        '3:4': 3 / 4,
+        '2:3': 2 / 3,
+        '4:5': 4 / 5,
+        '3:2': 3 / 2,
+        '4:3': 4 / 3,
+        '5:4': 5 / 4,
+        '9:16': 9 / 16,
+        '16:9': 16 / 9,
+        '21:9': 21 / 9,
+    };
     const targetRatio = ratioMap[aspectRatio] || 1;
     const z = Math.max(1, Math.min(3.5, Number(zoom) || 1));
     const px = Math.max(0, Math.min(100, Number.isFinite(Number(panX)) ? Number(panX) : 50));
@@ -2751,6 +2787,163 @@ export function getActiveImageModelReferenceInfo(sourcePref = 'auto', requestedP
     }
 }
 
+export function getSupportedAspectRatiosForImageConfig(sourcePref = 'auto', requestedProfileId = '') {
+    const allTen = CONCEPT_ALL_ASPECT_OPTIONS.map((o) => o.id);
+    try {
+        if (sourcePref === 'off') {
+            return {
+                apiType: 'off',
+                model: '',
+                profileName: '',
+                supportedIds: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'],
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'].includes(o.id)),
+                noteRu: 'Генератор отключён — выберите профиль SillyImages.',
+                noteEn: 'Image generator is off — pick a SillyImages profile.',
+            };
+        }
+        if (sourcePref === 'st_sd') {
+            const ids = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
+            return {
+                apiType: 'st_sd',
+                model: 'ST /sd',
+                profileName: 'ST /sd',
+                supportedIds: ids,
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
+                noteRu: 'Штатный /sd: пропорции зависят от настроек расширения SD.',
+                noteEn: 'Built-in /sd: aspect ratio follows your SD settings.',
+            };
+        }
+        const picked = pickEffectiveBucket(sourcePref);
+        if (!picked?.cfg) {
+            return {
+                apiType: '',
+                model: '',
+                profileName: '',
+                supportedIds: allTen,
+                options: [...CONCEPT_ALL_ASPECT_OPTIONS],
+                noteRu: 'Профиль SillyImages ещё не выбран.',
+                noteEn: 'SillyImages profile is not configured yet.',
+            };
+        }
+        const imgCfg = resolveIsolatedImageConfig(picked.cfg, requestedProfileId);
+        const apiType = String(imgCfg.apiType || '').toLowerCase();
+        const model = String(resolveBucketModel(imgCfg) || '');
+        const mLow = model.toLowerCase();
+        const endpointLow = String(imgCfg.endpoint || '').toLowerCase();
+        const profileName = imgCfg.profileName || 'Активный профиль';
+
+        const isGeminiModel = apiType === 'gemini'
+            || (apiType === 'openai' && endpointLow.includes('google-ai'))
+            || mLow.includes('gemini')
+            || mLow.includes('nano-banana')
+            || mLow.includes('imagen');
+
+        if (isGeminiModel) {
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: allTen,
+                options: [...CONCEPT_ALL_ASPECT_OPTIONS],
+                noteRu: 'Gemini Image поддерживает все 10 форматов (включая 4:5, 5:4 и широкие листы 16:9 / 21:9).',
+                noteEn: 'Gemini Image supports all 10 aspect ratios (including 4:5, 5:4, 16:9, and ultrawide 21:9).',
+            };
+        }
+        if (mLow.includes('gpt-image')) {
+            const ids = ['1:1', '2:3', '3:2'];
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: ids,
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
+                noteRu: 'GPT Image поддерживает 3 родных формата: 1:1, 2:3 (портрет) и 3:2 (альбом для концепт-листа).',
+                noteEn: 'GPT Image supports 3 native formats: 1:1, 2:3 (portrait), and 3:2 (landscape sheet).',
+            };
+        }
+        if (mLow.includes('dall-e-3')) {
+            const ids = ['1:1', '9:16', '16:9'];
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: ids,
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
+                noteRu: 'DALL-E 3 поддерживает только 1:1, 9:16 (1024x1792) и 16:9 (1792x1024).',
+                noteEn: 'DALL-E 3 supports 1:1, 9:16 (1024x1792), and 16:9 (1792x1024).',
+            };
+        }
+        if (mLow.includes('dall-e-2')) {
+            const ids = ['1:1'];
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: ids,
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
+                noteRu: 'DALL-E 2 поддерживает только квадрат 1:1.',
+                noteEn: 'DALL-E 2 supports 1:1 square only.',
+            };
+        }
+        if (apiType === 'xai' || mLow.includes('grok')) {
+            const ids = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: ids,
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
+                noteRu: 'Grok Imagine поддерживает 7 пропорций (1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9) и референс по фото.',
+                noteEn: 'Grok Imagine supports 7 ratios (1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9) plus image reference.',
+            };
+        }
+        if (apiType === 'novelai' || apiType === 'naistera') {
+            const ids = ['1:1', '2:3', '3:2', '9:16', '16:9'];
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: ids,
+                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
+                noteRu: 'NovelAI / Naistera поддерживает пропорции 1:1, 2:3, 3:2, 9:16 и 16:9.',
+                noteEn: 'NovelAI / Naistera supports 1:1, 2:3, 3:2, 9:16, and 16:9.',
+            };
+        }
+        if (apiType === 'pollinations' || apiType === 'a1111' || endpointLow.includes('pollinations.ai')) {
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: allTen,
+                options: [...CONCEPT_ALL_ASPECT_OPTIONS],
+                noteRu: 'Свободный размер холста (width/height) — доступны все 10 пропорций.',
+                noteEn: 'Custom canvas dimensions — all 10 aspect ratios available.',
+            };
+        }
+        const stdIds = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
+        return {
+            apiType,
+            model,
+            profileName,
+            supportedIds: stdIds,
+            options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => stdIds.includes(o.id)),
+            noteRu: 'Доступны стандартные пропорции выбранного провайдера.',
+            noteEn: 'Standard aspect ratios supported by the active provider.',
+        };
+    } catch {
+        const stdIds = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
+        return {
+            apiType: '',
+            model: '',
+            profileName: '',
+            supportedIds: stdIds,
+            options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => stdIds.includes(o.id)),
+            noteRu: '',
+            noteEn: '',
+        };
+    }
+}
+
 // Isolated connection profile resolver: NEVER inherits apiKey, endpoint, or credentials from another profile! (fixes NMF-007)
 export function resolveIsolatedImageConfig(cfgBase, requestedProfileId = '') {
     if (!cfgBase || typeof cfgBase !== 'object') {
@@ -3148,6 +3341,7 @@ async function verifyNovelAiFreeAllowance(generateUrl, apiKey, model, timeoutMs,
 
 export const SILLYIMAGES_DEFAULT_REF_INSTRUCTION = '[CRITICAL: The reference image(s) above show the EXACT appearance of the character(s). You MUST precisely copy their: face structure, eye color, hair color and style, skin tone, body type, clothing, and all distinctive features. Do not deviate from the reference appearances.]';
 export const FUSION_BLEND_REF_INSTRUCTION = '[VISUAL ALCHEMY REFERENCE: The reference image(s) above show parent donor archetypes. Synthesize a brand-new, cohesive original character appearance that organically harmonizes select visual echoes from them while strictly following the new character portrait description below. Do NOT copy any single reference verbatim.]';
+export const CONCEPT_SHEET_REF_INSTRUCTION = '[CONCEPT ART ANCHOR REFERENCE: The reference image above establishes the exact canonical appearance, face structure, species features, body proportions, hair/fur, color palette, and visual style of the subject. Maintain 100% identity consistency with this anchor reference while freely illustrating all requested turnaround views, expressions, alternate outfits, close-up belongings, and environment panels described below.]';
 
 function splitDataUrlComponents(rawStr) {
     const val = String(rawStr || '').trim();
@@ -3529,6 +3723,10 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const customRefDesc = typeof options === 'object' ? (options.customRefDesc || '') : '';
     const refMatchContext = typeof options === 'object' ? (options.refMatchContext || '') : '';
     const fusionBlendRefs = typeof options === 'object' && options.fusionBlendRefs === true;
+    const refInstructionOverride = typeof options === 'object' && typeof options.refInstructionOverride === 'string'
+        ? options.refInstructionOverride.trim()
+        : '';
+    const safeFandomArtPrompt = typeof options === 'object' && options.safeFandomArtPrompt === true;
 
     const emit = (stage, detail = '', attempt = 1, providerLabel = '') => {
         if (!onStatus) return;
@@ -3595,7 +3793,7 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
     const refDescriptionsBlock = imgCfg.sendRefDescriptions !== false
         ? resolvedRefs
             .filter((r) => Boolean(r.description))
-            .map((r, idx) => `- Reference ${idx + 1}${r.label ? ` (${r.label})` : ''}: ${r.description}`)
+            .map((r, idx) => `- Reference ${idx + 1}${(!safeFandomArtPrompt && r.label) ? ` (${r.label})` : ''}: ${r.description}`)
             .join('\n')
         : '';
 
@@ -3643,9 +3841,11 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         ? `${promptWithRefOnly}\n\n[NEGATIVE / DO NOT INCLUDE: ${negativePrompt}]`
         : promptWithRefOnly;
 
-    const effectiveRefInstruction = fusionBlendRefs
-        ? FUSION_BLEND_REF_INSTRUCTION
-        : (imgCfg.refInstructionEnabled === false ? '' : (imgCfg.refInstruction || SILLYIMAGES_DEFAULT_REF_INSTRUCTION));
+    const effectiveRefInstruction = refInstructionOverride
+        ? refInstructionOverride
+        : (fusionBlendRefs
+            ? FUSION_BLEND_REF_INSTRUCTION
+            : (imgCfg.refInstructionEnabled === false ? '' : (imgCfg.refInstruction || SILLYIMAGES_DEFAULT_REF_INSTRUCTION)));
 
     const buildConditionedPrompt = (hasSentRefImages) => {
         if (hasSentRefImages && effectiveRefInstruction) {
@@ -4060,11 +4260,11 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         if (aspect !== 'native') {
             if (isGptImg) {
                 resolvedSize = aspect === '1:1' ? '1024x1024'
-                    : (aspect === '2:3' || aspect === '3:4' || aspect === '9:16') ? '1024x1536'
+                    : (aspect === '2:3' || aspect === '3:4' || aspect === '4:5' || aspect === '9:16') ? '1024x1536'
                     : '1536x1024';
             } else if (isDalle3) {
                 resolvedSize = aspect === '1:1' ? '1024x1024'
-                    : (aspect === '2:3' || aspect === '3:4' || aspect === '9:16') ? '1024x1792'
+                    : (aspect === '2:3' || aspect === '3:4' || aspect === '4:5' || aspect === '9:16') ? '1024x1792'
                     : '1792x1024';
             } else if (isDalle2) {
                 resolvedSize = '1024x1024';
@@ -4476,15 +4676,28 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
         if (typeof data === 'string') {
             text = data;
         } else if (data && typeof data === 'object') {
-            if (typeof ctx?.extractMessageFromData === 'function') {
-                text = String(ctx.extractMessageFromData(data) || '');
-            } else if (typeof data?.choices?.[0]?.message?.content === 'string') {
-                text = data.choices[0].message.content;
-            } else if (typeof data?.content === 'string') {
+            if (typeof data?.content === 'string' && data.content.length > 0) {
                 text = data.content;
             } else {
-                // If generateRawData({ jsonSchema }) returned an extracted JSON object directly
-                text = JSON.stringify(data);
+                const extractedViaCtx = typeof ctx?.extractMessageFromData === 'function'
+                    ? String(ctx.extractMessageFromData(data) || '')
+                    : '';
+                if (extractedViaCtx) {
+                    text = extractedViaCtx;
+                } else if (typeof data?.choices?.[0]?.message?.content === 'string') {
+                    text = data.choices[0].message.content;
+                } else if (Array.isArray(data?.responseContent?.parts)) {
+                    text = data.responseContent.parts.filter((pt) => pt && !pt.thought && pt.text).map((pt) => pt.text).join('');
+                } else if (Array.isArray(data?.candidates?.[0]?.content?.parts)) {
+                    text = data.candidates[0].content.parts.filter((pt) => pt && !pt.thought && pt.text).map((pt) => pt.text).join('');
+                } else if (typeof data?.content === 'string') {
+                    text = data.content;
+                } else if (data?.content && typeof data.content === 'object') {
+                    text = JSON.stringify(data.content);
+                } else {
+                    // If generateRawData / processRequest({ json_schema }) returned an extracted JSON object directly
+                    text = JSON.stringify(data);
+                }
             }
 
             const gParts = data?.responseContent?.parts || data?.candidates?.[0]?.content?.parts || [];
@@ -4493,7 +4706,8 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
 
             if (!reasoning) {
                 reasoning = String(
-                    data?.choices?.[0]?.message?.reasoning_content
+                    data?.reasoning
+                    || data?.choices?.[0]?.message?.reasoning_content
                     || data?.choices?.[0]?.message?.reasoning
                     || data?.thinking
                     || ''
@@ -4529,6 +4743,31 @@ export let lastGenerationReasoning = '';
 // - Never attaches global chat settings event mutators (fixes NMF-012)
 // - Separates OpenAI Chat Completion vs Text Completion APIs (fixes NMF-011)
 // - Passes native jsonSchema into generateRawData when in json_schema mode (fixes NMF-010)
+function resolveActiveChatCompletionModelFromOai(oai = {}) {
+    const src = String(oai.chat_completion_source || 'openai');
+    const sourceModelKeyMap = {
+        openai: 'openai_model',
+        claude: 'claude_model',
+        openrouter: 'openrouter_model',
+        makersuite: 'google_model',
+        vertexai: 'vertexai_model',
+        ai21: 'ai21_model',
+        mistralai: 'mistralai_model',
+        custom: 'custom_model',
+        cohere: 'cohere_model',
+        perplexity: 'perplexity_model',
+        groq: 'groq_model',
+        deepseek: 'deepseek_model',
+        xai: 'xai_model',
+        pollinations: 'pollinations_model',
+        moonshot: 'moonshot_model',
+        fireworks: 'fireworks_model',
+        azure_openai: 'azure_openai_model',
+    };
+    const key = sourceModelKeyMap[src];
+    return (key && oai[key]) ? String(oai[key]) : String(oai.openai_model || oai.google_model || '');
+}
+
 export async function runLlmGeneration({
     system = '',
     user = '',
@@ -4536,6 +4775,7 @@ export async function runLlmGeneration({
     transportMode = 'prefill_user_msg',
     presetCorrectionPrompt = '',
     stripActiveCharFromPreset = true,
+    visionImageUrls = [],
     signal = null,
 }) {
     const ctx = getTavernContext();
@@ -4543,8 +4783,12 @@ export async function runLlmGeneration({
 
     const rawDataFn = ctx.generateRawData;
     const rawFn = ctx.generateRaw;
+    const cleanVisionUrls = Array.isArray(visionImageUrls)
+        ? visionImageUrls.map((u) => String(u || '').trim()).filter((u) => u.startsWith('data:image/') || /^https?:\/\//i.test(u))
+        : [];
+    const hasVisionImages = cleanVisionUrls.length > 0;
 
-    if (typeof rawDataFn !== 'function' && typeof rawFn !== 'function') {
+    if (!hasVisionImages && typeof rawDataFn !== 'function' && typeof rawFn !== 'function') {
         throw new Error('API генерации SillyTavern недоступно. Проверьте подключение модели.');
     }
 
@@ -4554,6 +4798,9 @@ export async function runLlmGeneration({
 
     const activeApi = ctx.mainApi || 'openai';
     const isChatCompletion = activeApi === 'openai';
+    if (hasVisionImages && !isChatCompletion) {
+        throw new Error('Генерация по фото (Vision) требует режим Chat Completion (Google AI Studio / Gemini, OpenAI, Claude, Grok, OpenRouter).');
+    }
     const correctionClean = String(presetCorrectionPrompt || '').trim();
 
     let promptPayload;
@@ -4582,11 +4829,60 @@ export async function runLlmGeneration({
         schemaPayload = isChatCompletion && jsonSchema ? jsonSchema : null;
     }
 
+    let visionMessagesPayload = null;
+    if (hasVisionImages) {
+        const subParams = typeof ctx?.substituteParams === 'function'
+            ? (str) => String(ctx.substituteParams(String(str ?? '')) ?? '')
+            : (str) => String(str ?? '');
+        if (Array.isArray(promptPayload)) {
+            let injectedOntoTask = false;
+            visionMessagesPayload = promptPayload.map((m) => {
+                const textClean = subParams(typeof m.content === 'string' ? m.content : '');
+                if (!injectedOntoTask && m.role === 'user' && textClean.includes(user.slice(0, Math.min(36, user.length)))) {
+                    injectedOntoTask = true;
+                    return {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: textClean },
+                            ...cleanVisionUrls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+                        ],
+                    };
+                }
+                return { role: m.role, content: textClean };
+            });
+            if (!injectedOntoTask) {
+                visionMessagesPayload.push({
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: subParams(user) },
+                        ...cleanVisionUrls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+                    ],
+                });
+            }
+        } else {
+            visionMessagesPayload = [];
+            if (sysPayload) {
+                visionMessagesPayload.push({ role: 'system', content: subParams(sysPayload) });
+            }
+            visionMessagesPayload.push({
+                role: 'user',
+                content: [
+                    { type: 'text', text: subParams(String(promptPayload || user)) },
+                    ...cleanVisionUrls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+                ],
+            });
+        }
+    }
+
+    const visionDiagSummary = hasVisionImages
+        ? cleanVisionUrls.map((u, idx) => `[Image #${idx + 1}: ${u.slice(0, 32)}... (~${Math.round((u.length * 0.75) / 1024)} KB)]`)
+        : undefined;
+
     const llmDiag = {
         kind: 'llm',
         startedAt: Date.now(),
         finishedAt: 0,
-        status: 'В процессе (генерация текста ИИ)...',
+        status: hasVisionImages ? 'В процессе (анализ фото Vision ИИ)...' : 'В процессе (генерация текста ИИ)...',
         ok: null,
         api: activeApi,
         transportMode,
@@ -4599,6 +4895,7 @@ export async function runLlmGeneration({
             userFromExtension: String(user || '').trim(),
             presetCorrection: transportMode === 'prefill_user_msg' ? correctionClean : '',
             hasJsonSchema: Boolean(schemaPayload),
+            visionAttachments: visionDiagSummary,
         },
         requestBody: sanitizePayloadStringForLog({
             transportMode,
@@ -4606,6 +4903,7 @@ export async function runLlmGeneration({
             systemPrompt: sysPayload || undefined,
             prefill: prefillPayload || undefined,
             hasJsonSchema: Boolean(schemaPayload),
+            visionAttachments: visionDiagSummary,
             prompt: promptPayload,
         }, 400000),
         responsePreview: 'Ожидание ответа модели...',
@@ -4615,6 +4913,71 @@ export async function runLlmGeneration({
     let cancelledLocally = false;
     const runPromise = (async () => {
         try {
+            if (hasVisionImages) {
+                const ccs = ctx?.ChatCompletionService;
+                if (ccs && typeof ccs.processRequest === 'function') {
+                    const oai = ctx?.chatCompletionSettings || {};
+                    const presetMgr = ctx?.getPresetManager?.('openai');
+                    const activePresetName = presetMgr?.getSelectedPresetName?.() || '';
+                    let reqData = {
+                        messages: visionMessagesPayload,
+                        stream: false,
+                        chat_completion_source: oai.chat_completion_source || 'openai',
+                        model: resolveActiveChatCompletionModelFromOai(oai) || undefined,
+                        max_tokens: Number(oai.openai_max_tokens) || 4096,
+                        temperature: Number.isFinite(Number(oai.temp_openai)) ? Number(oai.temp_openai) : 1,
+                        custom_url: oai.custom_url || undefined,
+                        reverse_proxy: oai.reverse_proxy || undefined,
+                        proxy_password: oai.proxy_password || undefined,
+                        custom_prompt_post_processing: oai.custom_prompt_post_processing || undefined,
+                        reasoning_effort: oai.reasoning_effort || undefined,
+                        include_reasoning: oai.include_reasoning !== undefined ? Boolean(oai.include_reasoning) : undefined,
+                    };
+                    if (activePresetName && typeof presetMgr?.getCompletionPresetByName === 'function' && typeof ccs.presetToGeneratePayload === 'function') {
+                        const presetObj = presetMgr.getCompletionPresetByName(activePresetName);
+                        if (presetObj) {
+                            reqData = await ccs.presetToGeneratePayload(presetObj, {}, reqData);
+                        }
+                    }
+                    // Force non-streaming & preserve multimodal messages AFTER preset merge (fixes stream_openai:true returning AsyncGenerator!)
+                    reqData.messages = visionMessagesPayload;
+                    reqData.stream = false;
+                    if (schemaPayload) {
+                        reqData.json_schema = schemaPayload;
+                    }
+                    const vData = typeof ccs.sendRequest === 'function'
+                        ? await ccs.sendRequest(
+                            typeof ccs.createRequestData === 'function' ? ccs.createRequestData(reqData) : reqData,
+                            false,
+                            signal || null,
+                        )
+                        : await ccs.processRequest(reqData, {}, false, signal || null);
+                    if (cancelledLocally || signal?.aborted) return '';
+
+                    let text = '';
+                    let reasoning = '';
+                    if (typeof vData === 'function') {
+                        // Safety net if an API ever returns a streaming generator function
+                        for await (const chunk of vData()) {
+                            if (cancelledLocally || signal?.aborted) return '';
+                            if (typeof chunk?.text === 'string') text = chunk.text;
+                            if (chunk?.state?.reasoning) reasoning = String(chunk.state.reasoning);
+                        }
+                    } else {
+                        const extracted = extractUniversalReasoningAndText(ctx, vData);
+                        text = extracted.text;
+                        reasoning = extracted.reasoning;
+                    }
+                    lastGenerationReasoning = reasoning;
+                    llmDiag.finishedAt = Date.now();
+                    llmDiag.ok = true;
+                    llmDiag.status = `Успешно · Vision (${text.length} симв.)`;
+                    llmDiag.responsePreview = sanitizePayloadStringForLog(text || '[Пустой ответ]', 250000);
+                    return text;
+                }
+                throw new Error('Сервис ChatCompletionService недоступен в этой версии SillyTavern для отправки фото.');
+            }
+
             if (typeof rawDataFn === 'function') {
                 const data = await rawDataFn({
                     prompt: promptPayload,

@@ -2,6 +2,20 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [2.1.0-beta] - 2026-11-25
+
+### Token-Clean `## Heading` Templates, Custom Template Manager + AI Character Template Extractor, Photo-to-Character Vision Lab, Concept Art Lab (Single Sheet & Series) & Unified Collection Tabs
+- **Token-Clean Headings & Template Manager (`CARD_FORMATS`, `customCardFormats`, `buildExtractCardTemplateRequest`)**: Replaced bracketed `### [HEADING]` headers across all built-in templates (`dossier_19`, `cast_hub`, `world_sandbox`, `rpg_gm_engine`, etc.) with clean `## Heading` headers; added live template prompt viewer, custom template creator/editor, and **Extract Template from Character (AI)** (from Tavern roster or uploaded PNG/JSON card).
+- **Laboratory #1 — Character from Photo (`photo` Studio showcase & `photo_collection` tab)**: Added lossless photo attachment + template selector + quick user mini-form powered by multimodal Vision (`ChatCompletionService.processRequest`), saving initial profiles into **Collection -> From Photo** with 1-tap routing to **Blitz**, **Concept Art Lab**, or straight to **V2 Editor** (skipping intermediate stages).
+- **Laboratory #2 — Concept Art Lab (`concept` Studio showcase & `concept_collection` tab)**: Added Step-1 anchor photo (attach own or render main portrait/vista), inline SillyImages profile & model-aware aspect ratio selector (`1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9` for Gemini Image; native subsets for GPT Image, Grok Imagine, NovelAI, etc.), manual on-art label language input, **Single Concept Sheet** mode (1 comprehensive master caption) and **Multi-Photo Series** mode (guided questionnaire + concise per-frame captions), deduplicated by `sourceRef` inside **Collection -> Concept Arts**. Concept captions inspire character synthesis & Blitz without ever being pasted raw into `Description`.
+- **Collection Order & Strict Blitz Isolation**: Ordered Collection tabs as `Matches -> Gacha -> Concept Arts -> From Photo -> Passed -> Vault`; kept Blitz strictly defaulted to Tinder ON while Gacha, Concept Arts, and From Photo remain opt-in checkboxes OFF by default.
+
+## [2.0.2-beta] - 2026-11-23
+
+### Synced Immediate Card Art Toggle Across Art Studio, Match & Gacha Settings + Manual Fandom Anti-Copyright Art Shield (`A1`)
+- **Synced Compact "Cards Immediately With Ready Art" Toggle (`autoArtWithCards` & `generateImmediateArtForEntity`)**: Added a compact rectangular toggle in **Art Studio**, **Match (Swipes) Deck Settings**, and **Gacha Rules & Wishes** with a clear toast and inline reminder + 1-tap shortcut confirming that generator, aspect ratio, and references are taken from **Art Studio**. When enabled, Match batches, Gacha pulls, and Altar fusions render portraits upfront inside the single unified loading window before spending Prayers or unpacking cards, so revealed cards open immediately with live illustrations (preserving text cards safely if an image API errors).
+- **Manual Fandom Anti-Copyright & Public-Figure Art Prompt Toggle (`safeFandomArtPrompt`)**: Added a manual toggle for strict providers like **Google Gemini / Imagen** that keeps all canonical names and lore intact in card text while switching `FIGURE N (NAME):` / `OBJECT (NAME):` to `FIGURE N:` / `OBJECT:`, instructing the LLM to describe outfits and facial traits purely visually without IP/franchise/actor names, sanitizing fallback prompts, and omitting character labels from SillyImages reference captions (`Reference N: ...`).
+
 ## [2.0.1-beta] - 2026-11-23
 
 ### Guided Mockup-True Studio Layout, Top Story Questionnaire & Unified Format/AI/Languages Drawers, Attached Gacha Drawer Above Summons, Step-by-Step Art Studio & 3-Tab Navigation

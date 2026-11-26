@@ -87,6 +87,9 @@ export const NMF_ICONS = {
     brush: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18.4 3.6a2.1 2.1 0 0 1 3 3L11.5 16.5l-4 1 1-4L18.4 3.6z"/><path d="M4 20c1.4 0 2.7-.5 3.4-1.6.5-.8.4-1.8-.3-2.5-.7-.7-1.7-.8-2.5-.3C3.5 16.3 3 17.6 3 19c0 .6.4 1 1 1z"/></svg>`,
     arrowLeft: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,5 8,12 15,19"/><line x1="8" y1="12" x2="20" y2="12"/></svg>`,
     chevronRight: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9,6 15,12 9,18"/></svg>`,
+    camera: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5L8.2 3.5h7.6L17.5 6H21a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`,
+    conceptBoard: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="11.5" y1="3" x2="11.5" y2="21"/><line x1="11.5" y1="12" x2="21" y2="12"/><circle cx="7.2" cy="8.5" r="1.6"/><path d="M5 17c.5-1.8 1.4-2.7 2.2-2.7s1.7.9 2.3 2.7"/></svg>`,
+    templateExtract: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><path d="M9 14l2 2 4-4"/></svg>`,
 };
 
 export const NMF_FULL_CSS = `
@@ -1806,6 +1809,50 @@ body:has(#nmf-dialog[open]) #toast-container > div {
 }
 .nmf-switch.nmf-on { border-color: var(--nmf-accent); }
 .nmf-switch.nmf-on::after { transform: translateX(18px); background: var(--nmf-accent); }
+.nmf-switch.nmf-switch-sm { width: 34px; height: 18px; border-radius: 2px; }
+.nmf-switch.nmf-switch-sm::after { width: 12px; height: 12px; top: 2px; left: 2px; border-radius: 1px; }
+.nmf-switch.nmf-switch-sm.nmf-on::after { transform: translateX(16px); }
+.nmf-art-sync-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.nmf-toggle-line.nmf-toggle-compact {
+    padding: 7px 10px;
+    gap: 8px;
+}
+.nmf-toggle-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.nmf-toggle-copy strong {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--nmf-text);
+    line-height: 1.25;
+}
+.nmf-toggle-copy small {
+    font-size: 10.5px;
+    color: var(--nmf-text-muted);
+    line-height: 1.32;
+}
+.nmf-art-studio-reminder {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 9px;
+    border-radius: var(--nmf-radius);
+    border: 1px solid var(--nmf-border-active);
+    background: var(--nmf-panel);
+    font-size: 11px;
+    color: var(--nmf-text-muted);
+    line-height: 1.35;
+}
+.nmf-art-studio-reminder strong { color: var(--nmf-text); font-weight: 600; }
 
 .nmf-btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .nmf-btn-primary {
@@ -3308,9 +3355,15 @@ details.nmf-spoiler[open] > summary {
     display: flex;
     align-items: center;
     gap: 12px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
     border-bottom: 1px solid var(--nmf-border);
     margin-bottom: 4px;
+}
+.nmf-underline-tabs::-webkit-scrollbar {
+    display: none;
 }
 .nmf-utab {
     min-height: 40px;
@@ -3325,6 +3378,8 @@ details.nmf-spoiler[open] > summary {
     display: inline-flex;
     align-items: center;
     gap: 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 .nmf-utab.nmf-active {
     color: var(--nmf-accent);
@@ -3337,6 +3392,122 @@ details.nmf-spoiler[open] > summary {
     border-radius: 7px;
     background: color-mix(in srgb, var(--nmf-accent) 12%, var(--nmf-bg-card));
     color: var(--nmf-accent);
+}
+.nmf-lab-photo-box {
+    border: 1px solid var(--nmf-border);
+    border-radius: 8px;
+    background: var(--nmf-bg);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.nmf-lab-photo-frame {
+    width: 100%;
+    max-height: 360px;
+    border-radius: 7px;
+    border: 1px solid var(--nmf-border);
+    background: var(--nmf-bg-card);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.nmf-lab-photo-frame img {
+    width: 100%;
+    max-height: 356px;
+    height: auto;
+    object-fit: contain;
+    display: block;
+}
+.nmf-concept-card {
+    border: 1px solid var(--nmf-border);
+    border-radius: 8px;
+    background: var(--nmf-bg-card);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.nmf-concept-plate-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--nmf-border);
+    background: var(--nmf-bg);
+}
+.nmf-concept-plate-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    font-family: Georgia, "Times New Roman", var(--nmf-font-title), serif;
+    font-size: 14.5px;
+    color: var(--nmf-text);
+    line-height: 1.25;
+}
+.nmf-concept-plate-num {
+    font-family: var(--nmf-font-mono);
+    font-size: 10.5px;
+    color: var(--nmf-accent);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+.nmf-concept-sheet-view {
+    width: 100%;
+    background: var(--nmf-bg);
+    overflow: hidden;
+}
+.nmf-concept-sheet-view img {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+.nmf-caption-table {
+    width: 100%;
+    border-top: 1px solid var(--nmf-border);
+    background: var(--nmf-bg-card);
+}
+.nmf-caption-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: start;
+    gap: 10px;
+    padding: 10px 12px;
+}
+.nmf-caption-cell-text {
+    font-size: 12.5px;
+    line-height: 1.52;
+    color: var(--nmf-text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.nmf-caption-edit-drawer {
+    border-top: 1px dashed var(--nmf-border);
+    background: var(--nmf-bg);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.nmf-seed-dossier {
+    border: 1px solid var(--nmf-border);
+    border-radius: 8px;
+    background: var(--nmf-bg);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.nmf-tpl-inspector {
+    border: 1px solid var(--nmf-border);
+    border-radius: 8px;
+    background: var(--nmf-bg);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 `;

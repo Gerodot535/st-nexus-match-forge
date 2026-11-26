@@ -549,6 +549,28 @@ export function enforceEmergencyInlineBudget(
     for (const s of sessions) {
         visitEntity(s?.tinder?.lastDislikedCandidate);
         visitEntity(s?.artRefCustom);
+        visitEntity(s?.photoLab?.photo);
+        if (Array.isArray(s?.photoLab?.drafts)) {
+            for (const pd of s.photoLab.drafts) {
+                visitEntity(pd);
+                visitEntity(pd?.cardDraft);
+            }
+        }
+        visitEntity(s?.conceptLab?.anchorPhoto);
+        visitEntity(s?.conceptLab?.singleSheet);
+        if (Array.isArray(s?.conceptLab?.seriesFrames)) {
+            for (const fr of s.conceptLab.seriesFrames) visitEntity(fr);
+        }
+        if (Array.isArray(s?.conceptLab?.vault)) {
+            for (const cv of s.conceptLab.vault) {
+                visitEntity(cv);
+                visitEntity(cv?.anchorPhoto);
+                visitEntity(cv?.singleSheet);
+                if (Array.isArray(cv?.seriesFrames)) {
+                    for (const fr of cv.seriesFrames) visitEntity(fr);
+                }
+            }
+        }
         if (Array.isArray(s?.gacha?.collection)) {
             for (const g of s.gacha.collection) visitEntity(g);
         }
@@ -661,6 +683,28 @@ export function collectReferencedMediaIds(sessions = [], extraIds = [], savedVau
             for (const sc of Object.values(s.cardSlots)) pushEnt(sc);
         }
         pushEnt(s.artRefCustom);
+        pushEnt(s.photoLab?.photo);
+        if (Array.isArray(s.photoLab?.drafts)) {
+            for (const pd of s.photoLab.drafts) {
+                pushEnt(pd);
+                pushEnt(pd?.cardDraft);
+            }
+        }
+        pushEnt(s.conceptLab?.anchorPhoto);
+        pushEnt(s.conceptLab?.singleSheet);
+        if (Array.isArray(s.conceptLab?.seriesFrames)) {
+            for (const fr of s.conceptLab.seriesFrames) pushEnt(fr);
+        }
+        if (Array.isArray(s.conceptLab?.vault)) {
+            for (const cv of s.conceptLab.vault) {
+                pushEnt(cv);
+                pushEnt(cv?.anchorPhoto);
+                pushEnt(cv?.singleSheet);
+                if (Array.isArray(cv?.seriesFrames)) {
+                    for (const fr of cv.seriesFrames) pushEnt(fr);
+                }
+            }
+        }
         for (const pool of ['queue', 'liked', 'passed']) {
             const arr = s.tinder?.[pool];
             if (!Array.isArray(arr)) continue;
@@ -734,6 +778,34 @@ export function migrateInlineSessionMediaToVault(sessions = [], savedVault = [])
         }
         if (s.artRefCustom) {
             collectEntity(s.artRefCustom);
+        }
+        if (s.photoLab?.photo) {
+            collectEntity(s.photoLab.photo);
+        }
+        if (Array.isArray(s.photoLab?.drafts)) {
+            for (const pd of s.photoLab.drafts) {
+                collectEntity(pd);
+                if (pd?.cardDraft) collectEntity(pd.cardDraft);
+            }
+        }
+        if (s.conceptLab?.anchorPhoto) {
+            collectEntity(s.conceptLab.anchorPhoto);
+        }
+        if (s.conceptLab?.singleSheet) {
+            collectEntity(s.conceptLab.singleSheet);
+        }
+        if (Array.isArray(s.conceptLab?.seriesFrames)) {
+            for (const fr of s.conceptLab.seriesFrames) collectEntity(fr);
+        }
+        if (Array.isArray(s.conceptLab?.vault)) {
+            for (const cv of s.conceptLab.vault) {
+                collectEntity(cv);
+                if (cv?.anchorPhoto) collectEntity(cv.anchorPhoto);
+                if (cv?.singleSheet) collectEntity(cv.singleSheet);
+                if (Array.isArray(cv?.seriesFrames)) {
+                    for (const fr of cv.seriesFrames) collectEntity(fr);
+                }
+            }
         }
         for (const gPool of ['collection', 'lastRevealBatch']) {
             const gArr = s.gacha?.[gPool];
