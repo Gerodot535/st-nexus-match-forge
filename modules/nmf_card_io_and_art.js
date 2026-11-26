@@ -4682,21 +4682,31 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
 
         if (typeof ctx?.parseReasoningFromString === 'function' && text) {
             const parsed = ctx.parseReasoningFromString(text, { strict: false });
-            if (parsed?.reasoning && !reasoning.includes(parsed.reasoning)) {
-                reasoning = [reasoning, parsed.reasoning].filter(Boolean).join('\n\n');
+            if (parsed?.reasoning) {
+                if (!reasoning.includes(parsed.reasoning)) {
+                    reasoning = [reasoning, parsed.reasoning].filter(Boolean).join('\n\n');
+                }
+                if (typeof parsed.content === 'string') {
+                    text = parsed.content;
+                }
             }
         }
     } catch (e) {
         console.warn('[NexusMatch Forge] Reasoning extraction warning:', e);
     }
 
-    const inlineMatches = [...String(text || '').matchAll(/<(?:think|thought)>([\s\S]*?)<\/(?:think|thought)>/gi)];
+    const inlineThinkRe = /<(?:think|thought|thinking|reasoning|rp_plan)\b[^>]*>([\s\S]*?)<\/(?:think|thought|thinking|reasoning|rp_plan)>/gi;
+    const inlineMatches = [...String(text || '').matchAll(inlineThinkRe)];
     if (inlineMatches.length > 0) {
         const inlineTxt = inlineMatches.map((m) => m[1].trim()).filter(Boolean).join('\n\n');
         if (inlineTxt && !reasoning.includes(inlineTxt)) {
             reasoning = [reasoning, inlineTxt].filter(Boolean).join('\n\n');
         }
+        text = String(text || '').replace(inlineThinkRe, '').trim();
     }
+
+    // Strip unclosed/dangling opening think tags if prefill opened one
+    text = String(text || '').replace(/^[\s\S]*?<\/(?:think|thought|thinking|reasoning|rp_plan)>\s*/i, '').trim();
 
     return { text: String(text || ''), reasoning: String(reasoning || '').trim() };
 }
