@@ -9793,7 +9793,7 @@ function bindWindowDelegation(win) {
         }
         if (act === 'concept-q-pick-opt') {
             const idx = Number(btn.dataset.idx);
-            const optIdx = Number(btn.dataset.optidx);
+            const optIdx = Number(btn.dataset.optIdx);
             const q = sess.conceptLab?.questions?.[idx];
             const optVal = q?.options?.[optIdx];
             if (q && optVal) {
@@ -9919,6 +9919,12 @@ function bindWindowDelegation(win) {
         }
         if (act === 'run-concept-series-plan' || act === 'run-concept-series-all') {
             if (sess.frozen) return;
+            win.querySelectorAll('input[data-concept-q-ans]').forEach((inp) => {
+                const qIdx = Number(inp.dataset.conceptQAns);
+                if (sess.conceptLab?.questions?.[qIdx]) {
+                    sess.conceptLab.questions[qIdx].answer = inp.value;
+                }
+            });
             const doAllArt = act === 'run-concept-series-all';
             const seedHit = resolveConceptSeedCandidate(sess);
             await withBusy(tx('Составляем план серии концепт-артов и подписи...', 'Planning Concept Series frames & captions...'), async (signal) => {
