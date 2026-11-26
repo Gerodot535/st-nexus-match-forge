@@ -1,7 +1,7 @@
 // 8 Character, World & RPG Card Formats synthesized from ST / Chub / JanitorAI / GM-Authoring guides
 // Note (NMF-017): World Sandbox and RPG GM Engine are structured content templates packaged inside standard Character Card V2 (chara_card_v2).
-import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js?v=2.1.1';
-import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js?v=2.1.1';
+import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js?v=2.1.3';
+import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js?v=2.1.3';
 
 export const SETTINGS_SCHEMA_VERSION = 8;
 export const MAX_LIKED_CANDIDATES = 100;
@@ -12,7 +12,7 @@ export const GACHA_CYCLE_LIMIT = 10;
 export const DEFAULT_GACHA_COOLDOWN_MINUTES = 120;
 export const BLITZ_COUNT_OPTIONS = Object.freeze([5, 7, 10, 12, 15, 20]);
 export const AU_QUESTION_COUNT_OPTIONS = Object.freeze([3, 5, 7, 10, 12]);
-export const CONCEPT_SERIES_COUNT_OPTIONS = Object.freeze([2, 3, 4, 5, 6]);
+export const CONCEPT_SERIES_COUNT_OPTIONS = Object.freeze([1, 2, 3, 4, 5, 6]);
 export const CONCEPT_QUESTION_COUNT_OPTIONS = Object.freeze([3, 4, 5, 6]);
 export const SACRIFICE_FAIL_CHANCE_OPTIONS = Object.freeze([15, 25, 40, 50]);
 
@@ -2252,6 +2252,12 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
     const parsedFailChance = Number(rawCfg.gachaSacrificeFailChance);
     const validLuckModes = new Set(GACHA_LUCK_OPTIONS.map((x) => x.id));
 
+    const rawImgSource = typeof rawCfg.imageSource === 'string' && rawCfg.imageSource.trim() ? rawCfg.imageSource.trim() : 'auto';
+    const migratedImgSource = (rawImgSource === 'st_sd' || rawImgSource === 'slay_image_gen') ? 'auto' : rawImgSource;
+    if (migratedImgSource !== rawImgSource) {
+        migrated = true;
+    }
+
     const normalized = {
         settingsSchemaVersion: SETTINGS_SCHEMA_VERSION,
         uiLang: rawCfg.uiLang ? normalizeUiLang(rawCfg.uiLang) : detectDefaultUiLang(),
@@ -2261,7 +2267,7 @@ export function normalizeAndMigrateSettings(rawCfg, { defaultTheme = 'tavern' } 
         presetCorrectionPrompt: rawCfg.presetCorrectionPrompt !== undefined && rawCfg.presetCorrectionPrompt !== null
             ? String(rawCfg.presetCorrectionPrompt)
             : DEFAULT_PRESET_CORRECTION_PROMPT,
-        imageSource: typeof rawCfg.imageSource === 'string' && rawCfg.imageSource.trim() ? rawCfg.imageSource.trim() : 'auto',
+        imageSource: migratedImgSource,
         imageProfileId: typeof rawCfg.imageProfileId === 'string' ? rawCfg.imageProfileId : '',
         imageStyleId: typeof rawCfg.imageStyleId === 'string' ? rawCfg.imageStyleId : '',
         styleWrapMode: ['plain_prefix', 'sillyimages_tag', 'suffix'].includes(rawCfg.styleWrapMode)
@@ -4491,7 +4497,12 @@ export const CONCEPT_SINGLE_PLAN_JSON_SCHEMA = Object.freeze({
     },
 });
 
-export function buildConceptSinglePlanRequest(session, seedEntity = null, mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
+export function buildConceptSinglePlanRequest(
+    session,
+    seedEntity = null,
+    mode = 'prefill_user_msg',
+    { safeFandomArtPrompt = false, themeOverride = null, includeExistingSeriesContext = false } = {},
+) {
     const cl = session.conceptLab || createDefaultConceptLabState();
     const userLangSpec = resolveUserLanguageSpec(session.intake);
     const isWorld = cl.subjectKind === 'world' || isWorldOrRpgMode(session.intake);
@@ -4504,12 +4515,19 @@ export function buildConceptSinglePlanRequest(session, seedEntity = null, mode =
     const subjectBrief = seedEntity
         ? (cl.sendSeedBio !== false ? buildCleanBriefFromEntity(seedEntity) : `Subject Name: ${seedEntity.name} (Use only visual anchor & user's theme brief below without prior card bio).`)
         : (String(cl.anchorPrompt || '').trim() || summarizeIntakeBlock(session, { modeContext: 'architect' }));
-    const themeHint = String(cl.themeBrief || '').trim();
+    const themeHint = String(themeOverride !== null ? themeOverride : (cl.themeBrief || '')).trim();
     const aspectHint = String(cl.aspectRatio || '3:2');
+    const existingSeriesSummary = (includeExistingSeriesContext && Array.isArray(cl.seriesFrames) && cl.seriesFrames.length > 0)
+        ? cl.seriesFrames
+            .map((fr, idx) => `${idx + 1}. [${fr.title || `Frame #${idx + 1}`}]: ${String(fr.caption || fr.visualPrompt || '').trim()}`)
+            .filter(Boolean)
+            .join('\n')
+        : '';
 
     const coreRules = [
         `You are an elite Concept Art Sheet Director & Character/World Storyteller.`,
         `Design a cohesive, richly detailed SINGLE-IMAGE ${isWorld ? 'WORLD / SETTING CONCEPT ART SHEET' : 'CHARACTER REFERENCE & CONCEPT SHEET'} formatted for aspect ratio ${aspectHint}.`,
+        existingSeriesSummary ? `CONTINUITY & COMPLEMENT RULE: This concept sheet is being added to an existing Concept Art Series (listed below). Keep character/world appearance and lore 100% consistent with those frames while unifying and expanding the big-picture reference overview!` : '',
         `You must produce THREE distinct outputs:`,
         `1) "sheet_title" (in ${userLangSpec.shortLabel}): a short, evocative editorial title for this concept sheet (4–7 words, e.g. "Личное дело и закулисье Медового Грома").`,
         `2) "sheet_visual_prompt" (in clear, vivid English for image generation models like Gemini Image, GPT Image, Grok):`,
@@ -4527,6 +4545,7 @@ export function buildConceptSinglePlanRequest(session, seedEntity = null, mode =
     const userInput = [
         `[SUBJECT BASELINE]`,
         subjectBrief || 'Original subject.',
+        existingSeriesSummary ? `\n[EXISTING CONCEPT SERIES FRAMES IN THIS ALBUM]\n${existingSeriesSummary}` : '',
         themeHint ? `\n[USER THEME & DESIRED DETAILS ON THE CONCEPT SHEET]\n${themeHint}` : '',
     ].filter(Boolean).join('\n');
 
@@ -4659,10 +4678,15 @@ export const CONCEPT_SERIES_PLAN_JSON_SCHEMA = Object.freeze({
     },
 });
 
-export function buildConceptSeriesPlanRequest(session, seedEntity = null, mode = 'prefill_user_msg', { safeFandomArtPrompt = false } = {}) {
+export function buildConceptSeriesPlanRequest(
+    session,
+    seedEntity = null,
+    mode = 'prefill_user_msg',
+    { safeFandomArtPrompt = false, countOverride = null, themeOverride = null, existingFrames = null } = {},
+) {
     const cl = session.conceptLab || createDefaultConceptLabState();
     const userLangSpec = resolveUserLanguageSpec(session.intake);
-    const seriesCnt = Math.min(6, Math.max(2, Number(cl.seriesCount) || 4));
+    const seriesCnt = Math.min(6, Math.max(1, Number(countOverride ?? cl.seriesCount) || 4));
     const onArtLang = String(cl.onArtLanguage || '').trim();
     const noTextOnArt = /^(нет|без\s*текста|без\s*надписей|none|no\s*text|empty|-)$/i.test(onArtLang);
     const labelLangRule = noTextOnArt
@@ -4672,7 +4696,17 @@ export function buildConceptSeriesPlanRequest(session, seedEntity = null, mode =
     const subjectBrief = seedEntity
         ? (cl.sendSeedBio !== false ? buildCleanBriefFromEntity(seedEntity) : `Subject Name: ${seedEntity.name} (Use only visual anchor & user's theme brief below without prior card bio).`)
         : (String(cl.anchorPrompt || '').trim() || summarizeIntakeBlock(session, { modeContext: 'architect' }));
-    const themeBrief = String(cl.themeBrief || '').trim();
+    const themeBrief = String(themeOverride !== null ? themeOverride : (cl.themeBrief || '')).trim();
+    const isAppend = Array.isArray(existingFrames);
+    const priorFramesBlock = isAppend && existingFrames.length > 0
+        ? existingFrames
+            .map((fr, idx) => `${idx + 1}. [${fr.title || `Frame #${idx + 1}`}]: ${String(fr.caption || fr.visualPrompt || '').trim()}`)
+            .filter(Boolean)
+            .join('\n')
+        : '';
+    const priorSheetCap = isAppend && String(cl.singleSheet?.masterCaption || '').trim()
+        ? `[Existing Master Concept Sheet — "${cl.singleSheet.title || 'Concept Sheet'}"]:\n${String(cl.singleSheet.masterCaption).trim()}`
+        : '';
     const answered = Array.isArray(cl.questions)
         ? cl.questions
             .map((q, idx) => {
@@ -4685,7 +4719,10 @@ export function buildConceptSeriesPlanRequest(session, seedEntity = null, mode =
 
     const coreRules = [
         `You are a Concept Art Series Director.`,
-        `Plan a cohesive series of EXACTLY ${seriesCnt} distinct concept art frames (aspect ratio ${cl.aspectRatio || '3:2'}).`,
+        `Plan ${isAppend ? `EXACTLY ${seriesCnt} BRAND-NEW additional concept art frame(s) to expand an existing album` : `a cohesive series of EXACTLY ${seriesCnt} distinct concept art frame(s)`} (aspect ratio ${cl.aspectRatio || '3:2'}).`,
+        (priorFramesBlock || priorSheetCap)
+            ? `STRICT ANTI-DUPLICATION RULE: Carefully read the already created frames/sheet below and NEVER repeat the same scene, pose, item flat-lay, room, or angle! Invent fresh, complementary facets of this character or world (unless the user explicitly asks to zoom in on a specific detail in [NEW ADDITION WISHES]).`
+            : '',
         `Frames do NOT all need to feature the character — mix character sheets/expressions/outfits with pure item flat-lays (belongings, tools, bag contents), personal room/workstation/vehicle, or atmospheric world locations according to the user's theme and answers!`,
         `For EACH frame (1..${seriesCnt}), output:`,
         `- "title": short frame title in ${userLangSpec.shortLabel} (e.g. "Содержимое сумки и инструменты", "Каюта корабля", "Эмоции и мимика").`,
@@ -4698,7 +4735,9 @@ export function buildConceptSeriesPlanRequest(session, seedEntity = null, mode =
     const userInput = [
         `[SUBJECT BASELINE]`,
         subjectBrief || 'Original subject.',
-        themeBrief ? `\n[SERIES THEME & WISHES]\n${themeBrief}` : '',
+        priorSheetCap ? `\n${priorSheetCap}` : '',
+        priorFramesBlock ? `\n[ALREADY CREATED SERIES FRAMES — DO NOT REPEAT THESE]\n${priorFramesBlock}` : '',
+        themeBrief ? `\n[${isAppend ? 'NEW ADDITION WISHES' : 'SERIES THEME & WISHES'}]\n${themeBrief}` : '',
         answered ? `\n[USER CONCEPT QUESTIONNAIRE ANSWERS — MANDATORY]\n${answered}` : '',
     ].filter(Boolean).join('\n');
 

@@ -3,7 +3,7 @@ import {
     getCardBackupById,
     base64ToBytes,
     isValidNonEmptyPngBytes,
-} from './nmf_media_vault.js?v=2.1.1';
+} from './nmf_media_vault.js?v=2.1.3';
 
 // CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {
@@ -2579,7 +2579,6 @@ export function openPocketCodexForge() {
 export const KNOWN_IMAGE_EXTENSION_KEYS = Object.freeze([
     'inline_image_gen', // Official 0xl0cal/sillyimages MODULE_NAME
     'sillyimages',
-    'slay_image_gen',
     'inline_image_generation',
 ]);
 
@@ -2749,7 +2748,7 @@ export function getModelMaxReferenceImages(imgCfg) {
 
 export function getActiveImageModelReferenceInfo(sourcePref = 'auto', requestedProfileId = '') {
     try {
-        if (sourcePref === 'off' || sourcePref === 'st_sd') {
+        if (sourcePref === 'off') {
             return { maxRefs: 0, supportsImageRefs: false, model: '', apiType: sourcePref, profileName: '', hasUnsavedProfileDiff: false };
         }
         const picked = pickEffectiveBucket(sourcePref);
@@ -2799,18 +2798,6 @@ export function getSupportedAspectRatiosForImageConfig(sourcePref = 'auto', requ
                 options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'].includes(o.id)),
                 noteRu: 'Генератор отключён — выберите профиль SillyImages.',
                 noteEn: 'Image generator is off — pick a SillyImages profile.',
-            };
-        }
-        if (sourcePref === 'st_sd') {
-            const ids = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
-            return {
-                apiType: 'st_sd',
-                model: 'ST /sd',
-                profileName: 'ST /sd',
-                supportedIds: ids,
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
-                noteRu: 'Штатный /sd: пропорции зависят от настроек расширения SD.',
-                noteEn: 'Built-in /sd: aspect ratio follows your SD settings.',
             };
         }
         const picked = pickEffectiveBucket(sourcePref);
@@ -3125,16 +3112,14 @@ export function listImageExtensionBuckets() {
 }
 
 export function resolveAutoImageSourceSummary(sourcePref = 'auto', profileId = '') {
+    const normPref = (sourcePref === 'st_sd' || sourcePref === 'slay_image_gen') ? 'auto' : sourcePref;
     const buckets = listImageExtensionBuckets();
-    if (sourcePref === 'off') {
+    if (normPref === 'off') {
         return { mode: 'off', label: 'Выключено' };
     }
-    if (sourcePref === 'st_sd') {
-        return { mode: 'st_sd', label: 'Штатный генератор SillyTavern (/sd)' };
-    }
     const enabledBuckets = buckets.filter((b) => b.enabled);
-    const chosen = (sourcePref !== 'auto' && sourcePref !== 'iig')
-        ? buckets.find((b) => b.key === sourcePref)
+    const chosen = (normPref !== 'auto' && normPref !== 'iig')
+        ? buckets.find((b) => b.key === normPref)
         : (enabledBuckets.find((b) => b.ready) || enabledBuckets[0] || null);
 
     if (!chosen) {
@@ -3155,19 +3140,20 @@ export function resolveAutoImageSourceSummary(sourcePref = 'auto', profileId = '
 }
 
 function pickEffectiveBucket(sourcePref = 'auto') {
+    const normPref = (sourcePref === 'st_sd' || sourcePref === 'slay_image_gen') ? 'auto' : sourcePref;
     const ctx = getTavernContext();
     const all = ctx?.extensionSettings || {};
     const buckets = listImageExtensionBuckets();
 
-    if (sourcePref && sourcePref !== 'auto' && sourcePref !== 'iig' && sourcePref !== 'st_sd' && sourcePref !== 'off') {
-        const explicitBucket = buckets.find((b) => b.key === sourcePref);
+    if (normPref && normPref !== 'auto' && normPref !== 'iig' && normPref !== 'off') {
+        const explicitBucket = buckets.find((b) => b.key === normPref);
         if (explicitBucket && !explicitBucket.enabled) {
-            throw new Error(`Источник изображений «${sourcePref}» отключён в настройках SillyTavern.`);
+            throw new Error(`Источник изображений «${normPref}» отключён в настройках SillyTavern.`);
         }
-        if (explicitBucket && all[sourcePref]) {
-            return { key: sourcePref, cfg: all[sourcePref] };
+        if (explicitBucket && all[normPref]) {
+            return { key: normPref, cfg: all[normPref] };
         }
-        throw new Error(`Источник изображений «${sourcePref}» не найден.`);
+        throw new Error(`Источник изображений «${normPref}» не найден.`);
     }
 
     const enabledBuckets = buckets.filter((b) => b.enabled);
@@ -3179,18 +3165,13 @@ function pickEffectiveBucket(sourcePref = 'auto') {
 }
 
 export function detectImageExtensions() {
-    const ctx = getTavernContext();
-    const ext = ctx?.extensionSettings || {};
-    const disabled = Array.isArray(ext.disabledExtensions) ? ext.disabledExtensions : [];
     const buckets = listImageExtensionBuckets();
     const hasIig = buckets.some((b) => b.enabled && b.ready);
-    const sdCfg = ext.sd || {};
-    const hasStSd = Boolean(!disabled.includes('sd') && sdCfg.source && sdCfg.model);
 
     return {
-        hasAny: hasIig || hasStSd,
+        hasAny: hasIig,
         hasIig,
-        hasStSd,
+        hasStSd: false,
         buckets,
     };
 }
@@ -3737,22 +3718,6 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
 
     if (sourcePref === 'off') {
         throw new Error('Генерация изображений отключена в настройках.');
-    }
-
-    if (sourcePref === 'st_sd') {
-        emit('Генерация [Попытка 1/1]', 'Отправка команды в штатный генератор /sd Таверны...', 1, 'ST /sd');
-        const ctx = getTavernContext();
-        if (typeof ctx?.executeSlashCommandsWithOptions !== 'function') {
-            throw new Error('Штатная команда /sd недоступна.');
-        }
-        const escaped = cleanPrompt.replace(/"/g, "'");
-        const res = await ctx.executeSlashCommandsWithOptions(`/sd quiet=true "${escaped}"`);
-        const outUrl = String(res?.pipe || res || '').trim();
-        if (!outUrl || (!outUrl.startsWith('data:') && !outUrl.startsWith('/') && !outUrl.startsWith('http'))) {
-            throw new Error('Штатный /sd не настроен. Выберите SillyImages в настройках.');
-        }
-        emit('Обработка кадра', 'Загрузка и декодирование полученного изображения...', 1, 'ST /sd');
-        return outUrl.startsWith('data:') ? outUrl : await urlToDataUrl(outUrl, signal, timeoutMs);
     }
 
     emit('Подготовка генерации', 'Чтение профиля и параметров генератора...', 1, '');

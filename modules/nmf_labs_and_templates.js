@@ -3,8 +3,8 @@
 // Strictly zero emojis in code/UI/prompts, zero pill radius, explicit SVG dimensions.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.1';
-import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.1';
+import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.3';
+import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.3';
 import {
     CARD_FORMAT_HUMAN_GUIDES,
     CONCEPT_SERIES_COUNT_OPTIONS,
@@ -16,13 +16,13 @@ import {
     hasActiveConceptCaptions,
     formatQuestionUserDecision,
     isWorldOrRpgMode,
-} from './nmf_templates_and_prompts.js?v=2.1.1';
-import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.1';
+} from './nmf_templates_and_prompts.js?v=2.1.3';
+import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.3';
 import {
     detectImageExtensions,
     listImageExtensionBuckets,
     getSupportedAspectRatiosForImageConfig,
-} from './nmf_card_io_and_art.js?v=2.1.1';
+} from './nmf_card_io_and_art.js?v=2.1.3';
 
 export function renderTemplateManagerWidgetHtml({
     sess,
@@ -323,8 +323,13 @@ export function renderConceptLabTabHtml({
 
     const hasSingleOutput = Boolean(singleSheetUrl || cl.singleSheet?.masterCaption || cl.singleSheet?.visualPrompt);
     const hasSeriesOutput = Array.isArray(cl.seriesFrames) && cl.seriesFrames.length > 0;
-    const hasAnyConceptOutput = cl.conceptMode === 'series' ? hasSeriesOutput : hasSingleOutput;
+    const hasAnyConceptOutput = hasSingleOutput || hasSeriesOutput;
     const editSingleOpen = state.editingConceptKey === 'single';
+    const appendOpen = Boolean(state.conceptAppendOpen);
+    const appendMode = state.conceptAppendMode === 'single' || state.conceptAppendMode === 'series'
+        ? state.conceptAppendMode
+        : (!hasSingleOutput ? 'single' : 'series');
+    const appendCnt = Math.min(6, Math.max(1, Number(state.conceptAppendCount) || 1));
 
     return `
     ${renderStudioRoomBar(
@@ -426,9 +431,11 @@ export function renderConceptLabTabHtml({
         <!-- CREATION CONTROLS (COLLAPSES AUTOMATICALLY ONCE ALBUM IS GENERATED!) -->
         <details class="nmf-spoiler" ${!hasAnyConceptOutput ? 'open' : ''}>
             <summary>
-                <span>${esc(cl.conceptMode === 'series'
-                    ? tx(`Замысел серии (${Number(cl.seriesCount) || 4} кадр.)`, `Series Direction (${Number(cl.seriesCount) || 4} frames)`)
-                    : tx('Замысел концепт-листа', 'Concept Sheet Direction'))}</span>
+                <span>${esc(hasAnyConceptOutput
+                    ? tx('Пересоздать концепт с нуля', 'Recreate Concept from Scratch')
+                    : (cl.conceptMode === 'series'
+                        ? tx(`Замысел серии (${Number(cl.seriesCount) || 4} кадр.)`, `Series Direction (${Number(cl.seriesCount) || 4} frames)`)
+                        : tx('Замысел концепт-листа', 'Concept Sheet Direction')))}</span>
                 ${NMF_ICONS.chevronDown}
             </summary>
             <div class="nmf-spoiler-body">
@@ -492,11 +499,11 @@ export function renderConceptLabTabHtml({
     </div>
 
     <!-- CLEAN EDITORIAL ALBUM PLATES + PENCIL CAPTION TABLE -->
-    ${cl.conceptMode !== 'series' && hasSingleOutput ? `
+    ${hasSingleOutput ? `
     <div class="nmf-concept-card">
         <div class="nmf-concept-plate-head">
             <div class="nmf-concept-plate-title">
-                <span class="nmf-concept-plate-num">01</span>
+                <span class="nmf-concept-plate-num">${esc(hasSeriesOutput ? tx('ЛИСТ', 'SHEET') : '01')}</span>
                 <span>${esc(cl.singleSheet?.title || seedEntity?.name || tx('Личное дело и концепт образа', 'Concept Sheet'))}</span>
             </div>
             <div style="display:inline-flex;gap:4px">
@@ -537,15 +544,20 @@ export function renderConceptLabTabHtml({
                 </div>
             </details>
             <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-                <button type="button" class="nmf-btn-secondary" data-act="render-concept-single-art-only" ${state.busy || sess.frozen || !imgExt.hasAny ? 'disabled' : ''}>
-                    ${NMF_ICONS.image} ${esc(singleSheetUrl ? tx('Перерисовать лист', 'Redraw Sheet') : tx('Нарисовать лист', 'Render Sheet'))}
-                </button>
+                <div style="display:inline-flex;gap:6px;flex-wrap:wrap">
+                    <button type="button" class="nmf-btn-secondary" data-act="render-concept-single-art-only" ${state.busy || sess.frozen || !imgExt.hasAny ? 'disabled' : ''}>
+                        ${NMF_ICONS.image} ${esc(singleSheetUrl ? tx('Перерисовать лист', 'Redraw Sheet') : tx('Нарисовать лист', 'Render Sheet'))}
+                    </button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" style="border-color:#e05a6d;color:#e05a6d" data-act="delete-concept-single" title="${esc(tx('Удалить концепт-лист', 'Delete Concept Sheet'))}" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                        ${NMF_ICONS.trash}
+                    </button>
+                </div>
                 <button type="button" class="nmf-btn-primary" data-act="toggle-concept-edit" data-ekey="single">${esc(tx('Готово', 'Done'))}</button>
             </div>
         </div>` : ''}
     </div>` : ''}
 
-    ${cl.conceptMode === 'series' && hasSeriesOutput ? `
+    ${hasSeriesOutput ? `
     <div style="display:flex;flex-direction:column;gap:12px">
         ${cl.seriesFrames.map((fr, idx) => {
             const frUrl = safeImgSrc(resolveEntityDisplayUrl(fr));
@@ -600,6 +612,9 @@ export function renderConceptLabTabHtml({
                             <button type="button" class="nmf-chip" data-act="render-concept-frame-one" data-idx="${idx}" ${state.busy || sess.frozen || !imgExt.hasAny ? 'disabled' : ''}>
                                 ${NMF_ICONS.image} <span>${esc(frUrl ? tx('Перерисовать', 'Redraw') : tx('Нарисовать', 'Render'))}</span>
                             </button>
+                            <button type="button" class="nmf-icon-btn nmf-sq" style="border-color:#e05a6d;color:#e05a6d" data-act="delete-concept-frame" data-idx="${idx}" title="${esc(tx('Удалить этот кадр', 'Delete frame'))}" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                                ${NMF_ICONS.trash}
+                            </button>
                         </div>
                         <button type="button" class="nmf-chip nmf-on" data-act="toggle-concept-edit" data-ekey="${eKey}">${esc(tx('Готово', 'Done'))}</button>
                     </div>
@@ -613,6 +628,58 @@ export function renderConceptLabTabHtml({
             </div>`;
         }).join('')}
     </div>` : ''}
+
+    <!-- SIMPLE "+" AI EXPANSION CARD (JUST LIKE THE START!) -->
+    ${hasAnyConceptOutput ? (
+        !appendOpen ? `
+        <button type="button" class="nmf-btn-secondary" style="width:100%;min-height:44px;border-style:dashed;justify-content:center;gap:8px;color:var(--nmf-accent);border-color:var(--nmf-accent)" data-act="toggle-concept-append" ${state.busy || sess.frozen ? 'disabled' : ''}>
+            ${NMF_ICONS.plus}
+            <span>${esc(tx('Дополнить концепт-арты', 'Add More Concept Art'))}</span>
+        </button>` : `
+        <div class="nmf-panel" style="gap:10px;border-color:var(--nmf-accent)">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <div style="display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:13px;color:var(--nmf-accent)">
+                    ${NMF_ICONS.plus}
+                    <span>${esc(tx('Дополнить концепт-арты с ИИ', 'Add More Concept Art with AI'))}</span>
+                </div>
+                <button type="button" class="nmf-icon-btn nmf-sq" data-act="toggle-concept-append" title="${esc(tx('Свернуть', 'Collapse'))}">${NMF_ICONS.close}</button>
+            </div>
+
+            <div class="nmf-seg-bar">
+                <button type="button" class="nmf-seg-btn ${appendMode !== 'series' ? 'nmf-active' : ''}" data-act="set-concept-append-mode" data-amode="single">${esc(tx('Большой лист', 'Single Sheet'))}</button>
+                <button type="button" class="nmf-seg-btn ${appendMode === 'series' ? 'nmf-active' : ''}" data-act="set-concept-append-mode" data-amode="series">${esc(tx('Ещё арты', 'More Frames'))}</button>
+            </div>
+
+            ${appendMode === 'series' ? `
+            <div class="nmf-chip-wrap">
+                ${CONCEPT_SERIES_COUNT_OPTIONS.map((cnt) => `
+                    <button type="button" class="nmf-chip ${appendCnt === cnt ? 'nmf-on' : ''}" data-act="set-concept-append-count" data-cnt="${cnt}" ${sess.frozen ? 'disabled' : ''}>+${cnt} ${esc(tx('фото', 'photos'))}</button>
+                `).join('')}
+            </div>` : ''}
+
+            <textarea class="nmf-textarea" style="min-height:60px" data-concept-append-brief="1" placeholder="${esc(appendMode === 'series'
+                ? tx('Что показать на новых кадрах (необязательно — если пусто, ИИ сам придумает новые ракурсы без повторов)...', 'Optional wish for the new frames (if empty, AI invents fresh facets without repeating)...')
+                : tx('Пожелание к большому Концепт-листу (необязательно)...', 'Optional wish for the master Concept Sheet...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(state.conceptAppendBrief || '')}</textarea>
+
+            ${appendMode === 'series' ? `
+            <div class="nmf-btn-row" style="flex-wrap:wrap">
+                <button type="button" class="nmf-btn-primary" style="flex:1;min-width:170px" data-act="run-concept-append-series" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                    ${NMF_ICONS.plus} ${esc(tx(`Добавить с ИИ (+${appendCnt} фото)`, `Add with AI (+${appendCnt})`))}
+                </button>
+                <button type="button" class="nmf-btn-secondary" data-act="run-concept-append-series-plan" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                    ${esc(tx('Только план', 'Plan Only'))}
+                </button>
+            </div>` : `
+            <div class="nmf-btn-row" style="flex-wrap:wrap">
+                <button type="button" class="nmf-btn-primary" style="flex:1;min-width:170px" data-act="run-concept-append-single" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                    ${NMF_ICONS.conceptBoard} ${esc(hasSingleOutput ? tx('Обновить Концепт-лист', 'Regenerate Concept Sheet') : tx('Добавить Концепт-лист', 'Add Concept Sheet'))}
+                </button>
+                <button type="button" class="nmf-btn-secondary" data-act="run-concept-append-single-plan" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                    ${esc(tx('Только план', 'Plan Only'))}
+                </button>
+            </div>`}
+        </div>`
+    ) : ''}
 
     <!-- CALM BOTTOM ACTION BAR -->
     ${hasCaptions ? `
@@ -666,13 +733,21 @@ export function renderConceptCollectionViewHtml({
             const fSpec = resolveDisplayOrCoverSpec(specEntity, thumbUrl, false, '');
             const pSpec = resolvePuzzleTileSpec(specEntity, Boolean(thumbUrl));
             const tileCls = fSpec.isReal ? pSpec.cls : 'nmf-tile-square';
-            const captionPreview = (linkedHero?.pitch || cv.pitch || '').trim() || (cv.conceptMode === 'series'
-                ? (cv.seriesFrames || []).map((f) => f.caption).filter(Boolean).join(' · ')
-                : (cv.singleSheet?.masterCaption || cv.themeBrief || ''));
+            const hasSingleInVault = Boolean(singleUrl || String(cv.singleSheet?.masterCaption || '').trim());
+            const seriesLen = Array.isArray(cv.seriesFrames) ? cv.seriesFrames.length : 0;
+            const seriesJoined = Array.isArray(cv.seriesFrames)
+                ? cv.seriesFrames.map((f) => f.caption).filter(Boolean).join(' · ')
+                : '';
+            const captionPreview = (linkedHero?.pitch || cv.pitch || '').trim()
+                || (cv.singleSheet?.masterCaption || '').trim()
+                || seriesJoined
+                || (cv.themeBrief || '');
             const archLine = linkedHero?.archetype || cv.archetype || '';
-            const modeTag = cv.conceptMode === 'series'
-                ? tx(`Серия (${(cv.seriesFrames || []).length})`, `Series (${(cv.seriesFrames || []).length})`)
-                : tx('Концепт-лист', 'Concept Sheet');
+            const modeTag = (hasSingleInVault && seriesLen > 0)
+                ? tx(`Лист + ${seriesLen} кадр.`, `Sheet + ${seriesLen}`)
+                : (seriesLen > 0
+                    ? tx(`Серия (${seriesLen})`, `Series (${seriesLen})`)
+                    : tx('Концепт-лист', 'Concept Sheet'));
             return `
             <div class="nmf-match-tile ${tileCls}" style="${fSpec.isReal ? pSpec.style : ''}">
                 <div class="nmf-match-click-zone" data-act="open-cand-dossier" data-pool="concept_collection" data-idx="${idx}" title="${esc(tx('Открыть анкету персонажа и концепт-арт', 'Open character dossier & concept art'))}">

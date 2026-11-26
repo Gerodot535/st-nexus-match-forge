@@ -1,4 +1,4 @@
-import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.1';
+import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.3';
 import {
     SIMPLE_LANGUAGE_SCENARIOS,
     resolveSimpleLangScenarioId,
@@ -10,7 +10,7 @@ import {
     PRESET_SESSION_TEMPLATES,
     populateSessionFromPresetTemplate,
     syncPresetSessionsToUiLanguage,
-} from './modules/nmf_tags_and_presets.js?v=2.1.1';
+} from './modules/nmf_tags_and_presets.js?v=2.1.3';
 import {
     getUiLang,
     setUiLang,
@@ -25,7 +25,7 @@ import {
     localizeOptionLabel,
     HELP_TOPICS_EN,
     applyEnglishDomTranslation,
-} from './modules/nmf_i18n.js?v=2.1.1';
+} from './modules/nmf_i18n.js?v=2.1.3';
 import {
     MAX_LIKED_CANDIDATES,
     MAX_PASSED_CANDIDATES,
@@ -125,7 +125,7 @@ import {
     parseConceptSeriesPlanResponse,
     createDefaultPhotoLabState,
     createDefaultConceptLabState,
-} from './modules/nmf_templates_and_prompts.js?v=2.1.1';
+} from './modules/nmf_templates_and_prompts.js?v=2.1.3';
 import {
     ALL_EDITABLE_CARD_FIELDS,
     markCardFieldDirty,
@@ -162,7 +162,7 @@ import {
     runLlmGeneration,
     lastGenerationReasoning,
     lastRequestDiagnostics,
-} from './modules/nmf_card_io_and_art.js?v=2.1.1';
+} from './modules/nmf_card_io_and_art.js?v=2.1.3';
 import {
     base64ToBytes,
     isMediaDurablyPersisted,
@@ -179,14 +179,14 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     getCardBackupById,
-} from './modules/nmf_media_vault.js?v=2.1.1';
+} from './modules/nmf_media_vault.js?v=2.1.3';
 import {
     renderTemplateManagerWidgetHtml,
     renderPhotoLabTabHtml,
     renderConceptLabTabHtml,
     renderConceptCollectionViewHtml,
     renderPhotoCollectionViewHtml,
-} from './modules/nmf_labs_and_templates.js?v=2.1.1';
+} from './modules/nmf_labs_and_templates.js?v=2.1.3';
 
 const EXT_KEY = 'st_nexus_match_forge';
 let nextBusyRunId = 1;
@@ -290,6 +290,10 @@ export const state = {
     tplExtractUploadedCard: null,
     newTplDraft: { shortBtn: '', desc: '', instructions: '' },
     editingConceptKey: '',
+    conceptAppendOpen: false,
+    conceptAppendMode: '',
+    conceptAppendCount: 1,
+    conceptAppendBrief: '',
     recentBackups: [],
     busy: false,
     busyMinimized: false,
@@ -1079,12 +1083,11 @@ function renderOptionalArtSettingsBody(sess, cfg) {
                 <select class="nmf-select" data-cfg="imageSource">
                     <option value="auto" ${(cfg.imageSource === 'auto' || cfg.imageSource === 'iig') ? 'selected' : ''}>${esc(tx('Автоматически', 'Auto'))} (${esc(cleanAutoLabel)})</option>
                     ${buckets.map((b) => `<option value="${esc(b.key)}" ${cfg.imageSource === b.key ? 'selected' : ''} ${!b.enabled ? 'disabled' : ''}>SillyImages (${esc(b.key)}) — ${esc(!b.enabled ? tx('выключено в Таверне', 'disabled in ST') : (b.ready ? (b.activeProfileName || b.model || tx('готов', 'ready')) : tx('не настроен профиль', 'profile not ready')))}</option>`).join('')}
-                    <option value="st_sd" ${cfg.imageSource === 'st_sd' ? 'selected' : ''}>${esc(tx('Встроенный генератор SillyTavern (/sd)', 'Built-in SillyTavern /sd'))}</option>
                     <option value="off" ${cfg.imageSource === 'off' ? 'selected' : ''}>${esc(tx('Выключено (только свои картинки с устройства)', 'Off (Manual image uploads only)'))}</option>
                 </select>
             </div>
 
-            ${(activeBucket && activeBucket.enabled && cfg.imageSource !== 'st_sd' && cfg.imageSource !== 'off') ? `
+            ${(activeBucket && activeBucket.enabled && cfg.imageSource !== 'off') ? `
             <div class="nmf-field">
                 <label class="nmf-label">${esc(tx('Профиль подключения в SillyImages', 'SillyImages Connection Profile'))}</label>
                 <select class="nmf-select" data-cfg="imageProfileId">
@@ -1143,7 +1146,7 @@ function renderOptionalArtSettingsBody(sess, cfg) {
             </div>
         </div>
 
-        ${(activeBucket && activeBucket.enabled && cfg.imageSource !== 'st_sd') ? `
+        ${(activeBucket && activeBucket.enabled) ? `
         <!-- STEP 3: APPEARANCE REFERENCES -->
         <div class="nmf-sub-group">
             <div class="nmf-sub-group-title">
@@ -1335,10 +1338,7 @@ function buildTagSuggestionInnerHtml({
 
     const headLabel = isTypingMatch
         ? tx('Похожие теги (нажмите для подстановки):', 'Similar tags (tap to insert):')
-        : tx(
-            `Идеи тегов на эту сессию${lib.length > 0 && category !== 'ban' ? ` (в вашей библиотеке: ${lib.length})` : ''}:`,
-            `Session tag ideas${lib.length > 0 && category !== 'ban' ? ` (saved library: ${lib.length})` : ''}:`,
-        );
+        : tx('Идеи тегов на эту сессию:', 'Session tag ideas:');
 
     return `
         <div class="nmf-tag-assist-head">
@@ -1347,8 +1347,8 @@ function buildTagSuggestionInnerHtml({
         </div>
         <div class="nmf-chip-wrap">
             ${chipsList.map((it) => `
-                <button type="button" class="nmf-tag-suggest-chip ${it.fromLibrary ? 'nmf-lib-saved' : ''}" data-act="pick-tag-suggestion" data-tkey="${esc(targetKey)}" data-sep="${esc(separator)}" data-tag="${esc(it.tag)}">
-                    ${it.fromLibrary ? NMF_ICONS.star : '+'} <span>${esc(it.tag)}</span>
+                <button type="button" class="nmf-tag-suggest-chip" data-act="pick-tag-suggestion" data-tkey="${esc(targetKey)}" data-sep="${esc(separator)}" data-tag="${esc(it.tag)}">
+                    + <span>${esc(it.tag)}</span>
                 </button>
             `).join('')}
         </div>`;
@@ -1548,7 +1548,7 @@ function renderHomeTab(sess) {
     const autoArtSummary = resolveAutoImageSourceSummary(cfg.imageSource, cfg.imageProfileId);
     const cleanArtSource = cfg.imageSource === 'off'
         ? tx('Только свои фото и обложки (авто-генерация выключена)', 'Manual photos & covers (auto-generation off)')
-        : `${cfg.imageSource === 'st_sd' ? tx('Встроенный /sd SillyTavern', 'Built-in SillyTavern /sd') : `${humanizeImageSourceLabel(autoArtSummary)} · ${cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1')}`}${cfg.autoArtWithCards ? tx(' · Сразу с артом', ' · Immediate Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён в арте', ' · Safe Art Prompt') : ''}`;
+        : `${humanizeImageSourceLabel(autoArtSummary)} · ${cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1')}${cfg.autoArtWithCards ? tx(' · Сразу с артом', ' · Immediate Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён в арте', ' · Safe Art Prompt') : ''}`;
 
     const resumeInfo = findBestSessionDraftResume(sess);
     const resumeThumb = resumeInfo ? safeImgSrc(resolveEntityDisplayUrl(resumeInfo.card)) : '';
@@ -6909,6 +6909,10 @@ function bindWindowDelegation(win) {
             scheduleSaveSettings();
             return;
         }
+        if (el.dataset.conceptAppendBrief !== undefined) {
+            state.conceptAppendBrief = el.value;
+            return;
+        }
         if (el.dataset.concept && sess) {
             if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
             sess.conceptLab[el.dataset.concept] = el.value;
@@ -9597,6 +9601,175 @@ function bindWindowDelegation(win) {
             const key = btn.dataset.ekey || '';
             state.editingConceptKey = state.editingConceptKey === key ? '' : key;
             return renderWindow();
+        }
+        if (act === 'toggle-concept-append') {
+            state.conceptAppendOpen = !state.conceptAppendOpen;
+            if (state.conceptAppendOpen) {
+                const cl = sess.conceptLab || {};
+                const hasSingle = Boolean(resolveEntityDisplayUrl(cl.singleSheet) || cl.singleSheet?.masterCaption || cl.singleSheet?.visualPrompt);
+                const hasSeries = Array.isArray(cl.seriesFrames) && cl.seriesFrames.length > 0;
+                if (!hasSingle && hasSeries) {
+                    state.conceptAppendMode = 'single';
+                } else {
+                    state.conceptAppendMode = 'series';
+                }
+            }
+            return renderWindow();
+        }
+        if (act === 'set-concept-append-mode') {
+            state.conceptAppendMode = btn.dataset.amode === 'single' ? 'single' : 'series';
+            return renderWindow();
+        }
+        if (act === 'set-concept-append-count') {
+            state.conceptAppendCount = Math.min(6, Math.max(1, Number(btn.dataset.cnt) || 1));
+            return renderWindow();
+        }
+        if (act === 'delete-concept-single') {
+            if (sess.frozen || !sess.conceptLab) return;
+            sess.conceptLab.singleSheet = { title: '', avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' };
+            state.editingConceptKey = '';
+            await upsertConceptVaultEntry(sess);
+            await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+            saveSettings();
+            notifySuccessToast(tx('Концепт-лист удалён.', 'Concept Sheet removed.'));
+            return renderWindow();
+        }
+        if (act === 'delete-concept-frame') {
+            if (sess.frozen || !Array.isArray(sess.conceptLab?.seriesFrames)) return;
+            const fIdx = Number(btn.dataset.idx);
+            if (Number.isInteger(fIdx) && fIdx >= 0 && fIdx < sess.conceptLab.seriesFrames.length) {
+                sess.conceptLab.seriesFrames.splice(fIdx, 1);
+                state.editingConceptKey = '';
+                await upsertConceptVaultEntry(sess);
+                await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+                saveSettings();
+                notifySuccessToast(tx('Кадр удалён из серии.', 'Frame removed from series.'));
+                return renderWindow();
+            }
+            return;
+        }
+        if (act === 'run-concept-append-single' || act === 'run-concept-append-single-plan') {
+            if (sess.frozen) return;
+            const doRenderArt = act === 'run-concept-append-single';
+            const seedHit = resolveConceptSeedCandidate(sess);
+            const wish = String(state.conceptAppendBrief || '').trim();
+            await withBusy(tx('Дополняем альбом большим Концепт-листом...', 'Adding master Concept Sheet to album...'), async (signal) => {
+                const req = buildConceptSinglePlanRequest(sess, seedHit?.entity || null, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    themeOverride: wish || (sess.conceptLab.themeBrief || ''),
+                    includeExistingSeriesContext: true,
+                });
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const plan = parseConceptSinglePlanResponse(raw);
+                sess.conceptLab.singleSheet.title = plan.title || '';
+                sess.conceptLab.singleSheet.visualPrompt = plan.visualPrompt;
+                sess.conceptLab.singleSheet.masterCaption = plan.masterCaption;
+
+                if (doRenderArt && detectImageExtensions().hasAny && cfg.imageSource !== 'off') {
+                    state.busyTaskLabel = tx('Рисуем Концепт-лист по плану...', 'Rendering Concept Sheet artwork...');
+                    syncUnifiedVisualizerDom();
+                    const anchorUrl = resolveEntityAvatarUrl(sess.conceptLab.anchorPhoto);
+                    const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                    const aspect = aspectInfo.supportedIds.includes(sess.conceptLab.aspectRatio)
+                        ? sess.conceptLab.aspectRatio
+                        : (aspectInfo.supportedIds.includes('3:2') ? '3:2' : (aspectInfo.supportedIds[0] || '1:1'));
+                    const sheetUrl = await generateCharacterPortrait(plan.visualPrompt, {
+                        imageSource: cfg.imageSource,
+                        imageProfileId: cfg.imageProfileId,
+                        imageStyleId: cfg.imageStyleId,
+                        styleWrapMode: cfg.styleWrapMode,
+                        imageNegativeId: cfg.imageNegativeId,
+                        imageCustomNegative: cfg.imageCustomNegative,
+                        aspectRatio: aspect,
+                        refMode: anchorUrl ? 'explicit' : 'off',
+                        customRefDataUrls: anchorUrl ? [anchorUrl] : [],
+                        refInstructionOverride: anchorUrl ? CONCEPT_SHEET_REF_INSTRUCTION : '',
+                        safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                        signal,
+                    });
+                    await assignEntityMediaWithFallback(sess.conceptLab.singleSheet, sheetUrl, sess.conceptLab.singleSheet.avatarId || '');
+                }
+                const savedEntry = await upsertConceptVaultEntry(sess);
+                const dims = await probeImageDimensionsFromDataUrl(resolveEntityAvatarUrl(sess.conceptLab.singleSheet));
+                if (dims.w && dims.h) savedEntry.artNaturalRatio = dims.w / dims.h;
+                state.conceptAppendOpen = false;
+                state.conceptAppendBrief = '';
+                saveSettings();
+                notifySuccessToast(tx('Большой Концепт-лист добавлен к альбому!', 'Master Concept Sheet added to album!'));
+            }, { taskType: doRenderArt ? 'art' : 'llm', cancellable: true });
+            return;
+        }
+        if (act === 'run-concept-append-series' || act === 'run-concept-append-series-plan') {
+            if (sess.frozen) return;
+            const doAllArt = act === 'run-concept-append-series';
+            const addCnt = Math.min(6, Math.max(1, Number(state.conceptAppendCount) || 1));
+            const wish = String(state.conceptAppendBrief || '').trim();
+            const seedHit = resolveConceptSeedCandidate(sess);
+            await withBusy(tx(`Придумываем ещё ${addCnt} концепт-арт(а) без повторов...`, `Planning +${addCnt} new concept frame(s)...`), async (signal) => {
+                const aspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                const aspect = aspectInfo.supportedIds.includes(sess.conceptLab.aspectRatio)
+                    ? sess.conceptLab.aspectRatio
+                    : (aspectInfo.supportedIds[0] || '1:1');
+                const existing = Array.isArray(sess.conceptLab.seriesFrames) ? sess.conceptLab.seriesFrames : [];
+                const req = buildConceptSeriesPlanRequest(sess, seedHit?.entity || null, cfg.transportMode, {
+                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                    countOverride: addCnt,
+                    themeOverride: wish,
+                    existingFrames: existing,
+                });
+                const raw = await runLlmGeneration({
+                    ...req,
+                    transportMode: cfg.transportMode,
+                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    signal,
+                });
+                const newFrames = parseConceptSeriesPlanResponse(raw, aspect);
+                if (!Array.isArray(sess.conceptLab.seriesFrames)) sess.conceptLab.seriesFrames = [];
+                const startOffset = sess.conceptLab.seriesFrames.length;
+                sess.conceptLab.seriesFrames.push(...newFrames);
+
+                if (doAllArt && detectImageExtensions().hasAny && cfg.imageSource !== 'off') {
+                    const anchorUrl = resolveEntityAvatarUrl(sess.conceptLab.anchorPhoto);
+                    for (let i = 0; i < newFrames.length; i++) {
+                        if (signal?.aborted) break;
+                        const fr = newFrames[i];
+                        state.busyTaskLabel = tx(
+                            `Рисуем новый кадр ${i + 1}/${newFrames.length} (#${startOffset + i + 1}): «${fr.title}»`,
+                            `Rendering new frame ${i + 1}/${newFrames.length} (#${startOffset + i + 1}): "${fr.title}"`,
+                        );
+                        syncUnifiedVisualizerDom();
+                        const useAnchor = Boolean(anchorUrl && fr.needsAnchorRef !== false);
+                        const imgUrl = await generateCharacterPortrait(fr.visualPrompt, {
+                            imageSource: cfg.imageSource,
+                            imageProfileId: cfg.imageProfileId,
+                            imageStyleId: cfg.imageStyleId,
+                            styleWrapMode: cfg.styleWrapMode,
+                            imageNegativeId: cfg.imageNegativeId,
+                            imageCustomNegative: cfg.imageCustomNegative,
+                            aspectRatio: fr.aspectRatio || aspect,
+                            refMode: useAnchor ? 'explicit' : 'off',
+                            customRefDataUrls: useAnchor ? [anchorUrl] : [],
+                            refInstructionOverride: useAnchor ? CONCEPT_SHEET_REF_INSTRUCTION : '',
+                            safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+                            signal,
+                        });
+                        await assignEntityMediaWithFallback(fr, imgUrl, fr.avatarId || '');
+                    }
+                }
+                await upsertConceptVaultEntry(sess);
+                state.conceptAppendOpen = false;
+                state.conceptAppendBrief = '';
+                saveSettings();
+                notifySuccessToast(tx(`В альбом добавлено +${newFrames.length} концепт-арт(а)!`, `Added +${newFrames.length} concept frame(s) to album!`));
+            }, { taskType: doAllArt ? 'art' : 'llm', cancellable: true });
+            return;
         }
         if (act === 'toggle-concept-send-bio') {
             if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();

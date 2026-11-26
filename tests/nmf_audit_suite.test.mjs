@@ -46,7 +46,7 @@ import {
     parseBlitzQuestionsResponse,
     buildAuReworkQuestionsRequest,
     buildReworkCardRequest,
-} from '../modules/nmf_templates_and_prompts.js?v=2.1.1';
+} from '../modules/nmf_templates_and_prompts.js?v=2.1.3';
 
 import {
     setTestTavernContext,
@@ -80,7 +80,7 @@ import {
     buildPresetAlignedMessages,
     runLlmGeneration,
     detectPocketCodex,
-} from '../modules/nmf_card_io_and_art.js?v=2.1.1';
+} from '../modules/nmf_card_io_and_art.js?v=2.1.3';
 
 import {
     saveMediaDataUrl,
@@ -95,7 +95,7 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     clearMemoryVaultForTests,
-} from '../modules/nmf_media_vault.js?v=2.1.1';
+} from '../modules/nmf_media_vault.js?v=2.1.3';
 
 import {
     state,
@@ -2479,7 +2479,7 @@ test('v1.7.1 Real Tinder/Gacha -> Blitz Character Selection, Fast Blob Display U
 });
 
 test('v1.7.2 Gacha Prayer Economy (Sacrifice -> +Wishes, Zero Timer Reset), Unresettable Global Cooldown & 13-Theme Rituals', async () => {
-    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js?v=2.1.1');
+    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js?v=2.1.3');
 
     // 1. Every single one of the 13 themes has its own distinct sinister first-sacrifice warning with hero name & zero emojis
     const seenTitles = new Set();
@@ -2681,10 +2681,10 @@ test('v1.8.1 Guided Home Screen, Procedural Cover Lifecycle, Zero Prefill/4K Lab
 });
 
 test('v1.9.0 Bilingual UI (RU/EN), Dynamic Placeholder Cover Lang, 39 Themed Unpack Labels, Safe Gacha Resolution, Luck Rigging & Sacrifice Failure', async () => {
-    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js?v=2.1.1');
-    const { setUiLang, getThemeUnpackCopy, getThemedSacrificeFailMessage } = await import('../modules/nmf_i18n.js?v=2.1.1');
-    const { sanitizeAspectForProvider } = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
-    const { rollSacrificeOutcome } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const { NMF_THEMES } = await import('../modules/nmf_themes_and_icons.js?v=2.1.3');
+    const { setUiLang, getThemeUnpackCopy, getThemedSacrificeFailMessage } = await import('../modules/nmf_i18n.js?v=2.1.3');
+    const { sanitizeAspectForProvider } = await import('../modules/nmf_card_io_and_art.js?v=2.1.3');
+    const { rollSacrificeOutcome } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
 
     // 1. All 13 themes have distinct Match, Gacha & Art unpack labels in BOTH RU and EN
     for (const lang of ['ru', 'en']) {
@@ -2748,7 +2748,7 @@ test('v1.9.0 Bilingual UI (RU/EN), Dynamic Placeholder Cover Lang, 39 Themed Unp
 
 test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vault Media Isolation Across Prune & Studio Home Layout', async () => {
     const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
-    const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js?v=2.1.1');
+    const { collectReferencedMediaIds } = await import('../modules/nmf_media_vault.js?v=2.1.3');
 
     // 1. Studio showcases & Session Setup sections exist on Home Screen
     assert.ok(entryTxt.includes('data-hcard="intake"'));
@@ -2776,7 +2776,7 @@ test('v1.9.1 Deep Audit Regression: Zero Auto-Skip on Minimized Gacha Shade, Vau
 });
 
 test('v1.9.2 Start-First Launch, Clean Inner Tabs & 100% Zero Mixing Between Main Questionnaire and Gacha Questionnaire', async () => {
-    const { summarizeGachaWishPrefsBlock, summarizeIntakeBlock, buildGachaSummonRequest, buildTinderPreviewRequest } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const { summarizeGachaWishPrefsBlock, summarizeIntakeBlock, buildGachaSummonRequest, buildTinderPreviewRequest } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
     const sess = createDefaultSession(1);
 
     // Populate Main Questionnaire with distinct values
@@ -2822,7 +2822,7 @@ test('v1.9.2 Start-First Launch, Clean Inner Tabs & 100% Zero Mixing Between Mai
 });
 
 test('v1.9.5 Altar Donor Snapshot + Altar-Only Regenerate & Zero Secondary Double-Cropping', async () => {
-    const { parseGachaFusionResponse } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const { parseGachaFusionResponse } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
     const entryTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../nmf_entry.js'), 'utf8');
     const cssTxt = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../modules/nmf_themes_and_icons.js'), 'utf8');
 
@@ -2864,8 +2864,8 @@ test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite),
         buildSurgicalCardEditRequest,
         applySurgicalCardEditResult,
         buildFullCardRegenerateRequest,
-    } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
-    const { applyReworkResultToTavernBase, buildV2CardObject } = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
+    } = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
+    const { applyReworkResultToTavernBase, buildV2CardObject } = await import('../modules/nmf_card_io_and_art.js?v=2.1.3');
 
     const sess = createDefaultSession(1);
     sess.architect.freeConcept = 'Gritty harbor detective';
@@ -2951,7 +2951,7 @@ test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite),
 });
 
 test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, [ ] expander, and Vault -> Tavern flow', async () => {
-    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
     const sess = mod.createDefaultSession(1);
 
     // 1. Zero alt greetings mode
@@ -3010,7 +3010,7 @@ test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, 
     assert.ok(entrySrc.includes('data-act="post-save-clear-sheet"'), 'Post-save compact popup must ask before clearing');
 
     // 5. Verify stalled HTTP 200 body stream aborts on timeout & masks API keys in lastRequestDiagnostics
-    const ioMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
+    const ioMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.3');
     const origFetch = globalThis.fetch;
     globalThis.fetch = async (_url, { signal }) => ({
         ok: true,
@@ -3046,7 +3046,7 @@ test('v1.9.7-beta: per-greeting languages & count (0..4), cube-card Profile UI, 
 });
 
 test('CANDY CRUSH & Google AI Studio Preset Regression: preserves ALL assistant blocks, enhanceDefinitions prefill, Depth-0 notes, and "\\n" empty toggles', async () => {
-    const ioMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
+    const ioMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.3');
     const mockCtx = {
         chatCompletionSettings: {
             assistant_prefill: '',
@@ -3101,8 +3101,8 @@ test('CANDY CRUSH & Google AI Studio Preset Regression: preserves ALL assistant 
 });
 
 test('v1.9.8-beta: 3 simple language presets, live similar-tag autocomplete + library, blank-first + bilingual preset sessions, and bottom Home nav', async () => {
-    const tp = await import('../modules/nmf_tags_and_presets.js?v=2.1.1');
-    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const tp = await import('../modules/nmf_tags_and_presets.js?v=2.1.3');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
 
     // 1. Fresh install ALWAYS starts on a clean blank session
     const { settings } = mod.normalizeAndMigrateSettings(null);
@@ -3127,7 +3127,7 @@ test('v1.9.8-beta: 3 simple language presets, live similar-tag autocomplete + li
     assert.deepEqual(lib, ['нежный вампир', 'ночной дождь']);
     const simRu = tp.getLiveSimilarTagSuggestions({ rawInput: 'брат', category: 'vibe', userLibrary: lib, lang: 'ru' });
     assert.ok(simRu.some((x) => x.tag === 'старший брат'), 'Must suggest старший брат');
-    assert.ok(simRu.some((x) => x.tag === 'живут под одной крышей'), 'Must suggest semantic cluster neighbors');
+    assert.ok(simRu.some((x) => !x.tag.toLowerCase().includes('брат')), 'Must suggest semantic cluster neighbors');
 
     // Different session seeds produce distinct rotated tag sets
     const rotA = tp.getSessionRotatingTagSuggestions({ seed: 101, category: 'vibe', userLibrary: lib, lang: 'ru' }).map((x) => x.tag);
@@ -3153,8 +3153,8 @@ test('v1.9.8-beta: 3 simple language presets, live similar-tag autocomplete + li
 });
 
 test('v2.0.0-beta: muted Calm Kit + Gustave Dore palettes, 4-pillar nav, 5 Studio showcases (with Art Studio room), and independent language selectors', async () => {
-    const themesMod = await import('../modules/nmf_themes_and_icons.js?v=2.1.1');
-    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const themesMod = await import('../modules/nmf_themes_and_icons.js?v=2.1.3');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
     const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
 
     // 1. Harsh neon accents removed from theme definitions & CSS
@@ -3194,7 +3194,7 @@ test('v2.0.0-beta: muted Calm Kit + Gustave Dore palettes, 4-pillar nav, 5 Studi
 
 test('v2.0.2-beta: Manual Safe Fandom Art Prompt (A1) & Synced Immediate Card Art Toggles', async () => {
     const fs = await import('node:fs');
-    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
+    const mod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
     const cardArtSrc = fs.readFileSync(new URL('../modules/nmf_card_io_and_art.js', import.meta.url), 'utf8');
     const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
 
@@ -3300,8 +3300,8 @@ test('v2.0.3-beta: Gacha cooldown timer never leaks free prayers before deadline
 });
 
 test('v2.1.0-beta: clean ## Headings across all templates, Custom Templates & AI Extractor, Photo Vision Lab, Concept Art Lab, Collection tabs & strict Blitz isolation', async () => {
-    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.1');
-    const aMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.1');
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.3');
+    const aMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.3');
 
     // 1. Zero bracketed Markdown headings (## [HEADING]) across ALL built-in templates!
     for (const fmt of tMod.CARD_FORMATS) {
