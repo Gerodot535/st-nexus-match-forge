@@ -3,8 +3,8 @@
 // Strictly zero emojis in code/UI/prompts, zero pill radius, explicit SVG dimensions.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.3';
-import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.3';
+import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.5';
+import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.5';
 import {
     CARD_FORMAT_HUMAN_GUIDES,
     CONCEPT_SERIES_COUNT_OPTIONS,
@@ -16,13 +16,13 @@ import {
     hasActiveConceptCaptions,
     formatQuestionUserDecision,
     isWorldOrRpgMode,
-} from './nmf_templates_and_prompts.js?v=2.1.3';
-import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.3';
+} from './nmf_templates_and_prompts.js?v=2.1.5';
+import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.5';
 import {
     detectImageExtensions,
     listImageExtensionBuckets,
     getSupportedAspectRatiosForImageConfig,
-} from './nmf_card_io_and_art.js?v=2.1.3';
+} from './nmf_card_io_and_art.js?v=2.1.5';
 
 export function renderTemplateManagerWidgetHtml({
     sess,
@@ -520,9 +520,8 @@ export function renderConceptLabTabHtml({
         <div class="nmf-caption-table" style="padding:4px 8px">
             <details class="nmf-spoiler">
                 <summary><span>${esc(tx('Заметка о персонаже', 'Character Story Note'))}</span>${NMF_ICONS.chevronDown}</summary>
-                <div class="nmf-spoiler-body" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-                    <div class="nmf-caption-cell-text" style="flex:1">${esc(cl.singleSheet?.masterCaption || tx('Подпись ещё не задана.', 'No caption yet.'))}</div>
-                    <button type="button" class="nmf-icon-btn nmf-sq ${editSingleOpen ? 'nmf-active' : ''}" data-act="toggle-concept-edit" data-ekey="single" title="${esc(tx('Исправить заметку', 'Edit note'))}">${NMF_ICONS.editSmall}</button>
+                <div class="nmf-spoiler-body">
+                    <div class="nmf-caption-cell-text">${esc(cl.singleSheet?.masterCaption || tx('Подпись ещё не задана.', 'No caption yet.'))}</div>
                 </div>
             </details>
         </div>
@@ -585,9 +584,8 @@ export function renderConceptLabTabHtml({
                 </div>` : ''}
 
                 <div class="nmf-caption-table">
-                    <div class="nmf-caption-row">
+                    <div class="nmf-caption-row" style="grid-template-columns:1fr">
                         <div class="nmf-caption-cell-text">${esc(fr.caption || tx('Без подписи.', 'No caption.'))}</div>
-                        <button type="button" class="nmf-icon-btn nmf-sq ${isEdit ? 'nmf-active' : ''}" data-act="toggle-concept-edit" data-ekey="${eKey}" title="${esc(tx('Исправить подпись', 'Edit caption'))}">${NMF_ICONS.editSmall}</button>
                     </div>
                 </div>
 

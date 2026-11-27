@@ -3,7 +3,7 @@ import {
     getCardBackupById,
     base64ToBytes,
     isValidNonEmptyPngBytes,
-} from './nmf_media_vault.js?v=2.1.3';
+} from './nmf_media_vault.js?v=2.1.5';
 
 // CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {
@@ -2551,15 +2551,24 @@ export function detectPocketCodex() {
     return hasDom && !isOff;
 }
 
-export function openPocketCodexForge() {
+export function openPocketCodexForge(cardPayload = null) {
     if (!detectPocketCodex()) return false;
+    let handledViaEvent = false;
     try {
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-            window.dispatchEvent(new CustomEvent('pcx:open-forge', {
-                detail: { source: 'st-nexus-match-forge' },
-            }));
+            const ev = new CustomEvent('pcx:open-forge', {
+                cancelable: true,
+                detail: {
+                    source: 'st-nexus-match-forge',
+                    card: cardPayload && typeof cardPayload === 'object' ? cardPayload : null,
+                },
+            });
+            window.dispatchEvent(ev);
+            handledViaEvent = ev.defaultPrevented;
         }
     } catch {}
+
+    if (handledViaEvent) return true;
 
     const btn = typeof document !== 'undefined' ? document.getElementById('pcx-sendbar-btn') : null;
     if (btn) {
@@ -4695,7 +4704,7 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
         console.warn('[NexusMatch Forge] Reasoning extraction warning:', e);
     }
 
-    const inlineThinkRe = /<(?:think|thought|thinking|reasoning|rp_plan)\b[^>]*>([\s\S]*?)<\/(?:think|thought|thinking|reasoning|rp_plan)>/gi;
+    const inlineThinkRe = /<(?:think|thought|thinking|thoughts|reasoning|cot|thought_process|inner_monologue|inner_thoughts|analysis|rp_plan)\b[^>]*>([\s\S]*?)<\/(?:think|thought|thinking|thoughts|reasoning|cot|thought_process|inner_monologue|inner_thoughts|analysis|rp_plan)>/gi;
     const inlineMatches = [...String(text || '').matchAll(inlineThinkRe)];
     if (inlineMatches.length > 0) {
         const inlineTxt = inlineMatches.map((m) => m[1].trim()).filter(Boolean).join('\n\n');
@@ -4705,8 +4714,10 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
         text = String(text || '').replace(inlineThinkRe, '').trim();
     }
 
+    text = String(text || '').replace(/```(?:think|thought|thinking|reasoning|cot)\b[\s\S]*?```/gi, '').trim();
+
     // Strip unclosed/dangling opening think tags if prefill opened one
-    text = String(text || '').replace(/^[\s\S]*?<\/(?:think|thought|thinking|reasoning|rp_plan)>\s*/i, '').trim();
+    text = String(text || '').replace(/^[\s\S]*?<\/(?:think|thought|thinking|thoughts|reasoning|cot|thought_process|inner_monologue|inner_thoughts|analysis|rp_plan)>\s*/i, '').trim();
 
     return { text: String(text || ''), reasoning: String(reasoning || '').trim() };
 }

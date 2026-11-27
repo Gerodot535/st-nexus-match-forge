@@ -1,4 +1,4 @@
-import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.3';
+import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.5';
 import {
     SIMPLE_LANGUAGE_SCENARIOS,
     resolveSimpleLangScenarioId,
@@ -10,7 +10,7 @@ import {
     PRESET_SESSION_TEMPLATES,
     populateSessionFromPresetTemplate,
     syncPresetSessionsToUiLanguage,
-} from './modules/nmf_tags_and_presets.js?v=2.1.3';
+} from './modules/nmf_tags_and_presets.js?v=2.1.5';
 import {
     getUiLang,
     setUiLang,
@@ -25,7 +25,7 @@ import {
     localizeOptionLabel,
     HELP_TOPICS_EN,
     applyEnglishDomTranslation,
-} from './modules/nmf_i18n.js?v=2.1.3';
+} from './modules/nmf_i18n.js?v=2.1.5';
 import {
     MAX_LIKED_CANDIDATES,
     MAX_PASSED_CANDIDATES,
@@ -125,7 +125,7 @@ import {
     parseConceptSeriesPlanResponse,
     createDefaultPhotoLabState,
     createDefaultConceptLabState,
-} from './modules/nmf_templates_and_prompts.js?v=2.1.3';
+} from './modules/nmf_templates_and_prompts.js?v=2.1.5';
 import {
     ALL_EDITABLE_CARD_FIELDS,
     markCardFieldDirty,
@@ -162,7 +162,7 @@ import {
     runLlmGeneration,
     lastGenerationReasoning,
     lastRequestDiagnostics,
-} from './modules/nmf_card_io_and_art.js?v=2.1.3';
+} from './modules/nmf_card_io_and_art.js?v=2.1.5';
 import {
     base64ToBytes,
     isMediaDurablyPersisted,
@@ -179,14 +179,14 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     getCardBackupById,
-} from './modules/nmf_media_vault.js?v=2.1.3';
+} from './modules/nmf_media_vault.js?v=2.1.5';
 import {
     renderTemplateManagerWidgetHtml,
     renderPhotoLabTabHtml,
     renderConceptLabTabHtml,
     renderConceptCollectionViewHtml,
     renderPhotoCollectionViewHtml,
-} from './modules/nmf_labs_and_templates.js?v=2.1.3';
+} from './modules/nmf_labs_and_templates.js?v=2.1.5';
 
 const EXT_KEY = 'st_nexus_match_forge';
 let nextBusyRunId = 1;
@@ -10375,8 +10375,27 @@ function bindWindowDelegation(win) {
                 notifyToast('Pocket Codex & Forge сейчас не активен.', true);
                 return;
             }
+            const c = sess.card || {};
+            let coverDataUrl = '';
+            try {
+                const resolvedAv = await resolveEntityAvatarUrlAsync(c);
+                if (resolvedAv && resolvedAv.startsWith('data:image/')) {
+                    coverDataUrl = resolvedAv;
+                }
+            } catch {}
+            const handoffCard = {
+                name: String(c.name || '').trim(),
+                description: String(c.description || '').trim(),
+                personality: String(c.personality || '').trim(),
+                scenario: String(c.scenario || '').trim(),
+                first_mes: String(c.first_mes || '').trim(),
+                mes_example: String(c.mes_example || '').trim(),
+                world: String(c.world || '').trim(),
+                sourceAvatarId: String(c.sourceAvatarId || '').trim(),
+                coverDataUrl,
+            };
             closeForgeDialog();
-            openPocketCodexForge();
+            openPocketCodexForge(handoffCard);
             return;
         }
 
@@ -11445,9 +11464,30 @@ function tryMountAllAndDisconnectIfReady() {
     return okRoster && okExt;
 }
 
+let nmfLorebookListenerBound = false;
+
 export function initNexusMatchForge() {
     if (typeof document === 'undefined') return;
     ensureStylesMounted();
+    if (!nmfLorebookListenerBound && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        nmfLorebookListenerBound = true;
+        window.addEventListener('nmf:lorebook-forged', (ev) => {
+            const bookId = String(ev?.detail?.bookId || '').trim();
+            if (!bookId) return;
+            if (!state.worldNames.includes(bookId)) {
+                state.worldNames = [...state.worldNames, bookId].sort((a, b) => a.localeCompare(b));
+            }
+            const cfg = getSettings();
+            const sess = getActiveSession(cfg);
+            if (sess?.card && !sess.frozen) {
+                sess.card.world = bookId;
+                saveSettings();
+                if (document.getElementById('nmf-dialog')?.open) {
+                    renderWindow();
+                }
+            }
+        });
+    }
     if (tryMountAllAndDisconnectIfReady()) return;
 
     const ctx = getTavernContext();
