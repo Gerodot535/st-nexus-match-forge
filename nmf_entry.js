@@ -1,16 +1,15 @@
-import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.5';
+import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.34';
 import {
-    SIMPLE_LANGUAGE_SCENARIOS,
-    resolveSimpleLangScenarioId,
-    applySimpleLangScenario,
     harvestTagsIntoLibrary,
+    hasPhraseInCommaField,
+    togglePhraseInCommaField,
     applyChosenTagToInputValue,
     getSessionRotatingTagSuggestions,
     getLiveSimilarTagSuggestions,
     PRESET_SESSION_TEMPLATES,
     populateSessionFromPresetTemplate,
     syncPresetSessionsToUiLanguage,
-} from './modules/nmf_tags_and_presets.js?v=2.1.5';
+} from './modules/nmf_tags_and_presets.js?v=2.1.34';
 import {
     getUiLang,
     setUiLang,
@@ -25,7 +24,7 @@ import {
     localizeOptionLabel,
     HELP_TOPICS_EN,
     applyEnglishDomTranslation,
-} from './modules/nmf_i18n.js?v=2.1.5';
+} from './modules/nmf_i18n.js?v=2.1.34';
 import {
     MAX_LIKED_CANDIDATES,
     MAX_PASSED_CANDIDATES,
@@ -37,6 +36,17 @@ import {
     GACHA_RESOLUTION_OPTIONS,
     GACHA_LUCK_OPTIONS,
     GACHA_TARGET_OPTIONS,
+    STORY_DYNAMIC_OPTIONS,
+    normalizeCustomStoryModes,
+    setActiveCustomStoryModes,
+    setActiveBuiltinPromptOverrides,
+    getBuiltinStoryModeDefaultPrompt,
+    getEffectiveBuiltinStoryModePrompt,
+    getBuiltinFormatDefaultInstructions,
+    getBuiltinGreetingStyleDefaultPrompt,
+    getEffectiveGreetingStylePrompt,
+    normalizeStoryModeIds,
+    resolveStoryModeItems,
     CARD_SLOT_DEFS,
     LANGUAGE_PRESET_OPTIONS,
     CARD_DESCRIPTION_LANGUAGE_OPTIONS,
@@ -72,6 +82,14 @@ import {
     resolveUserLanguageSpec,
     resolveCardLanguageSpec,
     resolveOutputLanguageSpec,
+    resolveFirstMessageLanguageLabel,
+    resolveTranslatedAltTargetLanguageLabel,
+    hasIntakeTranslatedAlt,
+    getIntakeExtraSceneAltsCount,
+    setIntakeTranslatedAltAndExtras,
+    normalizeStyleProfiles,
+    extractStyleProfileFromIntake,
+    applyStyleProfileToIntake,
     resolveGenderSummary,
     isWorldOrRpgMode,
     createBlankCardSlot,
@@ -102,6 +120,7 @@ import {
     parseCardTranslationResponse,
     buildCleanBriefFromEntity,
     listBlitzSelectableCandidates,
+    resolveBlitzEffectiveSourceMode,
     resolveBlitzSeedCandidate,
     CARD_REFINEMENT_SCOPES,
     buildSurgicalCardEditRequest,
@@ -125,7 +144,8 @@ import {
     parseConceptSeriesPlanResponse,
     createDefaultPhotoLabState,
     createDefaultConceptLabState,
-} from './modules/nmf_templates_and_prompts.js?v=2.1.5';
+    getDefaultAntiSlopPreset,
+} from './modules/nmf_templates_and_prompts.js?v=2.1.34';
 import {
     ALL_EDITABLE_CARD_FIELDS,
     markCardFieldDirty,
@@ -140,6 +160,9 @@ import {
     extractCharaJsonFromPng,
     CONCEPT_SHEET_REF_INSTRUCTION,
     getSupportedAspectRatiosForImageConfig,
+    coerceAspectToSupported,
+    parseAspectRatioNumber,
+    isWideCardAspect,
     triggerDownload,
     dataUrlToPureBlob,
     importCardIntoTavern,
@@ -162,7 +185,7 @@ import {
     runLlmGeneration,
     lastGenerationReasoning,
     lastRequestDiagnostics,
-} from './modules/nmf_card_io_and_art.js?v=2.1.5';
+} from './modules/nmf_card_io_and_art.js?v=2.1.34';
 import {
     base64ToBytes,
     isMediaDurablyPersisted,
@@ -179,14 +202,14 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     getCardBackupById,
-} from './modules/nmf_media_vault.js?v=2.1.5';
+} from './modules/nmf_media_vault.js?v=2.1.34';
 import {
     renderTemplateManagerWidgetHtml,
     renderPhotoLabTabHtml,
     renderConceptLabTabHtml,
     renderConceptCollectionViewHtml,
     renderPhotoCollectionViewHtml,
-} from './modules/nmf_labs_and_templates.js?v=2.1.5';
+} from './modules/nmf_labs_and_templates.js?v=2.1.34';
 
 const EXT_KEY = 'st_nexus_match_forge';
 let nextBusyRunId = 1;
@@ -220,6 +243,15 @@ export const state = {
     },
     gachaDrawerOpen: false,
     gachaDrawerTab: 'wishes', // 'wishes' | 'rules'
+    customStoryModeDraft: {
+        openScope: '',
+        editId: '',
+        isBuiltin: false,
+        name: '',
+        prompt: '',
+    },
+    greetingStyleInspectorOpen: false,
+    openArtMenuKey: '',
     profileOpenCards: {
         description: false,
         first_mes: false,
@@ -268,6 +300,9 @@ export const state = {
     sessionsDrawerOpen: false,
     themeDrawerOpen: false,
     settingsDrawerOpen: false,
+    styleProfileDraftMode: '', // '' | 'create' | 'rename'
+    styleProfileDraftName: '',
+    styleProfileMakeDefault: true,
     thoughtsDrawerOpen: false,
     swipeControlsOpen: false,
     manualBanDraft: '',
@@ -448,7 +483,7 @@ function persistGachaWalletImmediately(cfg) {
     } catch {}
     saveSettings();
     const ctx = getTavernContext();
-    if (typeof ctx?.saveSettings === 'function') {
+    if (ctx && isTavernSettingsLoaded(ctx) && typeof ctx.saveSettings === 'function') {
         try { ctx.saveSettings(); } catch {}
     }
 }
@@ -534,10 +569,11 @@ export function saveSettings() {
         clearTimeout(pendingInputSaveTimer);
         pendingInputSaveTimer = null;
     }
+    const ctx = getTavernContext();
+    if (!ctx || !isTavernSettingsLoaded(ctx)) return;
     const cfg = getSettings();
     stripResidualInlineImagesSync(cfg);
-    const ctx = getTavernContext();
-    if (typeof ctx?.saveSettingsDebounced === 'function') {
+    if (typeof ctx.saveSettingsDebounced === 'function') {
         ctx.saveSettingsDebounced();
     }
 }
@@ -793,11 +829,13 @@ const RARITY_COLOR_PALETTE = Object.freeze({
 function resolvePuzzleTileSpec(entity, hasThumb = false) {
     if (!hasThumb) return { cls: 'nmf-tile-noart', style: '' };
     const ca = String(entity?.croppedAspect || '').trim();
-    if (ca === '16:9') return { cls: 'nmf-tile-wide', style: '--tile-aspect:16/9;' };
-    if (ca === '4:3') return { cls: 'nmf-tile-wide', style: '--tile-aspect:4/3;' };
-    if (ca === '1:1') return { cls: 'nmf-tile-square', style: '--tile-aspect:1/1;' };
-    if (ca === '3:4') return { cls: 'nmf-tile-tall', style: '--tile-aspect:3/4;' };
-    if (ca === '2:3') return { cls: 'nmf-tile-tall', style: '--tile-aspect:2/3;' };
+    const caNum = ca ? parseAspectRatioNumber(ca) : null;
+    if (caNum !== null) {
+        const cssAr = ca.replace(':', '/');
+        if (caNum >= 1.24) return { cls: 'nmf-tile-wide', style: `--tile-aspect:${cssAr};` };
+        if (caNum <= 0.86) return { cls: 'nmf-tile-tall', style: `--tile-aspect:${cssAr};` };
+        return { cls: 'nmf-tile-square', style: `--tile-aspect:${cssAr};` };
+    }
 
     const r = Number(entity?.artNaturalRatio) || 0;
     if (r >= 1.28) return { cls: 'nmf-tile-wide', style: `--tile-aspect:${r.toFixed(3)} / 1;` };
@@ -846,25 +884,47 @@ function probeImageDimensionsFromDataUrl(dataUrl) {
 function resetSessionStoryIntake(sess) {
     if (!sess) return;
     const fresh = createDefaultSession(1).intake;
-    // Preserve global-like formatting/word-budget & language choices while clearing all story fields!
+    // Preserve global-like formatting/word-budget, language, style & custom rules choices while clearing all story fields!
     const keepFormat = sess.intake?.cardFormat || fresh.cardFormat;
     const keepWords = sess.intake?.wordBudgetId || fresh.wordBudgetId;
+    const keepCustomWords = Number.isFinite(Number(sess.intake?.customWords)) ? Number(sess.intake.customWords) : fresh.customWords;
     const keepGreetWords = sess.intake?.greetingBudgetId || fresh.greetingBudgetId;
+    const keepCustomGreetWords = Number.isFinite(Number(sess.intake?.customGreetingWords)) ? Number(sess.intake.customGreetingWords) : fresh.customGreetingWords;
     const keepUserLang = sess.intake?.userLanguage || fresh.userLanguage;
     const keepCardLang = sess.intake?.cardLanguage || fresh.cardLanguage;
+    const keepCardLangCustom = sess.intake?.cardLanguageCustom || '';
     const keepFirstMesLang = sess.intake?.firstMesLanguage || fresh.firstMesLanguage;
+    const keepFirstMesLangCustom = sess.intake?.firstMesLanguageCustom || '';
     const keepAltCnt = sess.intake?.altGreetingsCount !== undefined ? sess.intake.altGreetingsCount : fresh.altGreetingsCount;
     const keepAltLangs = Array.isArray(sess.intake?.altGreetingLangs) ? [...sess.intake.altGreetingLangs] : [...fresh.altGreetingLangs];
+    const keepStyle = sess.intake?.greetingStyle || fresh.greetingStyle;
+    const keepPov = sess.intake?.greetingPov || fresh.greetingPov;
+    const keepPlayerMode = sess.intake?.playerNameMode || fresh.playerNameMode;
+    const keepCustomRules = sess.intake?.greetingCustomRules || '';
+    const keepAntiSlopEnabled = sess.intake?.antiSlopEnabled !== false;
+    const keepAntiSlopRules = sess.intake?.antiSlopRules !== undefined ? sess.intake.antiSlopRules : fresh.antiSlopRules;
+    const keepActiveProfId = sess.intake?.activeStyleProfileId || '';
     sess.intake = {
         ...fresh,
         cardFormat: keepFormat,
         wordBudgetId: keepWords,
+        customWords: keepCustomWords,
         greetingBudgetId: keepGreetWords,
+        customGreetingWords: keepCustomGreetWords,
         userLanguage: keepUserLang,
         cardLanguage: keepCardLang,
+        cardLanguageCustom: keepCardLangCustom,
         firstMesLanguage: keepFirstMesLang,
+        firstMesLanguageCustom: keepFirstMesLangCustom,
         altGreetingsCount: keepAltCnt,
         altGreetingLangs: keepAltLangs,
+        greetingStyle: keepStyle,
+        greetingPov: keepPov,
+        playerNameMode: keepPlayerMode,
+        greetingCustomRules: keepCustomRules,
+        antiSlopEnabled: keepAntiSlopEnabled,
+        antiSlopRules: keepAntiSlopRules,
+        activeStyleProfileId: keepActiveProfId,
     };
 }
 
@@ -878,9 +938,14 @@ function openMatchSignalReveal(count = 1) {
 function renderMatchSignalRevealOverlay(sess) {
     const mr = state.matchRevealState;
     if (!mr) return '';
+    const topCand = sess.tinder?.queue?.[0];
+    if (!topCand) {
+        state.matchRevealState = null;
+        state.pendingMatchReveal = false;
+        return '';
+    }
     const cfg = getSettings();
     const copy = getThemeUnpackCopy(cfg.theme);
-    const topCand = sess.tinder?.queue?.[0];
     const bgStyle = REVEAL_ASSET_URLS.match
         ? `background-image:url('${esc(REVEAL_ASSET_URLS.match)}');`
         : '';
@@ -899,7 +964,7 @@ function renderMatchSignalRevealOverlay(sess) {
                 <div style="font-family:var(--nmf-font-title);font-size:19px;font-weight:700;color:#ffffff;max-width:340px;line-height:1.3">
                     ${esc(copy.stageMatchTitle)}
                 </div>
-                ${mr.phase === 'unpacked' && topCand ? (() => {
+                ${mr.phase === 'unpacked' ? (() => {
                     const topArtUrl = safeImgSrc(resolveEntityDisplayUrl(topCand));
                     return `
                 <div class="nmf-unpacked-card-enter" style="width:min(100%,320px);padding:16px;border-radius:10px;border:1.5px solid var(--nmf-accent);background:rgba(12,15,24,0.92);box-shadow:0 16px 40px rgba(0,0,0,0.65);display:flex;flex-direction:column;gap:8px">
@@ -913,7 +978,7 @@ function renderMatchSignalRevealOverlay(sess) {
                     </button>
                 </div>`;
                 })() : `
-                <div class="nmf-sealed-card-totem">
+                <div class="nmf-sealed-card-totem" style="cursor:pointer" data-act="unpack-match-cards" title="${esc(copy.matchBtn)}">
                     <div style="color:var(--nmf-accent);transform:scale(1.4)">${NMF_ICONS.heart}</div>
                     <div style="font-family:var(--nmf-font-mono);font-size:10px;letter-spacing:1.4px;color:#e2e8f0;text-transform:uppercase">NEXUSMATCH</div>
                 </div>
@@ -996,11 +1061,19 @@ function renderArtSyncTogglesBlock(sess, cfg, { context = 'studio' } = {}) {
     const cleanAutoLabel = humanizeImageSourceLabel(autoSummary);
     const hasGen = cfg.imageSource !== 'off' && detectImageExtensions().hasAny;
     const isGachaCtx = context === 'gacha';
+    const syncAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+    const syncInherited = isEn() ? syncAspectInfo.inheritedSummaryEn : syncAspectInfo.inheritedSummaryRu;
+    const effectiveStudioAr = coerceAspectToSupported(cfg.imageAspectRatio || 'native', syncAspectInfo.supportedIds);
+    const effectiveGachaAr = (sess?.gacha?.aspectRatio && sess.gacha.aspectRatio !== 'sillyimages_default')
+        ? coerceAspectToSupported(sess.gacha.aspectRatio, syncAspectInfo.supportedIds)
+        : 'sillyimages_default';
     const aspectLabel = isGachaCtx
-        ? ((sess?.gacha?.aspectRatio && sess.gacha.aspectRatio !== 'sillyimages_default')
-            ? sess.gacha.aspectRatio
-            : tx('формат SillyImages', 'SillyImages ratio'))
-        : (cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1'));
+        ? ((effectiveGachaAr && effectiveGachaAr !== 'sillyimages_default' && effectiveGachaAr !== 'native')
+            ? effectiveGachaAr
+            : `${tx('из SillyImages', 'SillyImages')} (${syncInherited})`)
+        : (effectiveStudioAr === 'native'
+            ? `${tx('из SillyImages', 'SillyImages')} (${syncInherited})`
+            : effectiveStudioAr);
     const isInArtStudio = context === 'studio';
 
     return `
@@ -1060,6 +1133,12 @@ function renderOptionalArtSettingsBody(sess, cfg) {
     const enabledKeywordRefsCount = refCatalog.filter((r) => r.kind === 'lorebook' && r.bookEnabled && r.matchMode !== 'always').length;
     const customRefUrl = safeImgSrc(resolveEntityDisplayUrl(sess.artRefCustom));
     const gc = sess.gacha || (sess.gacha = createDefaultSession(1).gacha);
+    const studioAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+    const effectiveStudioAspect = coerceAspectToSupported(cfg.imageAspectRatio || 'native', studioAspectInfo.supportedIds);
+    const effectiveGachaStudioAspect = (gc.aspectRatio && gc.aspectRatio !== 'sillyimages_default')
+        ? coerceAspectToSupported(gc.aspectRatio, studioAspectInfo.supportedIds)
+        : 'sillyimages_default';
+    const studioAspectNote = isEn() ? studioAspectInfo.noteEn : studioAspectInfo.noteRu;
 
     return `
         <div class="nmf-friendly-guide">
@@ -1134,8 +1213,10 @@ function renderOptionalArtSettingsBody(sess, cfg) {
             <div class="nmf-field">
                 <label class="nmf-label">${esc(tx('Формат генерируемых артов', 'Generated Portrait Aspect Ratio'))}</label>
                 <select class="nmf-select" data-cfg="imageAspectRatio">
-                    ${IMAGE_ASPECT_OPTIONS.map((a) => `<option value="${a.id}" ${cfg.imageAspectRatio === a.id ? 'selected' : ''}>${esc(localizeOptionLabel('aspect', a.id, a.label))}</option>`).join('')}
+                    <option value="native" ${effectiveStudioAspect === 'native' ? 'selected' : ''}>${esc(isEn() ? studioAspectInfo.studioNativeLabelEn : studioAspectInfo.studioNativeLabelRu)}</option>
+                    ${studioAspectInfo.options.map((a) => `<option value="${esc(a.id)}" ${effectiveStudioAspect === a.id ? 'selected' : ''}>${esc(isEn() ? (a.studioLabelEn || a.labelEn) : (a.studioLabelRu || a.label))}</option>`).join('')}
                 </select>
+                ${studioAspectNote ? `<div style="font-size:11px;color:var(--nmf-text-muted);margin-top:4px;line-height:1.35">${esc(studioAspectNote)}</div>` : ''}
             </div>
 
             <div class="nmf-field">
@@ -1272,7 +1353,8 @@ function renderOptionalArtSettingsBody(sess, cfg) {
                 <div class="nmf-field">
                     <label class="nmf-label">${esc(tx('Формат артов для Гачи в этой сессии', 'Gacha Art Aspect Ratio (This Session)'))}</label>
                     <select class="nmf-select" data-gacha="aspectRatio" ${sess.frozen ? 'disabled' : ''}>
-                        ${GACHA_RESOLUTION_OPTIONS.map((opt) => `<option value="${opt.id}" ${(gc.aspectRatio || 'sillyimages_default') === opt.id ? 'selected' : ''}>${esc(isEn() ? opt.labelEn : opt.label)}</option>`).join('')}
+                        <option value="sillyimages_default" ${effectiveGachaStudioAspect === 'sillyimages_default' || effectiveGachaStudioAspect === 'native' ? 'selected' : ''}>${esc(isEn() ? studioAspectInfo.studioNativeLabelEn : studioAspectInfo.studioNativeLabelRu)}</option>
+                        ${studioAspectInfo.options.map((opt) => `<option value="${esc(opt.id)}" ${effectiveGachaStudioAspect === opt.id ? 'selected' : ''}>${esc(isEn() ? (opt.studioLabelEn || opt.labelEn) : (opt.studioLabelRu || opt.label))}</option>`).join('')}
                     </select>
                 </div>
             </div>
@@ -1499,6 +1581,380 @@ function findBestSessionDraftResume(sess) {
     return null;
 }
 
+function formatCleanLangInputValue(kind, intake = {}) {
+    const safe = intake && typeof intake === 'object' ? intake : {};
+    if (kind === 'user') {
+        const raw = stripAccidentalLanguageBraces(safe.userLanguage || '');
+        if (!raw || raw === '{{language}}') return '';
+        return raw;
+    }
+    if (kind === 'card') {
+        const raw = stripAccidentalLanguageBraces(safe.cardLanguage || '');
+        if (!raw || raw === '{{language}}' || raw === 'same_as_user') return '';
+        if (raw === 'Описание EN + Сцена {{language}}' || raw === 'hybrid_en_local') return 'English';
+        if (raw === '__custom__' || raw === 'custom') {
+            return stripAccidentalLanguageBraces(safe.cardLanguageCustom || '');
+        }
+        return raw;
+    }
+    const rawFm = stripAccidentalLanguageBraces(safe.firstMesLanguage || '');
+    if (!rawFm || rawFm === '{{language}}') return '';
+    if (rawFm === 'same_as_card') return formatCleanLangInputValue('card', safe);
+    if (rawFm === 'target_user_lang') return formatCleanLangInputValue('user', safe);
+    if (rawFm === '__custom__' || rawFm === 'custom') {
+        return stripAccidentalLanguageBraces(safe.firstMesLanguageCustom || '');
+    }
+    return rawFm;
+}
+
+function buildTranslatedAltHintText(intake = {}) {
+    if (!hasIntakeTranslatedAlt(intake)) {
+        return tx('Переводной альт создаваться не будет.', 'No translated alt greeting will be added.');
+    }
+    const targetLbl = resolveTranslatedAltTargetLanguageLabel(intake);
+    return tx(
+        `ИИ добавит +1 Альт с полным переводом основного сообщения на: ${targetLbl}`,
+        `AI will add +1 Alt with a full translation of the Main Message into: ${targetLbl}`,
+    );
+}
+
+function isSessionStoryQuestionnaireFilled(it = {}) {
+    if (!it || typeof it !== 'object') return false;
+    return Boolean(
+        it.fandomName?.trim()
+        || it.settingEra?.trim()
+        || it.favFandomHero?.trim()
+        || it.userRoleAndDesire?.trim()
+        || it.customGenres?.trim()
+        || it.tropesWanted?.trim()
+        || it.hardBans?.trim()
+        || (Array.isArray(it.genres) && it.genres.length > 0)
+        || (it.targetGender && it.targetGender !== 'any')
+        || it.targetGenderCustom?.trim()
+        || (it.userGender && it.userGender !== 'any')
+        || it.userGenderCustom?.trim()
+        || (it.originType && it.originType !== 'oc')
+        || (it.rating && it.rating !== 'sfw'),
+    );
+}
+
+function computeSessionIntakeSummaryText(it = {}) {
+    const hasStoryFilled = isSessionStoryQuestionnaireFilled(it);
+    const targetGenderPreview = (it.targetGender && it.targetGender !== 'any')
+        ? (it.targetGender === 'custom'
+            ? it.targetGenderCustom?.trim()
+            : localizeOptionLabel('targetGender', it.targetGender, TARGET_GENDER_OPTIONS.find((g) => g.id === it.targetGender)?.label || ''))
+        : '';
+    return hasStoryFilled
+        ? [
+            it.fandomName?.trim(),
+            it.settingEra?.trim(),
+            targetGenderPreview,
+            ...(it.genres || []).slice(0, 2).map((g) => localizeGenreTag(g)),
+            it.customGenres?.trim(),
+            it.tropesWanted?.trim(),
+        ].filter(Boolean).slice(0, 3).join(' · ') || tx('Пожелания для Свайпов и сессии заполнены', 'Story context for Swipes configured')
+        : tx('Основа для режима Свайпов · заполните перед поиском мэтчей (пустые поля дадут рандом)', 'Core setup for Swipes · fill before matching (blank fields leave room for randomness)');
+}
+
+function syncLiveIntakeIndicatorsInDom(win, sess) {
+    if (!win || !sess?.intake || typeof win.querySelector !== 'function') return;
+    const filled = isSessionStoryQuestionnaireFilled(sess.intake);
+    const sumEl = win.querySelector('#nmf-intake-summary-line');
+    if (sumEl) {
+        sumEl.textContent = computeSessionIntakeSummaryText(sess.intake);
+    }
+    const swipeSubEl = win.querySelector('#nmf-swipe-home-sub');
+    if (swipeSubEl) {
+        swipeSubEl.textContent = filled
+            ? tx('Анкета заполнена · искать кандидатов по вашим пожеланиям', 'Questionnaire ready · browse candidates tailored to your vibe')
+            : tx('Нужна Сюжетная анкета · задайте вайб и роль для точного мэтча', 'Needs Story Questionnaire · set your vibe & role for true matches');
+    }
+}
+
+function consolidateLegacyStoryIntakeFields(sess) {
+    const it = sess?.intake;
+    if (!it || typeof it !== 'object') return;
+    let changed = false;
+
+    // 1. Fold legacy separate genres[] and customGenres into unified settingEra text field
+    if ((Array.isArray(it.genres) && it.genres.length > 0) || String(it.customGenres || '').trim()) {
+        let mergedSetting = String(it.settingEra || '').trim();
+        for (const g of (it.genres || [])) {
+            const locG = localizeGenreTag(g) || g;
+            if (!hasPhraseInCommaField(mergedSetting, locG) && !hasPhraseInCommaField(mergedSetting, g)) {
+                mergedSetting = togglePhraseInCommaField(mergedSetting, locG);
+            }
+        }
+        for (const cg of String(it.customGenres || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+            if (!hasPhraseInCommaField(mergedSetting, cg)) {
+                mergedSetting = togglePhraseInCommaField(mergedSetting, cg);
+            }
+        }
+        it.settingEra = mergedSetting;
+        it.genres = [];
+        it.customGenres = '';
+        changed = true;
+    }
+
+    // 2. Fold legacy favFandomHero into unified tropesWanted field
+    if (String(it.favFandomHero || '').trim()) {
+        for (const refItem of String(it.favFandomHero).split(',').map((s) => s.trim()).filter(Boolean)) {
+            if (!hasPhraseInCommaField(it.tropesWanted || '', refItem)) {
+                it.tropesWanted = togglePhraseInCommaField(it.tropesWanted || '', refItem);
+            }
+        }
+        it.favFandomHero = '';
+        changed = true;
+    }
+
+    // 3. Fold legacy separate swipe dislikedNotes / dislikedTags into unified hardBans text field
+    const td = sess?.tinder;
+    if (td && ((Array.isArray(td.dislikedTags) && td.dislikedTags.length > 0) || (Array.isArray(td.dislikedNotes) && td.dislikedNotes.length > 0))) {
+        let mergedBans = String(it.hardBans || '').trim();
+        for (const b of [...(td.dislikedTags || []), ...(td.dislikedNotes || [])]) {
+            if (b && !hasPhraseInCommaField(mergedBans, b)) {
+                mergedBans = togglePhraseInCommaField(mergedBans, b);
+            }
+        }
+        it.hardBans = mergedBans;
+        td.dislikedTags = [];
+        td.dislikedNotes = [];
+        changed = true;
+    }
+
+    if (changed) {
+        scheduleSaveSettings();
+    }
+}
+
+function getStoryModeTargetContainer(sess, scope = 'intake') {
+    if (scope === 'gacha') {
+        if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
+        if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs();
+        return sess.gacha.wishPrefs;
+    }
+    if (!sess.intake) sess.intake = createDefaultSession(1).intake;
+    return sess.intake;
+}
+
+function renderStoryDynamicFieldHtml(sess, cfg, { scope = 'intake' } = {}) {
+    const holder = getStoryModeTargetContainer(sess, scope);
+    const customModes = Array.isArray(cfg?.customStoryModes) ? cfg.customStoryModes : [];
+    const validCustomIds = new Set(customModes.map((m) => m.id));
+    const rawIds = normalizeStoryModeIds(holder.storyModes, customModes)
+        .filter((id) => !id.startsWith('csm_') || validCustomIds.has(id));
+    const activeIds = rawIds.length > 0 ? rawIds : ['natural_story'];
+    const isCombo = Boolean(holder.storyModeCombo) || activeIds.length > 1;
+    const primaryId = activeIds[0] || 'natural_story';
+    const activeSet = new Set(isCombo ? activeIds : [primaryId]);
+    const storyModeOverrides = cfg?.builtinPromptOverrides?.storyModes || {};
+
+    const allOptions = [
+        ...STORY_DYNAMIC_OPTIONS.map((m) => ({
+            id: m.id,
+            displayLabel: isEn() ? m.labelEn : m.label,
+            shortLabel: (isEn() ? m.labelEn : m.label).replace(/\s*\((?:по умолчанию|Default)\)/i, ''),
+            isCustom: false,
+            hasOverride: Boolean(storyModeOverrides[m.id]),
+        })),
+        ...customModes.map((c) => ({
+            id: c.id,
+            displayLabel: `${tx('Своё', 'Custom')}: ${c.name}`,
+            shortLabel: c.name,
+            isCustom: true,
+            hasOverride: false,
+        })),
+    ];
+
+    const selectedSingleOpt = !isCombo ? (allOptions.find((o) => o.id === primaryId) || allOptions[0]) : null;
+    const draft = state.customStoryModeDraft || { openScope: '', editId: '', isBuiltin: false, name: '', prompt: '' };
+    const isEditorOpen = draft.openScope === scope;
+    const activeLabels = allOptions.filter((o) => activeSet.has(o.id)).map((o) => o.shortLabel);
+    const editingBuiltinHasOverride = Boolean(draft.isBuiltin && draft.editId && storyModeOverrides[draft.editId]);
+
+    return `
+        <div class="nmf-field">
+            <div class="nmf-story-mode-head">
+                <label class="nmf-label" style="margin-bottom:0!important">${esc(tx('Направленность истории', 'Story Dynamic'))}</label>
+                <div class="nmf-story-mode-actions">
+                    <button type="button" class="nmf-story-mode-mini-btn ${isCombo ? 'nmf-on' : ''}" data-act="toggle-story-mode-combo" data-scope="${esc(scope)}" ${sess.frozen ? 'disabled' : ''}>
+                        ${isCombo ? NMF_ICONS.check : NMF_ICONS.plus}
+                        <span>${esc(tx('Комбинация', 'Combination'))}</span>
+                    </button>
+                    <button type="button" class="nmf-story-mode-mini-btn ${isEditorOpen && !draft.editId ? 'nmf-on' : ''}" data-act="open-custom-story-mode" data-scope="${esc(scope)}" ${sess.frozen ? 'disabled' : ''}>
+                        ${NMF_ICONS.plus}
+                        <span>${esc(tx('Своё', 'Custom'))}</span>
+                    </button>
+                </div>
+            </div>
+
+            ${!isCombo ? `
+            <div class="nmf-story-mode-single-row">
+                <select class="nmf-select" data-story-mode-single="${esc(scope)}" ${sess.frozen ? 'disabled' : ''}>
+                    ${allOptions.map((opt) => `<option value="${esc(opt.id)}" ${primaryId === opt.id ? 'selected' : ''}>${esc(opt.displayLabel)}</option>`).join('')}
+                </select>
+                ${selectedSingleOpt ? `
+                <button type="button" class="nmf-story-mode-icon-btn" title="${esc(tx('Посмотреть и отредактировать промпт режима', 'View & edit mode prompt'))}" data-act="${selectedSingleOpt.isCustom ? 'edit-custom-story-mode' : 'edit-builtin-story-mode'}" data-scope="${esc(scope)}" data-mode-id="${esc(selectedSingleOpt.id)}" ${sess.frozen ? 'disabled' : ''}>
+                    ${NMF_ICONS.editSmall}
+                </button>` : ''}
+                ${selectedSingleOpt?.isCustom ? `
+                <button type="button" class="nmf-story-mode-icon-btn" title="${esc(tx('Удалить свой режим', 'Delete custom mode'))}" data-act="delete-custom-story-mode" data-scope="${esc(scope)}" data-mode-id="${esc(selectedSingleOpt.id)}" ${sess.frozen ? 'disabled' : ''}>
+                    ${NMF_ICONS.trash}
+                </button>` : ''}
+            </div>` : `
+            <div class="nmf-story-mode-combo-wrap">
+                <div class="nmf-story-mode-combo-grid">
+                    ${allOptions.map((opt) => {
+                        const on = activeSet.has(opt.id);
+                        return `
+                        <div class="nmf-story-mode-chip-group ${on ? 'nmf-on' : ''}">
+                            <button type="button" class="nmf-story-mode-chip-btn" data-act="toggle-story-mode-chip" data-scope="${esc(scope)}" data-mode-id="${esc(opt.id)}" ${sess.frozen ? 'disabled' : ''}>
+                                ${on ? NMF_ICONS.check : NMF_ICONS.plus}
+                                <span>${esc(opt.shortLabel)}</span>
+                            </button>
+                            <button type="button" class="nmf-story-mode-chip-tool" title="${esc(tx('Редактировать промпт', 'Edit prompt'))}" data-act="${opt.isCustom ? 'edit-custom-story-mode' : 'edit-builtin-story-mode'}" data-scope="${esc(scope)}" data-mode-id="${esc(opt.id)}" ${sess.frozen ? 'disabled' : ''}>
+                                ${NMF_ICONS.editSmall}
+                            </button>
+                            ${opt.isCustom ? `
+                            <button type="button" class="nmf-story-mode-chip-tool" title="${esc(tx('Удалить', 'Delete'))}" data-act="delete-custom-story-mode" data-scope="${esc(scope)}" data-mode-id="${esc(opt.id)}" ${sess.frozen ? 'disabled' : ''}>
+                                ${NMF_ICONS.trash}
+                            </button>` : ''}
+                        </div>`;
+                    }).join('')}
+                </div>
+                <div class="nmf-story-mode-summary">
+                    ${esc(tx('Выбрано:', 'Active:'))} ${esc(activeLabels.join(' + '))}
+                </div>
+            </div>`}
+
+            ${isEditorOpen ? `
+            <div class="nmf-story-mode-custom-editor">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
+                    <span style="font-size:11.5px;font-weight:600;color:var(--nmf-text)">
+                        ${esc(draft.isBuiltin
+                            ? `${tx('Промпт режима:', 'Mode Prompt:')} ${draft.name}`
+                            : (draft.editId ? tx('Редактирование своего режима', 'Edit Custom Mode') : tx('Новый свой режим направленности', 'New Custom Story Mode')))}
+                    </span>
+                    <button type="button" class="nmf-story-mode-icon-btn" style="width:24px;height:24px" data-act="cancel-custom-story-mode" title="${esc(tx('Закрыть', 'Close'))}">
+                        ${NMF_ICONS.close}
+                    </button>
+                </div>
+                ${!draft.isBuiltin ? `
+                <input type="text" class="nmf-input" data-csm-draft="name" value="${esc(draft.name || '')}" placeholder="${esc(tx('Название режима или типа динамики...', 'Custom mode title...'))}"/>` : ''}
+                <textarea class="nmf-textarea" style="min-height:68px" data-csm-draft="prompt" placeholder="${esc(tx('Промпт режима: опишите стартовое отношение персонажа к игроку и правила развития линии...', 'Mode prompt: describe the starting attitude toward the player and how the dynamic unfolds...'))}">${esc(draft.prompt || '')}</textarea>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
+                    <div>
+                        ${editingBuiltinHasOverride ? `
+                        <button type="button" class="nmf-chip" data-act="reset-builtin-story-mode" data-scope="${esc(scope)}" data-mode-id="${esc(draft.editId)}">
+                            ${NMF_ICONS.undo} <span>${esc(tx('Сбросить к стандарту', 'Reset Default'))}</span>
+                        </button>` : ''}
+                    </div>
+                    <div style="display:inline-flex;align-items:center;gap:6px">
+                        <button type="button" class="nmf-btn-secondary" style="padding:5px 10px;font-size:11.5px" data-act="cancel-custom-story-mode">${esc(tx('Отмена', 'Cancel'))}</button>
+                        <button type="button" class="nmf-btn-primary" style="padding:5px 12px;font-size:11.5px" data-act="save-custom-story-mode" data-scope="${esc(scope)}">${esc(tx('Сохранить промпт', 'Save Prompt'))}</button>
+                    </div>
+                </div>
+            </div>` : ''}
+        </div>`;
+}
+
+function renderUnifiedStoryIntakeFieldsHtml(sess, cfg) {
+    consolidateLegacyStoryIntakeFields(sess);
+    const it = sess.intake;
+    const worldMode = isWorldOrRpgMode(it) || it.originType === 'artifact_object';
+    const ratingObj = RATING_OPTIONS.find((r) => r.id === it.rating) || RATING_OPTIONS[0];
+    const showFandomLine = ['canon', 'fandom_au', 'fandom_oc'].includes(it.originType) || Boolean(String(it.fandomName || '').trim());
+
+    return `
+    <div class="nmf-sub-group">
+        <div class="nmf-field">
+            <label class="nmf-label"><span>${esc(tx('Кого или что создаём', 'What Are We Creating'))}</span></label>
+            <select class="nmf-select" data-intake="originType" ${sess.frozen ? 'disabled' : ''}>
+                <option value="oc" ${it.originType === 'oc' ? 'selected' : ''}>${esc(tx('Персонаж — Оригинальный герой (OC)', 'Character — Original (OC)'))}</option>
+                <option value="canon" ${it.originType === 'canon' ? 'selected' : ''}>${esc(tx('Персонаж — Канонный герой из фандома', 'Character — Canon from Fandom'))}</option>
+                <option value="fandom_au" ${it.originType === 'fandom_au' ? 'selected' : ''}>${esc(tx('Персонаж — Герой фандома в другой вселенной (AU)', 'Character — Fandom AU'))}</option>
+                <option value="fandom_oc" ${it.originType === 'fandom_oc' ? 'selected' : ''}>${esc(tx('Персонаж — Новый герой внутри фандома', 'Character — OC in Fandom'))}</option>
+                <option value="duo_group" ${it.originType === 'duo_group' ? 'selected' : ''}>${esc(tx('Дуэт или группа (2–3 персонажа)', 'Duo / Group (2–3 characters)'))}</option>
+                <option value="world_sandbox" ${it.originType === 'world_sandbox' ? 'selected' : ''}>${esc(tx('Мир / Сеттинг-песочница', 'World / Sandbox Setting'))}</option>
+                <option value="rpg_gm" ${it.originType === 'rpg_gm' ? 'selected' : ''}>${esc(tx('РПГ-Мастер / Ведущий приключения', 'RPG Game Master'))}</option>
+                <option value="artifact_object" ${it.originType === 'artifact_object' ? 'selected' : ''}>${esc(tx('Особый предмет или артефакт', 'Special Artifact / Object'))}</option>
+            </select>
+        </div>
+
+        ${showFandomLine ? `
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(tx('Название фандома или вселенной', 'Fandom or Universe Name'))}</label>
+            <input type="text" class="nmf-input" data-intake="fandomName" value="${esc(it.fandomName)}" placeholder="${esc(tx('Укажите произведение или вселенную...', 'Enter fandom or universe...'))}" ${sess.frozen ? 'disabled' : ''}/>
+        </div>` : ''}
+
+        <div class="nmf-grid-2-compact">
+            <div class="nmf-field">
+                <label class="nmf-label">${esc(tx('Ваш пол (Игрок)', 'Your Gender'))}</label>
+                <select class="nmf-select" data-intake="userGender" ${sess.frozen ? 'disabled' : ''}>
+                    ${USER_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(it.userGender || 'any') === g.id ? 'selected' : ''}>${esc(localizeOptionLabel('userGender', g.id, g.label))}</option>`).join('')}
+                </select>
+                ${it.userGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="userGenderCustom" value="${esc(it.userGenderCustom || '')}" placeholder="${esc(tx('Свой вариант...', 'Custom...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
+            </div>
+            <div class="nmf-field">
+                <label class="nmf-label">${esc(worldMode ? tx('Фокус НПС', 'NPC Gender') : tx('Пол персонажа', 'Character Gender'))}</label>
+                <select class="nmf-select" data-intake="targetGender" ${sess.frozen ? 'disabled' : ''}>
+                    ${TARGET_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(it.targetGender || 'any') === g.id ? 'selected' : ''}>${esc(localizeOptionLabel('targetGender', g.id, g.label))}</option>`).join('')}
+                </select>
+                ${it.targetGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="targetGenderCustom" value="${esc(it.targetGenderCustom || '')}" placeholder="${esc(tx('Свой вариант...', 'Custom...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
+            </div>
+        </div>
+
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(tx('Возрастной рейтинг', 'Content Rating'))}</label>
+            <select class="nmf-select" data-intake="rating" ${sess.frozen ? 'disabled' : ''}>
+                ${RATING_OPTIONS.map((r) => `<option value="${r.id}" ${it.rating === r.id ? 'selected' : ''}>${esc(localizeOptionLabel('rating', r.id, r.label))}</option>`).join('')}
+            </select>
+        </div>
+
+        ${ratingObj.warn ? `
+        <div class="nmf-warn-box" style="font-size:11.5px">
+            ${NMF_ICONS.warn}
+            <span>${esc(ratingObj.warn)}</span>
+        </div>` : ''}
+
+        ${renderStoryDynamicFieldHtml(sess, cfg, { scope: 'intake' })}
+
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(tx('1. Сеттинг, эпоха и жанры', '1. Setting, Era & Genres'))}</label>
+            <input type="text" class="nmf-input" data-intake="settingEra" value="${esc(it.settingEra)}" placeholder="${esc(tx('Впишите мир/эпоху или нажимайте жанры ниже (вставятся прямо в текст)...', 'Type setting/era or tap genres below to insert into text...'))}" ${sess.frozen ? 'disabled' : ''}/>
+            <div class="nmf-chip-wrap" id="nmf-genre-inline-chips">
+                ${GENRE_PRESETS.map((g) => {
+                    const dispG = localizeGenreTag(g);
+                    const active = hasPhraseInCommaField(it.settingEra || '', dispG) || hasPhraseInCommaField(it.settingEra || '', g);
+                    return `<button type="button" class="nmf-chip ${active ? 'nmf-on' : ''}" data-act="toggle-genre" data-genre="${esc(dispG)}" ${sess.frozen ? 'disabled' : ''}>${active ? '✓ ' : '+ '}${esc(dispG)}</button>`;
+                }).join('')}
+            </div>
+        </div>
+
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(worldMode
+                ? tx('2. Сюжет и роль игрока в этом мире', '2. Premise & Player Role')
+                : tx('2. Сюжет и ваша роль (какую историю и отношение ищете)', '2. Story Premise & Your Role'))}</label>
+            <textarea class="nmf-textarea" style="min-height:68px" data-intake="userRoleAndDesire" placeholder="${esc(tx('Кем выступаете вы и какая завязка или ситуация вам интересна (по желанию)...', 'Your role and desired story premise (optional)...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(it.userRoleAndDesire)}</textarea>
+        </div>
+
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(worldMode
+                ? tx('3. Детали мира, механики и атмосфера', '3. World Details, Mechanics & Vibe')
+                : tx('3. Черты, типаж и любимые тропы героя', '3. Character Traits, Archetype & Tropes'))}</label>
+            <input type="text" class="nmf-input" data-intake="tropesWanted" value="${esc(it.tropesWanted)}" placeholder="${esc(tx('Впишите черты, тропы или ориентир характера (или нажмите теги ниже)...', 'Type traits, tropes, or character references (or tap tags below)...'))}" ${sess.frozen ? 'disabled' : ''}/>
+            ${renderTagAssistBoxHtml({ targetKey: 'intake_tropesWanted', category: 'vibe', currentValue: it.tropesWanted, separator: ', ', sess, cfg })}
+        </div>
+
+        <div class="nmf-field">
+            <label class="nmf-label">${esc(tx('4. Стоп-лист (чего точно избегать)', '4. Hard Bans (Strictly Avoid)'))}</label>
+            <input type="text" class="nmf-input" data-intake="hardBans" value="${esc(it.hardBans)}" placeholder="${esc(tx('Единый стоп-лист сессии и Свайпов через запятую...', 'Unified comma-separated ban list for this session & Swipes...'))}" ${sess.frozen ? 'disabled' : ''}/>
+            ${renderTagAssistBoxHtml({ targetKey: 'intake_hardBans', category: 'ban', currentValue: it.hardBans, separator: ', ', sess, cfg })}
+        </div>
+    </div>`;
+}
+
 function renderHomeTab(sess) {
     const cfg = getSettings();
     const it = sess.intake || {};
@@ -1506,7 +1962,7 @@ function renderHomeTab(sess) {
     const curFmt = resolveCardFormat(curFmtId, cfg.customCardFormats, it);
     const fmtGuideRu = CARD_FORMAT_HUMAN_GUIDES[curFmt.id] || { shortBtn: curFmt.shortBtn || curFmt.name, explain: curFmt.desc || '' };
     const fmtShort = curFmt.isCustom ? (curFmt.shortBtn || curFmt.name) : localizeOptionLabel('cardFormatShort', curFmt.id, fmtGuideRu.shortBtn || curFmt.name);
-    const fmtFullTitle = curFmt.isCustom ? curFmt.name : localizeOptionLabel('cardFormatName', curFmt.id, curFmt.name);
+    const fmtFullTitle = curFmt.isCustom ? curFmt.name : localizeOptionLabel('cardFormatName', curFmt.id, fmtGuideRu.name || curFmt.name);
     const fmtExplain = curFmt.isCustom ? (curFmt.desc || '') : localizeOptionLabel('cardFormatExplain', curFmt.id, fmtGuideRu.explain);
 
     const curModeKey = cfg.transportMode === 'json_schema' ? 'json_schema' : 'prefill_user_msg';
@@ -1514,15 +1970,7 @@ function renderHomeTab(sess) {
     const trShort = localizeOptionLabel('transport', `${curModeKey}_short`, trGuideRu.shortLabel);
     const trExplain = localizeOptionLabel('transport', `${curModeKey}_explain`, trGuideRu.explain);
 
-    const hasStoryFilled = Boolean(
-        it.fandomName?.trim()
-        || it.settingEra?.trim()
-        || it.favFandomHero?.trim()
-        || it.userRoleAndDesire?.trim()
-        || it.tropesWanted?.trim()
-        || it.hardBans?.trim()
-        || (it.genres && it.genres.length),
-    );
+    const hasStoryFilled = isSessionStoryQuestionnaireFilled(it);
 
     const worldMode = isWorldOrRpgMode(it) || it.originType === 'artifact_object';
     const ratingObj = RATING_OPTIONS.find((r) => r.id === it.rating) || RATING_OPTIONS[0];
@@ -1532,23 +1980,35 @@ function renderHomeTab(sess) {
     const intakeOpen = Boolean(state.homeOpenCards?.intake);
     const setupOpen = Boolean(state.homeOpenCards?.setup || state.homeOpenCards?.mandatory || state.homeOpenCards?.langStyle);
 
-    const userLangPreset = resolveLangPresetUiValue(it.userLanguage);
-    const cardLangPreset = resolveCardLangPresetUiValue(it.cardLanguage);
-    const fmLangPreset = resolveFmLangPresetUiValue(it.firstMesLanguage);
-    const curLangScenarioId = resolveSimpleLangScenarioId(it);
+    const styleProfiles = Array.isArray(cfg.styleProfiles) ? cfg.styleProfiles : [];
+    const defaultProfId = String(cfg.defaultStyleProfileId || '');
+    const activeStyleProf = styleProfiles.find((p) => p.id === it.activeStyleProfileId) || null;
+    const cleanUserLangVal = formatCleanLangInputValue('user', it);
+    const cleanCardLangVal = formatCleanLangInputValue('card', it);
+    const cleanFmLangVal = formatCleanLangInputValue('firstMes', it);
+    const wantTranslatedAlt = hasIntakeTranslatedAlt(it);
+    const extraScenesCnt = getIntakeExtraSceneAltsCount(it);
+    const tavernLangLabel = detectUserLocaleLanguage();
+
     const cardLangShort = resolveCardLanguageSpec(it).shortLabel;
-    const curAltCntHome = it.altGreetingsCount !== undefined ? Math.max(0, Math.min(4, Math.round(Number(it.altGreetingsCount)))) : 1;
+    const curAltCntHome = it.altGreetingsCount !== undefined ? Math.max(0, Math.min(4, Math.round(Number(it.altGreetingsCount)))) : 0;
 
-    const intakeSummaryLine = hasStoryFilled
-        ? [it.fandomName?.trim(), it.settingEra?.trim(), ...(it.genres || []).slice(0, 2).map((g) => localizeGenreTag(g))].filter(Boolean).join(' · ') || tx('Пожелания сессии заполнены', 'Story context configured')
-        : tx('С неё начинается история · пустые поля дают ИИ больше рандома', 'Start here · leaving fields blank gives AI more randomness');
+    const intakeSummaryLine = computeSessionIntakeSummaryText(it);
 
-    const setupSummaryLine = `${trShort} · ${fmtShort} · ${cardLangShort}${curAltCntHome > 0 ? ` · +${curAltCntHome} ${tx('альт.', 'alt')}` : ''}`;
+    const antiSlopBadge = it.antiSlopEnabled !== false ? tx(' · Анти-Слоп', ' · Anti-Slop') : '';
+    const setupSummaryLine = activeStyleProf
+        ? `${tx('Профиль', 'Profile')} «${activeStyleProf.name}» · ${trShort} · ${fmtShort}${curAltCntHome > 0 ? ` · +${curAltCntHome} ${tx('альт.', 'alt')}` : ''}${antiSlopBadge}`
+        : `${trShort} · ${fmtShort} · ${cardLangShort}${curAltCntHome > 0 ? ` · +${curAltCntHome} ${tx('альт.', 'alt')}` : ''}${antiSlopBadge}`;
 
     const autoArtSummary = resolveAutoImageSourceSummary(cfg.imageSource, cfg.imageProfileId);
+    const homeAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+    const homeEffectiveAr = coerceAspectToSupported(cfg.imageAspectRatio || 'native', homeAspectInfo.supportedIds);
+    const homeArSummary = homeEffectiveAr === 'native'
+        ? `${tx('из SillyImages', 'SillyImages')} (${isEn() ? homeAspectInfo.inheritedSummaryEn : homeAspectInfo.inheritedSummaryRu})`
+        : homeEffectiveAr;
     const cleanArtSource = cfg.imageSource === 'off'
         ? tx('Только свои фото и обложки (авто-генерация выключена)', 'Manual photos & covers (auto-generation off)')
-        : `${humanizeImageSourceLabel(autoArtSummary)} · ${cfg.imageAspectRatio === 'native' ? tx('родной размер', 'native size') : (cfg.imageAspectRatio || '1:1')}${cfg.autoArtWithCards ? tx(' · Сразу с артом', ' · Immediate Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён в арте', ' · Safe Art Prompt') : ''}`;
+        : `${humanizeImageSourceLabel(autoArtSummary)} · ${homeArSummary}${cfg.autoArtWithCards ? tx(' · Сразу с артом', ' · Immediate Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён в арте', ' · Safe Art Prompt') : ''}`;
 
     const resumeInfo = findBestSessionDraftResume(sess);
     const resumeThumb = resumeInfo ? safeImgSrc(resolveEntityDisplayUrl(resumeInfo.card)) : '';
@@ -1579,144 +2039,16 @@ function renderHomeTab(sess) {
             </div>
         </div>` : ''}
 
-        <!-- SECTION 1: MAIN STORY QUESTIONNAIRE + UNIFIED FORMAT/LANGUAGES DRAWER -->
+        <!-- SECTION 1: TOP PROFILE/FORMAT DRAWER + SESSION STORY QUESTIONNAIRE -->
         <div>
             <h2 class="nmf-sec-heading">${esc(tx('Настройка перед стартом', 'Before You Begin'))}</h2>
             <div class="nmf-mode-list">
-                <!-- DRAWER #1: MAIN STORY QUESTIONNAIRE -->
-                <div class="nmf-drawer-block">
-                    <button type="button" class="nmf-drawer-trigger ${intakeOpen ? 'nmf-open' : ''}" data-act="toggle-home-card" data-hcard="intake">
-                        <span class="nmf-tile-icon">${NMF_ICONS.sliders}</span>
-                        <span class="nmf-row-copy">
-                            <strong>${esc(tx('Сюжетная анкета', 'Story Questionnaire'))}</strong>
-                            <small>${esc(intakeSummaryLine)}</small>
-                        </span>
-                        <span class="nmf-row-chevron ${intakeOpen ? 'nmf-rot' : ''}">${NMF_ICONS.chevronRight}</span>
-                    </button>
-
-                    ${intakeOpen ? `
-                    <div class="nmf-drawer-content">
-                        <div class="nmf-friendly-guide">
-                            ${tx(
-                                '<strong>Как это работает:</strong> с этой анкеты начинается подбор идей. Заполнять все поля не обязательно — укажите только то, что уже знаете, а остальное оставьте пустым: <strong>чем меньше заполнено, тем больше свободы и случайного рандома будет у ИИ</strong>.<br/><span style="color:var(--nmf-text-muted)">Анкета ведёт подбор в <strong>Свайпах</strong>, а в <strong>Блице</strong> и <strong>Задумке</strong> её можно включать или отключать галочкой. На <strong>Гачу</strong> она не влияет (у Гачи своя шторка прямо над призывами).</span>',
-                                '<strong>How it works:</strong> start here to guide your session. Every field is optional — fill only what matters to you and leave the rest blank: <strong>the fewer fields you fill, the more creative freedom and randomness AI gets</strong>.<br/><span style="color:var(--nmf-text-muted)">Used in <strong>Swipes</strong>, optional toggle in <strong>Blitz</strong> and <strong>Idea</strong>. Never affects <strong>Gacha</strong> (Gacha has its own drawer right above summons).</span>',
-                            )}
-                        </div>
-
-                        <div class="nmf-sub-group">
-                            <div class="nmf-field">
-                                <label class="nmf-label"><span>${esc(tx('Кого или что создаём', 'What Are We Creating'))}</span></label>
-                                <select class="nmf-select" data-intake="originType" ${sess.frozen ? 'disabled' : ''}>
-                                    <option value="oc" ${it.originType === 'oc' ? 'selected' : ''}>${esc(tx('Персонаж — Оригинальный герой (OC)', 'Character — Original (OC)'))}</option>
-                                    <option value="canon" ${it.originType === 'canon' ? 'selected' : ''}>${esc(tx('Персонаж — Канонный герой из фандома', 'Character — Canon from Fandom'))}</option>
-                                    <option value="fandom_au" ${it.originType === 'fandom_au' ? 'selected' : ''}>${esc(tx('Персонаж — Герой фандома в другой вселенной (AU)', 'Character — Fandom AU'))}</option>
-                                    <option value="fandom_oc" ${it.originType === 'fandom_oc' ? 'selected' : ''}>${esc(tx('Персонаж — Новый герой внутри фандома', 'Character — OC in Fandom'))}</option>
-                                    <option value="duo_group" ${it.originType === 'duo_group' ? 'selected' : ''}>${esc(tx('Дуэт или группа (2–3 персонажа)', 'Duo / Group (2–3 characters)'))}</option>
-                                    <option value="world_sandbox" ${it.originType === 'world_sandbox' ? 'selected' : ''}>${esc(tx('Мир / Сеттинг-песочница', 'World / Sandbox Setting'))}</option>
-                                    <option value="rpg_gm" ${it.originType === 'rpg_gm' ? 'selected' : ''}>${esc(tx('РПГ-Мастер / Ведущий приключения', 'RPG Game Master'))}</option>
-                                    <option value="artifact_object" ${it.originType === 'artifact_object' ? 'selected' : ''}>${esc(tx('Особый предмет или артефакт', 'Special Artifact / Object'))}</option>
-                                </select>
-                            </div>
-
-                            <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Фандом или вселенная (необязательно)', 'Fandom or Universe (Optional)'))}</label>
-                                <input type="text" class="nmf-input" data-intake="fandomName" value="${esc(it.fandomName)}" placeholder="${esc(tx('Пусто = авторский мир ИИ, или укажите фандом...', 'Blank = original world, or name a fandom...'))}" ${sess.frozen ? 'disabled' : ''}/>
-                            </div>
-
-                            <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Сеттинг, эпоха или декорации', 'Setting, Era, or Backdrop'))}</label>
-                                <input type="text" class="nmf-input" data-intake="settingEra" value="${esc(it.settingEra)}" placeholder="${esc(tx('Например: портовый город, тёмное фэнтези, закрытый университет...', 'e.g. Port city, dark fantasy, winter metropolis...'))}" ${sess.frozen ? 'disabled' : ''}/>
-                            </div>
-
-                            <div class="nmf-field">
-                                <label class="nmf-label">${esc(worldMode
-                                    ? tx('Кем начинает игрок и какое приключение вы хотите', 'Player Role & Desired Adventure')
-                                    : tx('Какую историю и отношение к себе вы ищете', 'Desired Story & Dynamic with You'))}</label>
-                                <textarea class="nmf-textarea" style="min-height:70px" data-intake="userRoleAndDesire" placeholder="${esc(tx('Опишите пару штрихов или оставьте пустым на усмотрение ИИ...', 'Add a few hints or leave blank for AI surprise...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(it.userRoleAndDesire)}</textarea>
-                            </div>
-
-                            <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Жанры и настроение', 'Genres & Mood'))}</label>
-                                <div class="nmf-chip-wrap">
-                                    ${GENRE_PRESETS.map((g) => `
-                                        <button type="button" class="nmf-chip ${(it.genres || []).includes(g) ? 'nmf-on' : ''}" data-act="toggle-genre" data-genre="${esc(g)}">${esc(localizeGenreTag(g))}</button>
-                                    `).join('')}
-                                </div>
-                                <input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="customGenres" value="${esc(it.customGenres)}" placeholder="${esc(tx('Свои жанры или теги через запятую...', 'Extra genres or tags...'))}" ${sess.frozen ? 'disabled' : ''}/>
-                                ${renderTagAssistBoxHtml({ targetKey: 'intake_customGenres', category: 'vibe', currentValue: it.customGenres, separator: ', ', sess, cfg })}
-                            </div>
-                        </div>
-
-                        <details class="nmf-spoiler" ${(it.favFandomHero || it.tropesWanted || it.hardBans || (it.targetGender && it.targetGender !== 'any')) ? 'open' : ''}>
-                            <summary><span>${esc(tx('Типаж, пол, рейтинг и стоп-лист (по желанию)', 'Archetype, Gender, Rating & Bans (Optional)'))}</span>${NMF_ICONS.chevronDown}</summary>
-                            <div class="nmf-spoiler-body">
-                                <div class="nmf-grid-2-compact">
-                                    <div class="nmf-field">
-                                        <label class="nmf-label">${esc(tx('Ваш пол (Игрок)', 'Your Gender'))}</label>
-                                        <select class="nmf-select" data-intake="userGender" ${sess.frozen ? 'disabled' : ''}>
-                                            ${USER_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(it.userGender || 'any') === g.id ? 'selected' : ''}>${esc(localizeOptionLabel('userGender', g.id, g.label))}</option>`).join('')}
-                                        </select>
-                                        ${it.userGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="userGenderCustom" value="${esc(it.userGenderCustom || '')}" placeholder="${esc(tx('Свой вариант...', 'Custom...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                                    </div>
-                                    <div class="nmf-field">
-                                        <label class="nmf-label">${esc(worldMode ? tx('Фокус персонажей', 'NPC Gender') : tx('Пол персонажа', 'Character Gender'))}</label>
-                                        <select class="nmf-select" data-intake="targetGender" ${sess.frozen ? 'disabled' : ''}>
-                                            ${TARGET_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(it.targetGender || 'any') === g.id ? 'selected' : ''}>${esc(localizeOptionLabel('targetGender', g.id, g.label))}</option>`).join('')}
-                                        </select>
-                                        ${it.targetGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="targetGenderCustom" value="${esc(it.targetGenderCustom || '')}" placeholder="${esc(tx('Свой вариант...', 'Custom...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                                    </div>
-                                </div>
-
-                                <div class="nmf-field">
-                                    <label class="nmf-label">${esc(tx('Возрастной рейтинг', 'Content Rating'))}</label>
-                                    <select class="nmf-select" data-intake="rating" ${sess.frozen ? 'disabled' : ''}>
-                                        ${RATING_OPTIONS.map((r) => `<option value="${r.id}" ${it.rating === r.id ? 'selected' : ''}>${esc(localizeOptionLabel('rating', r.id, r.label))}</option>`).join('')}
-                                    </select>
-                                </div>
-
-                                ${ratingObj.warn ? `
-                                <div class="nmf-warn-box" style="font-size:11.5px">
-                                    ${NMF_ICONS.warn}
-                                    <span>${esc(ratingObj.warn)}</span>
-                                </div>` : ''}
-
-                                <div class="nmf-field">
-                                    <label class="nmf-label">${esc(worldMode ? tx('Похожие произведения для ориентира', 'Reference Works / Vibe') : tx('Похожий герой из фандомов (для ориентира характера)', 'Reference Character Vibe'))}</label>
-                                    <input type="text" class="nmf-input" data-intake="favFandomHero" value="${esc(it.favFandomHero)}" placeholder="${esc(tx('Например: Астарион, Ким Кицураги, Шерлок...', 'e.g. Astarion, Kim Kitsuragi...'))}" ${sess.frozen ? 'disabled' : ''}/>
-                                </div>
-
-                                <div class="nmf-field">
-                                    <label class="nmf-label">${esc(tx('Любимые тропы и детали', 'Favorite Tropes & Details'))}</label>
-                                    <input type="text" class="nmf-input" data-intake="tropesWanted" value="${esc(it.tropesWanted)}" placeholder="${esc(tx('Медленное сближение, старый долг, сухая ирония...', 'Slow burn, old debt, dry wit...'))}" ${sess.frozen ? 'disabled' : ''}/>
-                                    ${renderTagAssistBoxHtml({ targetKey: 'intake_tropesWanted', category: 'vibe', currentValue: it.tropesWanted, separator: ', ', sess, cfg })}
-                                </div>
-
-                                <div class="nmf-field">
-                                    <label class="nmf-label">${esc(tx('Стоп-лист (чего точно избегать)', 'Hard Bans (Strictly Avoid)'))}</label>
-                                    <input type="text" class="nmf-input" data-intake="hardBans" value="${esc(it.hardBans)}" placeholder="${esc(tx('Через запятую всё, чего не должно быть...', 'Comma-separated items to avoid...'))}" ${sess.frozen ? 'disabled' : ''}/>
-                                    ${renderTagAssistBoxHtml({ targetKey: 'intake_hardBans', category: 'ban', currentValue: it.hardBans, separator: ', ', sess, cfg })}
-                                </div>
-                            </div>
-                        </details>
-
-                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-                            ${hasStoryFilled ? `
-                            <button type="button" class="nmf-btn-secondary nmf-btn-danger" data-act="clear-session-intake" ${sess.frozen ? 'disabled' : ''}>
-                                ${NMF_ICONS.trash} ${esc(tx('Очистить анкету', 'Clear Questionnaire'))}
-                            </button>` : '<span></span>'}
-                            <button type="button" class="nmf-btn-primary" data-act="toggle-home-card" data-hcard="intake">
-                                ${esc(tx('Готово · Свернуть', 'Done · Collapse'))}
-                            </button>
-                        </div>
-                    </div>` : ''}
-                </div>
-
-                <!-- DRAWER #2: UNIFIED AI TRANSPORT + TEMPLATES + LANGUAGES + GREETINGS -->
+                <!-- DRAWER #2: UNIFIED AI TRANSPORT + STYLE + LANGUAGES + V2 TEMPLATES -->
                 <div class="nmf-drawer-block">
                     <button type="button" class="nmf-drawer-trigger ${setupOpen ? 'nmf-open' : ''}" data-act="toggle-home-card" data-hcard="setup">
                         <span class="nmf-tile-icon nmf-tint-warm">${NMF_ICONS.doc}</span>
                         <span class="nmf-row-copy">
-                            <strong>${esc(tx('Формат, ИИ и языки', 'Format, AI & Languages'))}</strong>
+                            <strong>${esc(tx('Профиль, стиль и языки', 'Profile, Style & Languages'))}</strong>
                             <small>${esc(setupSummaryLine)}</small>
                         </span>
                         <span class="nmf-row-chevron ${setupOpen ? 'nmf-rot' : ''}">${NMF_ICONS.chevronRight}</span>
@@ -1724,6 +2056,59 @@ function renderHomeTab(sess) {
 
                     ${setupOpen ? `
                     <div class="nmf-drawer-content">
+                        <!-- 0. GLOBAL / REUSABLE SETTINGS PROFILE BAR -->
+                            <!-- UNIFIED PROFILE BAR -->
+                            <div class="nmf-sub-group" style="display:flex;flex-direction:column;gap:8px">
+                                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                                    <span style="font-size:11.5px;font-weight:600;color:var(--nmf-text)">
+                                        ${esc(tx('Профиль настроек (для всех сессий)', 'Settings Profile (for all sessions)'))}
+                                    </span>
+                                    <button type="button" class="nmf-story-mode-mini-btn" data-act="open-new-style-profile" ${sess.frozen ? 'disabled' : ''}>
+                                        ${NMF_ICONS.plus} <span>${esc(tx('Новый профиль', 'New Profile'))}</span>
+                                    </button>
+                                </div>
+
+                                <select class="nmf-select" data-style-profile-select="1" ${sess.frozen ? 'disabled' : ''}>
+                                    <option value="" ${!activeStyleProf ? 'selected' : ''}>${esc(tx('Настройки только этой сессии (без профиля)', 'Current session only (no profile selected)'))}</option>
+                                    ${styleProfiles.map((prof) => {
+                                        const isDef = defaultProfId === prof.id;
+                                        const suffix = isDef ? tx(' (по умолчанию)', ' (default)') : '';
+                                        return `<option value="${esc(prof.id)}" ${activeStyleProf?.id === prof.id ? 'selected' : ''}>${esc(prof.name + suffix)}</option>`;
+                                    }).join('')}
+                                </select>
+
+                                ${state.styleProfileDraftMode ? `
+                                <div style="display:flex;flex-direction:column;gap:7px;padding:8px;border:1px solid var(--nmf-border-active);border-radius:var(--nmf-radius);background:var(--nmf-bg)">
+                                    <label class="nmf-label" style="margin:0">${esc(state.styleProfileDraftMode === 'rename' ? tx('Новое название профиля', 'Rename Profile') : tx('Название нового профиля', 'New Profile Name'))}</label>
+                                    <input type="text" class="nmf-input" id="nmf-style-prof-name-input" data-style-prof-draft="name" value="${esc(state.styleProfileDraftName)}" placeholder="${esc(tx('Например: Мой EN + перевод в альте', 'e.g. Full English + Translated Alt'))}"/>
+                                    ${state.styleProfileDraftMode === 'create' ? `
+                                    <label style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--nmf-text-muted);cursor:pointer">
+                                        <input type="checkbox" data-style-prof-draft="makeDefault" ${state.styleProfileMakeDefault ? 'checked' : ''}/>
+                                        <span>${esc(tx('Сразу использовать по умолчанию в каждой новой сессии', 'Automatically apply to every new session by default'))}</span>
+                                    </label>` : ''}
+                                    <div style="display:flex;justify-content:flex-end;gap:6px">
+                                        <button type="button" class="nmf-btn-secondary" style="min-height:32px;padding:0 10px" data-act="cancel-style-profile-draft">${esc(tx('Отмена', 'Cancel'))}</button>
+                                        <button type="button" class="nmf-btn-primary" style="min-height:32px;padding:0 12px" data-act="save-style-profile-draft">
+                                            ${NMF_ICONS.check} <span>${esc(tx('Сохранить', 'Save'))}</span>
+                                        </button>
+                                    </div>
+                                </div>` : (activeStyleProf ? `
+                                <div class="nmf-tile-actions" style="padding:0">
+                                    <button type="button" class="nmf-btn-secondary" style="flex:1;font-size:11px;padding:0 8px" data-act="update-active-style-profile" ${sess.frozen ? 'disabled' : ''} title="${esc(tx('Записать текущие поля в этот профиль', 'Save current fields into this profile'))}">
+                                        ${NMF_ICONS.save} <span>${esc(tx('Сохранить', 'Save'))}</span>
+                                    </button>
+                                    <button type="button" class="${defaultProfId === activeStyleProf.id ? 'nmf-btn-primary' : 'nmf-btn-secondary'}" style="flex:1;font-size:11px;padding:0 8px" data-act="toggle-default-style-profile" ${sess.frozen ? 'disabled' : ''} title="${esc(tx('Автоматически подставлять в новых сессиях', 'Auto-apply in new sessions'))}">
+                                        ${NMF_ICONS.star} <span>${esc(defaultProfId === activeStyleProf.id ? tx('По умолч.', 'Default') : tx('В дефолт', 'Set Def.'))}</span>
+                                    </button>
+                                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="open-rename-style-profile" ${sess.frozen ? 'disabled' : ''} title="${esc(tx('Переименовать профиль', 'Rename profile'))}">
+                                        ${NMF_ICONS.editSmall}
+                                    </button>
+                                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="delete-active-style-profile" ${sess.frozen ? 'disabled' : ''} title="${esc(tx('Удалить профиль', 'Delete profile'))}">
+                                        ${NMF_ICONS.trash}
+                                    </button>
+                                </div>` : '')}
+                            </div>
+
                         <!-- 1. TRANSPORT -->
                         <div class="nmf-sub-group">
                             <div class="nmf-sub-group-title">
@@ -1740,8 +2125,12 @@ function renderHomeTab(sess) {
                             <div style="font-size:12px;line-height:1.45;color:var(--nmf-text-muted)">${esc(trExplain)}</div>
                             ${curModeKey === 'prefill_user_msg' ? `
                             <details class="nmf-spoiler">
-                                <summary><span>${esc(tx('Дополнительно: очистка чужого чата и промпт коррекции', 'Advanced: Chat Cleanup & Override'))}</span>${NMF_ICONS.chevronDown}</summary>
+                                <summary><span>${esc(tx('Дополнительно: потоковый режим, очистка чата и коррекция', 'Advanced: Streaming, Chat Cleanup & Override'))}</span>${NMF_ICONS.chevronDown}</summary>
                                 <div class="nmf-spoiler-body">
+                                    <div class="nmf-toggle-line" data-act="toggle-ext-streaming">
+                                        <span style="font-size:11.5px;font-weight:600">${esc(tx('Стриминг ответов внутри расширения (пресет Таверны не меняется)', 'Stream responses inside extension (Tavern preset untouched)'))}</span>
+                                        <div class="nmf-switch ${cfg.enableStreaming ? 'nmf-on' : ''}"></div>
+                                    </div>
                                     <div class="nmf-toggle-line" data-act="toggle-strip-active-char">
                                         <span style="font-size:11.5px;font-weight:600">${esc(tx('Исключать из пресета поля открытого чара и Лорбука', 'Strip open character & Lorebook macros from preset'))}</span>
                                         <div class="nmf-switch ${cfg.stripActiveCharFromPreset !== false ? 'nmf-on' : ''}"></div>
@@ -1754,109 +2143,110 @@ function renderHomeTab(sess) {
                             </details>` : ''}
                         </div>
 
-                        <!-- 2. CARD TEMPLATES & WORD COUNT -->
-                        <div class="nmf-sub-group">
+                        <!-- 2. CARD TEMPLATES & WORD COUNT (STRICTLY V2 & CREATE ONLY) -->
+                        <details class="nmf-spoiler" ${state.tplInspectorOpen || state.tplCreatorOpen || state.tplExtractorOpen ? 'open' : ''}>
+                            <summary>
+                                <span>${esc(tx('2. Формат и объём V2-карточки (только для сборки V2 и раздела «Создать»)', '2. V2 Card Template & Length (V2 Synthesis & Create Only)'))}</span>
+                                ${NMF_ICONS.chevronDown}
+                            </summary>
+                            <div class="nmf-spoiler-body">
+                                <span style="font-size:11px;color:var(--nmf-text-muted);line-height:1.38">
+                                    ${esc(tx('Применяется строго при сборке полных V2-карточек, в «Задумке» и в «Перенести AU» (не отправляется в Свайпы, Гачу и вопросы Блица).', 'Applied strictly when synthesizing full V2 cards, Free Idea, and AU Shift (never sent to Swipes, Gacha, or Blitz questions).'))}
+                                </span>
+                                ${renderTemplateManagerWidgetHtml({ sess, cfg, state, esc, rosterChars: state.rosterChars || [] })}
+
+                                <div class="nmf-field">
+                                    <label class="nmf-label">${esc(tx('Объём описания карточки', 'Card Description Length'))}</label>
+                                    <select class="nmf-select" data-intake="wordBudgetId" ${sess.frozen ? 'disabled' : ''}>
+                                        ${WORD_BUDGETS.map((b) => `<option value="${b.id}" ${it.wordBudgetId === b.id ? 'selected' : ''}>${esc(localizeOptionLabel('wordBudget', b.id, b.label))}</option>`).join('')}
+                                    </select>
+                                    ${it.wordBudgetId === 'custom' ? `<input type="number" min="100" max="4000" class="nmf-input" style="margin-top:4px!important" data-intake="customWords" value="${Number(it.customWords) || 800}"/>` : ''}
+                                </div>
+
+                                <div class="nmf-field">
+                                    <label class="nmf-label">${esc(tx('Объём первого сообщения', 'Opening Scene Length'))}</label>
+                                    <select class="nmf-select" data-intake="greetingBudgetId" ${sess.frozen ? 'disabled' : ''}>
+                                        ${GREETING_BUDGETS.map((b) => `<option value="${b.id}" ${it.greetingBudgetId === b.id ? 'selected' : ''}>${esc(localizeOptionLabel('greetingBudget', b.id, b.label))}</option>`).join('')}
+                                    </select>
+                                    ${it.greetingBudgetId === 'custom' ? `<input type="number" min="50" max="2000" class="nmf-input" style="margin-top:4px!important" data-intake="customGreetingWords" value="${Number(it.customGreetingWords) || 320}"/>` : ''}
+                                </div>
+                            </div>
+                        </details>
+
+                        <!-- 3. UNIFIED LANGUAGES, STYLE & SAVED PROFILES -->
+                        <div class="nmf-sub-group" id="nmf-home-langstyle-panel">
                             <div class="nmf-sub-group-title">
-                                <span>${esc(tx('2. Шаблон и объём карточки', '2. Card Template & Length'))}</span>
-                            </div>
-                            ${renderTemplateManagerWidgetHtml({ sess, cfg, state, esc, rosterChars: state.rosterChars || [] })}
-
-                            <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Объём описания карточки', 'Card Description Length'))}</label>
-                                <select class="nmf-select" data-intake="wordBudgetId" ${sess.frozen ? 'disabled' : ''}>
-                                    ${WORD_BUDGETS.map((b) => `<option value="${b.id}" ${it.wordBudgetId === b.id ? 'selected' : ''}>${esc(localizeOptionLabel('wordBudget', b.id, b.label))}</option>`).join('')}
-                                </select>
-                                ${it.wordBudgetId === 'custom' ? `<input type="number" min="100" max="4000" class="nmf-input" style="margin-top:4px!important" data-intake="customWords" value="${Number(it.customWords) || 800}"/>` : ''}
-                            </div>
-
-                            <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Объём первого сообщения', 'Opening Scene Length'))}</label>
-                                <select class="nmf-select" data-intake="greetingBudgetId" ${sess.frozen ? 'disabled' : ''}>
-                                    ${GREETING_BUDGETS.map((b) => `<option value="${b.id}" ${it.greetingBudgetId === b.id ? 'selected' : ''}>${esc(localizeOptionLabel('greetingBudget', b.id, b.label))}</option>`).join('')}
-                                </select>
-                                ${it.greetingBudgetId === 'custom' ? `<input type="number" min="50" max="2000" class="nmf-input" style="margin-top:4px!important" data-intake="customGreetingWords" value="${Number(it.customGreetingWords) || 320}"/>` : ''}
-                            </div>
-                        </div>
-
-                        <!-- 3. LANGUAGES -->
-                        <div class="nmf-sub-group">
-                            <div class="nmf-sub-group-title">
-                                <span>${esc(tx('3. Языки генерации', '3. Generation Languages'))}</span>
+                                <span>${esc(tx('3. Языки, подача и мои правила', '3. Languages, Scene Style & My Rules'))}</span>
                                 ${helpBtn('languages')}
                             </div>
-                            <div class="nmf-chip-wrap">
-                                ${SIMPLE_LANGUAGE_SCENARIOS.map((sc) => {
-                                    const active = curLangScenarioId === sc.id;
-                                    return `<button type="button" class="nmf-chip ${active ? 'nmf-on' : ''}" data-act="pick-simple-lang-scenario" data-lscen="${esc(sc.id)}" ${sess.frozen ? 'disabled' : ''}>${esc(isEn() ? sc.shortEn : sc.shortRu)}</button>`;
-                                }).join('')}
-                            </div>
 
-                            <details class="nmf-spoiler" ${(userLangPreset === '__custom__' || cardLangPreset === '__custom__' || fmLangPreset === '__custom__') ? 'open' : ''}>
-                                <summary><span>${esc(tx('Точный выбор языка для каждого поля', 'Choose Each Field Language Separately'))}</span>${NMF_ICONS.chevronDown}</summary>
-                                <div class="nmf-spoiler-body">
-                                    <div class="nmf-field">
-                                        <label class="nmf-label">${esc(tx('Язык анкет, превью и вопросов', 'Questionnaires, Previews & Quizzes'))}</label>
-                                        <select class="nmf-select" data-lang-preset="userLanguage" ${sess.frozen ? 'disabled' : ''}>
-                                            ${LANGUAGE_PRESET_OPTIONS.filter((o) => o.id !== 'Описание EN + Сцена {{language}}').map((o) => `<option value="${esc(o.id)}" ${userLangPreset === o.id ? 'selected' : ''}>${esc(isEn() ? (o.labelEn || o.label) : o.label)}</option>`).join('')}
-                                        </select>
-                                        ${userLangPreset === '__custom__' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="userLanguage" value="${esc(stripAccidentalLanguageBraces(it.userLanguage))}" placeholder="${esc(tx('Например: Русский, Italiano...', 'e.g. English, Italiano...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                                    </div>
-                                    <div class="nmf-field">
-                                        <label class="nmf-label">${esc(tx('Язык описания карточки (Description)', 'Card Description Language'))}</label>
-                                        <select class="nmf-select" data-card-lang-preset="1" ${sess.frozen ? 'disabled' : ''}>
-                                            ${CARD_DESCRIPTION_LANGUAGE_OPTIONS.map((o) => `<option value="${esc(o.id)}" ${cardLangPreset === o.id ? 'selected' : ''}>${esc(isEn() ? (o.labelEn || o.label) : o.label)}</option>`).join('')}
-                                        </select>
-                                        ${cardLangPreset === '__custom__' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="cardLanguageCustom" value="${esc(stripAccidentalLanguageBraces(it.cardLanguageCustom || (it.cardLanguage !== '__custom__' ? it.cardLanguage : '')))}" placeholder="${esc(tx('Язык описания...', 'Description language...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                                    </div>
-                                    <div class="nmf-field">
-                                        <label class="nmf-label">${esc(tx('Язык первого сообщения', 'First Message Language'))}</label>
-                                        <select class="nmf-select" data-fm-lang-preset="1" ${sess.frozen ? 'disabled' : ''}>
-                                            ${FIRST_MES_LANGUAGE_OPTIONS.map((o) => `<option value="${esc(o.id)}" ${fmLangPreset === o.id ? 'selected' : ''}>${esc(isEn() ? (o.labelEn || o.label) : o.label)}</option>`).join('')}
-                                        </select>
-                                        ${fmLangPreset === '__custom__' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="firstMesLanguageCustom" value="${esc(stripAccidentalLanguageBraces(it.firstMesLanguageCustom || (it.firstMesLanguage !== '__custom__' ? it.firstMesLanguage : '')))}" placeholder="${esc(tx('Язык первого сообщения...', 'First message language...'))}" ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                                    </div>
-                                </div>
-                            </details>
-                        </div>
-
-                        <!-- 4. GREETINGS & WRITING STYLE -->
-                        <div class="nmf-sub-group">
-                            <div class="nmf-sub-group-title">
-                                <span>${esc(tx('4. Приветствия и подача первой сцены', '4. Greetings & Opening Scene Style'))}</span>
+                            <!-- CLEAN LANGUAGE INPUTS -->
+                            <div style="font-size:11.5px;color:var(--nmf-text-muted);line-height:1.42">
+                                ${esc(tx(`По умолчанию (если оставить поля пустыми) используется язык Таверны: ${tavernLangLabel}. Просто впишите нужный язык своими словами.`, `If left blank, Tavern's default language (${tavernLangLabel}) is used automatically. Simply type the language you want.`))}
                             </div>
 
                             <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Дополнительные приветствия (альты)', 'Alternate Greetings'))}</label>
-                                <div class="nmf-chip-wrap">
-                                    ${ALT_GREETING_COUNT_OPTIONS.map((cnt) => {
-                                        const lbl = cnt === 0 ? tx('Без альтов', '0 · None') : tx(`${cnt} альт.`, `${cnt} alt${cnt > 1 ? 's' : ''}`);
-                                        return `<button type="button" class="nmf-chip ${curAltCntHome === cnt ? 'nmf-on' : ''}" data-act="set-intake-alt-count" data-cnt="${cnt}" ${sess.frozen ? 'disabled' : ''}>${esc(lbl)}</button>`;
-                                    }).join('')}
-                                </div>
-                                ${curAltCntHome > 0 ? `
-                                <div class="nmf-panel-sub" style="margin-top:4px;display:flex;flex-direction:column;gap:7px">
-                                    ${Array.from({ length: curAltCntHome }, (_, idx) => {
-                                        const curVal = (Array.isArray(it.altGreetingLangs) ? it.altGreetingLangs[idx] : '') || 'same_as_card';
-                                        const knownAlt = ALT_GREETING_LANG_OPTIONS.some((opt) => opt.id === curVal);
-                                        const selAltVal = knownAlt ? curVal : '__custom__';
-                                        return `
-                                        <div class="nmf-field">
-                                            <span style="font-size:11px;font-weight:600;color:var(--nmf-text-muted)">${esc(tx(`Альт-приветствие #${idx + 1}`, `Alt Greeting #${idx + 1}`))}</span>
-                                            <select class="nmf-select" data-alt-lang-idx="${idx}" ${sess.frozen ? 'disabled' : ''}>
-                                                ${ALT_GREETING_LANG_OPTIONS.map((opt) => `<option value="${esc(opt.id)}" ${selAltVal === opt.id ? 'selected' : ''}>${esc(isEn() ? opt.labelEn : opt.label)}</option>`).join('')}
-                                                <option value="__custom__" ${selAltVal === '__custom__' ? 'selected' : ''}>${esc(tx('Свой язык вручную...', 'Custom language...'))}</option>
-                                            </select>
-                                            ${selAltVal === '__custom__' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-alt-custom-idx="${idx}" value="${esc(curVal === '__custom__' ? '' : curVal)}" placeholder="Español, Italiano..." ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                                        </div>`;
-                                    }).join('')}
-                                </div>` : ''}
+                                <label class="nmf-label" style="margin-bottom:1px">${esc(tx('Язык чтений, анкет и описаний в ленте', 'Preview, Feed & Quiz Language'))}</label>
+                                <span style="font-size:11px;color:var(--nmf-text-muted)">${esc(tx('Влияет на превью в Свайпах и Гаче, вопросы Блиц-опроса и язык переводного альта', 'Affects Swipe & Gacha previews, Blitz questions, and translated alt target'))}</span>
+                                <input type="text" class="nmf-input" data-clean-lang="user" value="${esc(cleanUserLangVal)}" placeholder="${esc(tx(`По умолчанию — ${tavernLangLabel}`, `Default — ${tavernLangLabel}`))}" ${sess.frozen ? 'disabled' : ''}/>
                             </div>
 
                             <div class="nmf-field">
-                                <label class="nmf-label">${esc(tx('Литературный стиль первой сцены', 'Scene Writing Style'))}</label>
+                                <label class="nmf-label" style="margin-bottom:1px">${esc(tx('Язык карточек', 'Card Language'))}</label>
+                                <span style="font-size:11px;color:var(--nmf-text-muted)">${esc(tx('Влияет на Описание, Личность, Сценарий, Примеры диалогов и Заметки автора (Creator Notes)', 'Affects Description, Personality, Scenario, Example Dialogue, and Creator Notes'))}</span>
+                                <input type="text" class="nmf-input" data-clean-lang="card" value="${esc(cleanCardLangVal)}" placeholder="${esc(tx(`По умолчанию — ${tavernLangLabel} (например: English)`, `Default — ${tavernLangLabel} (e.g. English)`))}" ${sess.frozen ? 'disabled' : ''}/>
+                            </div>
+
+                            <div class="nmf-field">
+                                <label class="nmf-label" style="margin-bottom:1px">${esc(tx('Язык основного сообщения', 'Main First Message Language'))}</label>
+                                <span style="font-size:11px;color:var(--nmf-text-muted)">${esc(tx('Влияет на Первое ролевое сообщение (открывающую сцену)', 'Affects the Main First Message (opening roleplay scene)'))}</span>
+                                <input type="text" class="nmf-input" data-clean-lang="firstMes" value="${esc(cleanFmLangVal)}" placeholder="${esc(tx(`По умолчанию — ${tavernLangLabel} (например: English)`, `Default — ${tavernLangLabel} (e.g. English)`))}" ${sess.frozen ? 'disabled' : ''}/>
+                            </div>
+
+                            <div class="nmf-field">
+                                <label class="nmf-label">${esc(tx('Нужен ли +1 Альт на языке описаний / чтения?', 'Add +1 Translated Alt Greeting?'))}</label>
+                                <div class="nmf-seg-bar">
+                                    <button type="button" class="nmf-seg-btn ${!wantTranslatedAlt ? 'nmf-active' : ''}" data-act="set-translated-alt-toggle" data-val="0" ${sess.frozen ? 'disabled' : ''}>
+                                        ${esc(tx('Нет', 'No'))}
+                                    </button>
+                                    <button type="button" class="nmf-seg-btn ${wantTranslatedAlt ? 'nmf-active' : ''}" data-act="set-translated-alt-toggle" data-val="1" ${sess.frozen ? 'disabled' : ''}>
+                                        ${esc(tx('Да', 'Yes'))}
+                                    </button>
+                                </div>
+                                <span id="nmf-tr-alt-live-hint" style="font-size:11px;color:var(--nmf-text-muted)">${esc(buildTranslatedAltHintText(it))}</span>
+                            </div>
+
+                            <div style="height:1px;background:var(--nmf-border);margin:2px 0"></div>
+
+                            <!-- SCENE STYLE, POV & SAVED CUSTOM RULES -->
+                            <div class="nmf-field">
+                                <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:5px">
+                                    <label class="nmf-label" style="margin-bottom:0!important">${esc(tx('Литературный стиль', 'Writing Style'))}</label>
+                                    ${(it.greetingStyle || 'fanfic') !== 'preserve' ? `
+                                    <button type="button" class="nmf-story-mode-mini-btn ${state.greetingStyleInspectorOpen ? 'nmf-on' : ''}" data-act="toggle-greeting-style-inspector" ${sess.frozen ? 'disabled' : ''}>
+                                        ${NMF_ICONS.editSmall}
+                                        <span>${esc(state.greetingStyleInspectorOpen ? tx('Скрыть промпт', 'Hide Prompt') : tx('Промпт', 'Prompt'))}</span>
+                                    </button>` : ''}
+                                </div>
                                 <select class="nmf-select" data-intake="greetingStyle" ${sess.frozen ? 'disabled' : ''}>
                                     ${GREETING_STYLES.map((s) => `<option value="${s.id}" ${(it.greetingStyle || 'fanfic') === s.id ? 'selected' : ''}>${esc(localizeOptionLabel('greetingStyle', s.id, s.label))}</option>`).join('')}
                                 </select>
+                                ${state.greetingStyleInspectorOpen && (it.greetingStyle || 'fanfic') !== 'preserve' ? (() => {
+                                    const gStyleId = it.greetingStyle || 'fanfic';
+                                    const curStylePrompt = getEffectiveGreetingStylePrompt(gStyleId);
+                                    const hasStyleOv = Boolean(cfg?.builtinPromptOverrides?.greetingStyles?.[gStyleId]);
+                                    return `
+                                    <div class="nmf-tpl-inspector" style="margin-top:6px">
+                                        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
+                                            <span style="font-size:11.5px;font-weight:600;color:var(--nmf-text)">${esc(tx('Промпт выбранного стиля (редактируется напрямую)', 'Selected Style Prompt (freely editable)'))}</span>
+                                            ${hasStyleOv ? `
+                                            <button type="button" class="nmf-chip" data-act="reset-builtin-greeting-style" data-style-id="${esc(gStyleId)}" ${sess.frozen ? 'disabled' : ''}>
+                                                ${NMF_ICONS.undo} <span>${esc(tx('Сбросить к стандарту', 'Reset Default'))}</span>
+                                            </button>` : ''}
+                                        </div>
+                                        <textarea class="nmf-textarea" style="min-height:90px;font-family:var(--nmf-font-mono);font-size:11px" data-builtin-gstyle-prompt="${esc(gStyleId)}" ${sess.frozen ? 'disabled' : ''}>${esc(curStylePrompt)}</textarea>
+                                    </div>`;
+                                })() : ''}
                             </div>
 
                             <div class="nmf-grid-2-compact">
@@ -1875,16 +2265,95 @@ function renderHomeTab(sess) {
                                 </div>
                             </div>
 
-                            <details class="nmf-spoiler" ${it.greetingCustomRules ? 'open' : ''}>
-                                <summary><span>${esc(tx('Особые правила разметки текста (по желанию)', 'Custom Formatting Rules (Optional)'))}</span>${NMF_ICONS.chevronDown}</summary>
+                            <div class="nmf-field">
+                                <label class="nmf-label" style="margin-bottom:1px">${esc(tx('Мои особые правила разметки и заметки для ИИ', 'My Custom Formatting Rules & Persistent AI Notes'))}</label>
+                                <span style="font-size:11px;color:var(--nmf-text-muted)">${esc(tx('Кавычки, мысли, постоянные пожелания к стилю и карточке — сохраняются вместе с профилем', 'Dialogue/thought formatting and permanent card rules — saved inside your profile'))}</span>
+                                <div class="nmf-expandable-box">
+                                    <textarea class="nmf-textarea" style="min-height:74px" data-intake="greetingCustomRules" placeholder="${esc(tx('Например: "Диалоги" — в кавычках, мысли в *звёздочках*, без штампов...', 'e.g. "Dialogue" in quotes, *thoughts* in asterisks...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(it.greetingCustomRules)}</textarea>
+                                    <button type="button" class="nmf-expand-box-btn" data-act="open-fs-field" data-fs-kind="intake" data-fs-field="greetingCustomRules" data-fs-title="${esc(tx('Мои особые правила разметки и заметки для ИИ', 'My Custom Rules & Persistent AI Notes'))}" data-fs-ph="${esc(tx('Например: "Диалоги" — в кавычках, мысли в *звёздочках*...', 'e.g. "Dialogue" in quotes, *thoughts* in asterisks...'))}" title="${esc(tx('На весь экран', 'Fullscreen'))}">
+                                        ${NMF_ICONS.expandField}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <details class="nmf-spoiler" ${extraScenesCnt > 0 ? 'open' : ''}>
+                                <summary><span>${esc(tx('Дополнительные сюжетные завязки (по желанию)', 'Extra Alternative Scene Hooks (Optional)'))}</span>${NMF_ICONS.chevronDown}</summary>
                                 <div class="nmf-spoiler-body">
-                                    <textarea class="nmf-textarea" style="min-height:56px" data-intake="greetingCustomRules" placeholder="${esc(tx('Например: прямая речь через тире, мысли курсивом...', 'e.g. Dialogue in quotes, thoughts in italics...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(it.greetingCustomRules)}</textarea>
+                                    <span style="font-size:11px;color:var(--nmf-text-muted)">${esc(tx('Добавляет ещё альтернативные свайпы первой сцены с другими ситуациями встречи на основном языке сообщения', 'Adds extra alternative opening scene swipes in the Main First Message language'))}</span>
+                                    <div class="nmf-chip-wrap">
+                                        ${[0, 1, 2, 3].map((cnt) => {
+                                            const lbl = cnt === 0 ? tx('Нет', 'None') : `+${cnt} ${tx('сцен.', 'scene')}`;
+                                            return `<button type="button" class="nmf-chip ${extraScenesCnt === cnt ? 'nmf-on' : ''}" data-act="set-extra-scene-alts" data-cnt="${cnt}" ${sess.frozen ? 'disabled' : ''}>${esc(lbl)}</button>`;
+                                        }).join('')}
+                                    </div>
                                 </div>
                             </details>
                         </div>
 
+                        <!-- 4. CONTROLLED ANTI-SLOP PRESET (INHERITED EVERYWHERE) -->
+                        <div class="nmf-sub-group">
+                            <div class="nmf-sub-group-title">
+                                <span>${esc(tx('4. Анти-Слоп (управляемый пресет против клише ИИ)', '4. Anti-Slop (Controlled Anti-Cliché Preset)'))}</span>
+                            </div>
+                            <div class="nmf-toggle-line" data-act="toggle-anti-slop">
+                                <div class="nmf-toggle-copy">
+                                    <strong>${esc(tx('Применять пресет Анти-Слопа во всех режимах', 'Apply Anti-Slop Preset Across All Modes'))}</strong>
+                                    <small>${esc(tx('Работает в Свайпах, Гаче, Алтаре, Блице, Концепте, AU и сборке/правке карточек (сохраняется в профиле)', 'Inherited in Swipes, Gacha, Altar, Blitz, Concept, AU, and Card V2 synthesis/edits (saved in profile)'))}</small>
+                                </div>
+                                <div class="nmf-switch ${it.antiSlopEnabled !== false ? 'nmf-on' : ''}"></div>
+                            </div>
+
+                            ${it.antiSlopEnabled !== false ? `
+                            <div class="nmf-field">
+                                <label class="nmf-label">
+                                    <span>${esc(tx('Текст пресета Анти-Слопа (можно свободно редактировать)', 'Anti-Slop Preset Rules (freely editable)'))}</span>
+                                    <button type="button" class="nmf-chip" data-act="reset-anti-slop" ${sess.frozen ? 'disabled' : ''}>${esc(tx('Стандартный пресет', 'Reset Default'))}</button>
+                                </label>
+                                <div class="nmf-expandable-box">
+                                    <textarea class="nmf-textarea" style="min-height:84px;font-size:11.5px;line-height:1.42" data-intake="antiSlopRules" placeholder="${esc(tx('Впишите штампы, фразы и обороты, которые ИИ не должен использовать...', 'List stock phrases and AI clichés that the model must avoid...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(it.antiSlopRules ?? getDefaultAntiSlopPreset())}</textarea>
+                                    <button type="button" class="nmf-expand-box-btn" data-act="open-fs-field" data-fs-kind="intake" data-fs-field="antiSlopRules" data-fs-title="${esc(tx('Пресет Анти-Слопа', 'Anti-Slop Preset'))}" data-fs-ph="${esc(tx('Штампы и клише, которые ИИ не должен генерировать...', 'AI clichés and filler phrases to avoid...'))}" title="${esc(tx('На весь экран', 'Fullscreen'))}">
+                                        ${NMF_ICONS.expandField}
+                                    </button>
+                                </div>
+                            </div>` : ''}
+                        </div>
+
                         <div style="display:flex;justify-content:flex-end">
                             <button type="button" class="nmf-btn-primary" data-act="toggle-home-card" data-hcard="setup">
+                                ${esc(tx('Готово · Свернуть', 'Done · Collapse'))}
+                            </button>
+                        </div>
+                    </div>` : ''}
+                </div>
+
+                <!-- DRAWER #1: MAIN STORY QUESTIONNAIRE -->
+                <div class="nmf-drawer-block">
+                    <button type="button" class="nmf-drawer-trigger ${intakeOpen ? 'nmf-open' : ''}" data-act="toggle-home-card" data-hcard="intake">
+                        <span class="nmf-tile-icon">${NMF_ICONS.sliders}</span>
+                        <span class="nmf-row-copy">
+                            <strong>${esc(tx('Сюжетная анкета (для этой сессии)', 'Story Questionnaire (For This Session)'))}</strong>
+                            <small id="nmf-intake-summary-line">${esc(intakeSummaryLine)}</small>
+                        </span>
+                        <span class="nmf-row-chevron ${intakeOpen ? 'nmf-rot' : ''}">${NMF_ICONS.chevronRight}</span>
+                    </button>
+
+                    ${intakeOpen ? `
+                    <div class="nmf-drawer-content">
+                        <div class="nmf-friendly-guide">
+                            ${tx(
+                                '<strong>Единый лист предпочтений:</strong> все поля заполняются по желанию — укажите только нужное, а остальное оставьте пустым для большей свободы и рандома ИИ. Все чипы жанров, тропов и стоп-слов подставляются прямо в текст полей. На Гачу эта анкета не влияет.',
+                                '<strong>Single-page Story Questionnaire:</strong> every field is optional — blank fields give AI more creative freedom and randomness. Genre, trope, and ban chips insert directly into the text fields. Never affects Gacha.',
+                            )}
+                        </div>
+
+                        ${renderUnifiedStoryIntakeFieldsHtml(sess, cfg)}
+
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                            ${hasStoryFilled ? `
+                            <button type="button" class="nmf-btn-secondary nmf-btn-danger" data-act="clear-session-intake" ${sess.frozen ? 'disabled' : ''}>
+                                ${NMF_ICONS.trash} ${esc(tx('Очистить анкету', 'Clear Questionnaire'))}
+                            </button>` : '<span></span>'}
+                            <button type="button" class="nmf-btn-primary" data-act="toggle-home-card" data-hcard="intake">
                                 ${esc(tx('Готово · Свернуть', 'Done · Collapse'))}
                             </button>
                         </div>
@@ -1901,7 +2370,9 @@ function renderHomeTab(sess) {
                     <span class="nmf-tile-icon">${NMF_ICONS.flame}</span>
                     <span class="nmf-row-copy">
                         <strong>${esc(tx('Свайпы', 'Swipes'))}</strong>
-                        <small>${esc(tx('Выбрать кандидата из ленты по сюжетной анкете', 'Browse candidate previews from your story questionnaire'))}</small>
+                        <small id="nmf-swipe-home-sub">${esc(hasStoryFilled
+                            ? tx('Анкета заполнена · искать кандидатов по вашим пожеланиям', 'Questionnaire ready · browse candidates tailored to your vibe')
+                            : tx('Нужна Сюжетная анкета · задайте вайб и роль для точного мэтча', 'Needs Story Questionnaire · set your vibe & role for true matches'))}</small>
                     </span>
                     <span class="nmf-row-chevron">${NMF_ICONS.chevronRight}</span>
                 </button>
@@ -2139,9 +2610,11 @@ function renderGachaPrefsSheetModal(sess) {
                         <span>${esc(ratingObj.warn)}</span>
                     </div>` : ''}
 
+                    ${renderStoryDynamicFieldHtml(sess, getSettings(), { scope: 'gacha' })}
+
                     <div class="nmf-field">
                         <label class="nmf-label">${esc(tx('Особые пожелания к призыву (необязательно)', 'Special Summon Wishes (Optional)'))}</label>
-                        <textarea class="nmf-textarea" style="min-height:72px" data-gacha-pref="wishesNote" placeholder="${esc(tx('Оставьте пустым для большей рандомизации или укажите желаемый вайб...', 'Leave blank for higher randomization or add desired chemistry/vibe...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(wp.wishesNote || '')}</textarea>
+                        <textarea class="nmf-textarea" style="min-height:72px" data-gacha-pref="wishesNote" placeholder="${esc(tx('Оставьте пустым для большей рандомизации или укажите желаемый вайб...', 'Leave blank for higher randomization or add desired vibe/details...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(wp.wishesNote || '')}</textarea>
                     </div>
 
                     <div class="nmf-field">
@@ -2214,6 +2687,27 @@ function resolveHeroTruePortraitEntity(sess, entity) {
         return entity.anchorPhoto;
     }
     return liveSrc || null;
+}
+
+function resolveConceptVisionImageUrls(sess, seedEntity = null, { forQuestionsOnly = false } = {}) {
+    const ctx = getTavernContext();
+    if ((ctx?.mainApi || 'openai') !== 'openai') return [];
+    const isRasterVisionUrl = (u) => /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(String(u || '').trim())
+        || /^https?:\/\//i.test(String(u || '').trim());
+    // Save proxy Vision quota on Question generation whenever textual character dossier or manual anchor prompt is already sent!
+    if (forQuestionsOnly) {
+        const hasSeedText = Boolean(seedEntity && sess?.conceptLab?.sendSeedBio !== false);
+        const hasManualAnchorText = Boolean(String(sess?.conceptLab?.anchorPrompt || '').trim());
+        if (hasSeedText || hasManualAnchorText) return [];
+    }
+    const anchorUrl = resolveEntityAvatarUrl(sess?.conceptLab?.anchorPhoto);
+    if (isRasterVisionUrl(anchorUrl)) return [anchorUrl];
+    if (!forQuestionsOnly && seedEntity) {
+        const portEnt = resolveHeroTruePortraitEntity(sess, seedEntity);
+        const seedUrl = portEnt ? resolveEntityAvatarUrl(portEnt) : '';
+        if (isRasterVisionUrl(seedUrl)) return [seedUrl];
+    }
+    return [];
 }
 
 function findLinkedConceptForCandidate(sess, pool, cand) {
@@ -2349,13 +2843,18 @@ function renderCandidateDossierModal(sess) {
                                     ? `<span class="nmf-match-badge">${esc(tx('ПО ФОТО', 'FROM PHOTO'))}</span>`
                                     : `<span class="nmf-match-badge">${Number(cand.compatibility) || 92}% MATCH</span>`)}
                             ${(!isConceptPool && !isPhotoPool) ? `
-                            <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
-                                <button type="button" class="nmf-art-chip-btn" data-act="trigger-cand-upload" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}" title="Загрузить свой арт с устройства">${NMF_ICONS.upload} Своё фото</button>
-                                ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" style="${state.useAttachedPhotoAsRef ? 'border-color:var(--nmf-accent);background:var(--nmf-accent);color:var(--nmf-btn-fg)' : ''}" data-act="toggle-attached-photo-as-ref" title="Отправить это прикреплённое фото как референс при пересъёмке">${NMF_ICONS.refFrame} Фото = Реф</button>` : ''}
-                                ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" data-act="open-crop-cand" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}" title="Кадрировать арт">${NMF_ICONS.crop} Кадрировать</button>` : ''}
-                                ${canArt ? (isLoading
-                                    ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(cand.id)}">Стоп</button>`
-                                    : `<button type="button" class="nmf-art-chip-btn" data-act="gen-dossier-art" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.image} ${fSpec.isReal ? 'Переснять' : 'Сделать арт'}</button>`) : ''}
+                            <div class="nmf-hero-art-menu-wrap">
+                                ${isLoading ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(cand.id)}">${esc(tx('Стоп', 'Stop'))}</button>` : ''}
+                                <button type="button" class="nmf-hero-art-trigger" data-act="toggle-art-overlay-menu" data-menu-key="dossier_${esc(cand.id)}" title="${esc(tx('Действия с портретом', 'Portrait actions'))}">
+                                    ${NMF_ICONS.moreDots}
+                                </button>
+                                ${state.openArtMenuKey === `dossier_${cand.id}` ? `
+                                <div class="nmf-hero-art-dropdown">
+                                    ${canArt && !isLoading ? `<button type="button" class="nmf-hero-art-item" data-act="gen-dossier-art" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.image} <span>${esc(fSpec.isReal ? tx('Переснять арт', 'Regenerate Art') : tx('Сделать арт', 'Generate Art'))}</span></button>` : ''}
+                                    <button type="button" class="nmf-hero-art-item" data-act="trigger-cand-upload" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.upload} <span>${esc(tx('Загрузить своё фото', 'Upload Own Photo'))}</span></button>
+                                    ${fSpec.isReal ? `<button type="button" class="nmf-hero-art-item" data-act="open-crop-cand" data-pool="${esc(ref.pool)}" data-idx="${ref.idx}">${NMF_ICONS.crop} <span>${esc(tx('Кадрировать', 'Crop Photo'))}</span></button>` : ''}
+                                    ${fSpec.isReal ? `<button type="button" class="nmf-hero-art-item ${state.useAttachedPhotoAsRef ? 'nmf-active' : ''}" data-act="toggle-attached-photo-as-ref">${NMF_ICONS.refFrame} <span>${esc(state.useAttachedPhotoAsRef ? tx('Фото = Реф (вкл.)', 'Photo as Ref (ON)') : tx('Использовать как Реф', 'Use Photo as Ref'))}</span></button>` : ''}
+                                </div>` : ''}
                             </div>` : ''}
                         </div>`;
                     })()}
@@ -2430,7 +2929,9 @@ async function openArtCropperForTarget(sess, targetKind, pool = '', idx = 0) {
         } catch {}
     }
 
-    const defaultRatio = (cfg.imageAspectRatio && cfg.imageAspectRatio !== 'native') ? cfg.imageAspectRatio : '1:1';
+    const existingCrop = String(entity.croppedAspect || '').trim();
+    const studioPref = (cfg.imageAspectRatio && cfg.imageAspectRatio !== 'native') ? cfg.imageAspectRatio : '';
+    const candidateRatio = existingCrop || studioPref || '1:1';
     state.cropModalInfo = {
         targetKind,
         pool,
@@ -2440,7 +2941,7 @@ async function openArtCropperForTarget(sess, targetKind, pool = '', idx = 0) {
         displayUrl: safeImgSrc(masterUrl),
         imgW,
         imgH,
-        aspectRatio: ['1:1', '3:4', '2:3', '4:3', '16:9'].includes(defaultRatio) ? defaultRatio : '1:1',
+        aspectRatio: parseAspectRatioNumber(candidateRatio) !== null ? candidateRatio : '1:1',
         zoom: 1,
         panX: 50,
         panY: cfg.imageCropFocus === 'center' ? 50 : 8,
@@ -2517,7 +3018,11 @@ function renderArtCropperModal() {
     const ci = state.cropModalInfo;
     if (!ci) return '';
     const geom = computeLosslessCropGeometry(ci.imgW, ci.imgH, ci);
-    const ratios = ['1:1', '3:4', '2:3', '4:3', '16:9'];
+    const cfgForCrop = getSettings();
+    const activeCropProviderIds = getSupportedAspectRatiosForImageConfig(cfgForCrop.imageSource, cfgForCrop.imageProfileId).supportedIds || [];
+    const baseCropRatios = ['1:1', '2:3', '3:4', '4:5', '9:16', '3:2', '4:3', '5:4', '16:9', '21:9'];
+    const mergedCropRatios = [...new Set([...baseCropRatios, ...activeCropProviderIds])];
+    const ratios = mergedCropRatios.includes(ci.aspectRatio) ? mergedCropRatios : [ci.aspectRatio, ...mergedCropRatios];
 
     return `
     <div class="nmf-sheet-backdrop" id="nmf-cropper-backdrop">
@@ -2668,144 +3173,31 @@ function resolveFmLangPresetUiValue(rawVal) {
 function renderIntakeSheetModal(sess) {
     if (!state.intakeSheetOpen) return '';
     const cfg = getSettings();
-    const it = sess.intake;
-    const worldMode = isWorldOrRpgMode(it) || it.originType === 'artifact_object';
-    const ratingObj = RATING_OPTIONS.find((r) => r.id === it.rating) || RATING_OPTIONS[0];
-    const needsFandom = ['canon', 'fandom_au', 'fandom_oc'].includes(it.originType);
-    const curStep = state.intakeStep === 'vibe' ? 'vibe' : 'who';
-
-    let stepBody = '';
-    if (curStep === 'who') {
-        stepBody = `
-            <div class="nmf-panel">
-                <div class="nmf-field">
-                    <label class="nmf-label"><span>Кого или что создаём?</span>${helpBtn('art_mechanism')}</label>
-                    <select class="nmf-select" data-intake="originType" ${sess.frozen ? 'disabled' : ''}>
-                        <option value="oc" ${it.originType === 'oc' ? 'selected' : ''}>Персонаж — Оригинальный герой (OC)</option>
-                        <option value="canon" ${it.originType === 'canon' ? 'selected' : ''}>Персонаж — Канонный герой из фандома</option>
-                        <option value="fandom_au" ${it.originType === 'fandom_au' ? 'selected' : ''}>Персонаж — Фандом в другой вселенной (AU)</option>
-                        <option value="fandom_oc" ${it.originType === 'fandom_oc' ? 'selected' : ''}>Персонаж — Новый герой внутри фандома</option>
-                        <option value="duo_group" ${it.originType === 'duo_group' ? 'selected' : ''}>Дуэт / Группа (2–3 персонажа в кадре и карточке)</option>
-                        <option value="artifact_object" ${it.originType === 'artifact_object' ? 'selected' : ''}>Особый Предмет / Артефакт (РП вокруг объекта)</option>
-                        <option value="world_sandbox" ${it.originType === 'world_sandbox' ? 'selected' : ''}>Мир / Сеттинг-песочница (без привязки к 1 лицу)</option>
-                        <option value="rpg_gm" ${it.originType === 'rpg_gm' ? 'selected' : ''}>РПГ-Мастер / Система (Character Card V2)</option>
-                    </select>
-                </div>
-
-                ${(needsFandom || worldMode) ? `
-                <div class="nmf-field">
-                    <label class="nmf-label">${worldMode ? 'Вселенная-основа (или оставьте пустым для авторского мира)' : 'Название фандома'}</label>
-                    <input type="text" class="nmf-input" data-intake="fandomName" value="${esc(it.fandomName)}" placeholder="Например: Cyberpunk 2077, Ведьмак, Jujutsu Kaisen..." ${sess.frozen ? 'disabled' : ''}/>
-                </div>` : ''}
-
-                <div class="nmf-grid-2-compact">
-                    <div class="nmf-field">
-                        <label class="nmf-label">Ваш пол (Игрок)</label>
-                        <select class="nmf-select" data-intake="userGender" ${sess.frozen ? 'disabled' : ''}>
-                            ${USER_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(it.userGender || 'any') === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
-                        </select>
-                        ${it.userGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="userGenderCustom" value="${esc(it.userGenderCustom || '')}" placeholder="Свой вариант..." ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                    </div>
-                    <div class="nmf-field">
-                        <label class="nmf-label">${worldMode ? 'Фокус НПС' : 'Пол персонажа'}</label>
-                        <select class="nmf-select" data-intake="targetGender" ${sess.frozen ? 'disabled' : ''}>
-                            ${TARGET_GENDER_OPTIONS.map((g) => `<option value="${g.id}" ${(it.targetGender || 'any') === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
-                        </select>
-                        ${it.targetGender === 'custom' ? `<input type="text" class="nmf-input" style="margin-top:4px!important" data-intake="targetGenderCustom" value="${esc(it.targetGenderCustom || '')}" placeholder="Свой вариант..." ${sess.frozen ? 'disabled' : ''}/>` : ''}
-                    </div>
-                </div>
-
-                <div class="nmf-grid-2-compact">
-                    <div class="nmf-field">
-                        <label class="nmf-label">Сеттинг / Эпоха</label>
-                        <input type="text" class="nmf-input" data-intake="settingEra" value="${esc(it.settingEra)}" placeholder="Мегаполис / Нуар / Фэнтези..." ${sess.frozen ? 'disabled' : ''}/>
-                    </div>
-                    <div class="nmf-field">
-                        <label class="nmf-label">Рейтинг</label>
-                        <select class="nmf-select" data-intake="rating" ${sess.frozen ? 'disabled' : ''}>
-                            ${RATING_OPTIONS.map((r) => `<option value="${r.id}" ${it.rating === r.id ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}
-                        </select>
-                    </div>
-                </div>
-
-                ${ratingObj.warn ? `
-                <div class="nmf-warn-box">
-                    ${NMF_ICONS.warn}
-                    <span>${esc(ratingObj.warn)}</span>
-                </div>` : ''}
-
-                <details class="nmf-spoiler" open>
-                    <summary><span>Жанры и направления (${(it.genres || []).length})</span>${NMF_ICONS.chevronDown}</summary>
-                    <div class="nmf-spoiler-body">
-                        <div class="nmf-chip-wrap">
-                            ${GENRE_PRESETS.map((g) => `
-                                <button type="button" class="nmf-chip ${(it.genres || []).includes(g) ? 'nmf-on' : ''}" data-act="toggle-genre" data-genre="${esc(g)}">${esc(g)}</button>
-                            `).join('')}
-                        </div>
-                        <input type="text" class="nmf-input" data-intake="customGenres" value="${esc(it.customGenres)}" placeholder="Свои жанры или теги через запятую..." ${sess.frozen ? 'disabled' : ''}/>
-                        ${renderTagAssistBoxHtml({ targetKey: 'intake_customGenres', category: 'vibe', currentValue: it.customGenres, separator: ', ', sess, cfg })}
-                    </div>
-                </details>
-            </div>
-        `;
-    } else {
-        stepBody = `
-            <div class="nmf-panel">
-                <div class="nmf-field">
-                    <label class="nmf-label">${worldMode ? 'Ориентиры атмосферы (произведения / игры)' : 'Любимый типаж из фандомов (ориентир вайба)'}</label>
-                    <input type="text" class="nmf-input" data-intake="favFandomHero" value="${esc(it.favFandomHero)}" placeholder="${worldMode ? 'Disco Elysium, Baldur\x27s Gate 3, Made in Abyss...' : 'Астарион, Годжо, Леон Кеннеди...'}" ${sess.frozen ? 'disabled' : ''}/>
-                </div>
-
-                <div class="nmf-field">
-                    <label class="nmf-label">${worldMode ? 'Кем стартует игрок и какое приключение вы хотите?' : 'Какую историю и отношение к себе вы ищете?'}</label>
-                    <textarea class="nmf-textarea" style="min-height:80px" data-intake="userRoleAndDesire" placeholder="${worldMode ? 'Роль игрока, опасность мира, свобода действий...' : 'Кем выступаете вы и какая химия должна быть между вами...'}" ${sess.frozen ? 'disabled' : ''}>${esc(it.userRoleAndDesire)}</textarea>
-                </div>
-
-                <div class="nmf-field">
-                    <label class="nmf-label">${worldMode ? 'Желаемые механики, фракции или детали' : 'Гринфлаги / Любимые тропы'}</label>
-                    <input type="text" class="nmf-input" data-intake="tropesWanted" value="${esc(it.tropesWanted)}" placeholder="${worldMode ? 'Гильдии, артефакты, интриги домов...' : 'Начните вводить тег или выберите ниже...'}" ${sess.frozen ? 'disabled' : ''}/>
-                    ${renderTagAssistBoxHtml({ targetKey: 'intake_tropesWanted', category: 'vibe', currentValue: it.tropesWanted, separator: ', ', sess, cfg })}
-                </div>
-
-                <div class="nmf-field">
-                    <label class="nmf-label">Общий стоп-лист сессии (чего точно НЕ делать)</label>
-                    <input type="text" class="nmf-input" data-intake="hardBans" value="${esc(it.hardBans)}" placeholder="Начните вводить стоп-тег..." ${sess.frozen ? 'disabled' : ''}/>
-                    ${renderTagAssistBoxHtml({ targetKey: 'intake_hardBans', category: 'ban', currentValue: it.hardBans, separator: ', ', sess, cfg })}
-                </div>
-            </div>
-        `;
-    }
 
     return `
     <div class="nmf-sheet-backdrop" id="nmf-intake-backdrop">
         <div class="nmf-sheet-panel">
             <div class="nmf-sheet-head">
                 <div style="font-family:var(--nmf-font-title);font-size:15px;font-weight:700;color:var(--nmf-accent)">
-                    Анкета предпочтений · ${esc(displaySessionTitle(sess.title))}
+                    ${esc(tx('Сюжетная анкета', 'Story Questionnaire'))} · ${esc(displaySessionTitle(sess.title))}
                 </div>
                 <button type="button" class="nmf-icon-btn nmf-sq" data-act="close-intake-sheet">${NMF_ICONS.close}</button>
             </div>
-            <div style="padding:8px 12px 0;background:var(--nmf-bg)">
-                <div class="nmf-seg-bar">
-                    <button type="button" class="nmf-seg-btn ${curStep === 'who' ? 'nmf-active' : ''}" data-act="intake-step" data-step="who">1. Мир и Герой</button>
-                    <button type="button" class="nmf-seg-btn ${curStep === 'vibe' ? 'nmf-active' : ''}" data-act="intake-step" data-step="vibe">2. Вайб и Стоп</button>
-                </div>
-            </div>
             <div class="nmf-sheet-body">
-        <div class="nmf-friendly-guide" style="margin-bottom:8px">
-            ${tx(
-                'Все поля заполняются по желанию: чем меньше указано, тем больше свободы и случайного рандома у ИИ. На Гачу эта анкета не влияет.',
-                'Every field is optional: fewer details give AI more creative freedom and randomness. Does not affect Gacha.',
-            )}
-        </div>
-        ${stepBody}
-    </div>
+                <div class="nmf-friendly-guide" style="margin-bottom:8px">
+                    ${tx(
+                        'Единый лист предпочтений: все поля заполняются по желанию, а чипы жанров, тропов и стоп-слов подставляются прямо в текст. Чем меньше указано — тем больше свободы и рандома у ИИ. На Гачу не влияет.',
+                        'Single-page Story Questionnaire: every field is optional, and genre/trope/ban chips insert directly into the text. Fewer details give AI more randomness. Does not affect Gacha.',
+                    )}
+                </div>
+                ${renderUnifiedStoryIntakeFieldsHtml(sess, cfg)}
+            </div>
             <div class="nmf-sheet-foot" style="justify-content:space-between;gap:8px">
                 <button type="button" class="nmf-btn-secondary nmf-btn-danger" data-act="clear-session-intake" ${sess.frozen ? 'disabled' : ''}>
-                    Очистить анкету
+                    ${esc(tx('Очистить анкету', 'Clear Questionnaire'))}
                 </button>
                 <button type="button" class="nmf-btn-primary" style="flex:1" data-act="close-intake-sheet">
-                    Готово
+                    ${esc(tx('Готово', 'Done'))}
                 </button>
             </div>
         </div>
@@ -3249,7 +3641,7 @@ function renderGachaSummonSubScreen(sess) {
     );
     const gDrawerOpen = Boolean(state.gachaDrawerOpen);
     const gTab = state.gachaDrawerTab === 'rules' ? 'rules' : 'wishes';
-    const gachaDrawerSummary = `${hasGachaPrefsFilled ? tx('Пожелания заданы', 'Wishes set') : tx('Пустая анкета = полный рандом по тегам', 'Blank = pure tag randomness')} · ${luckShort}${cfg.autoArtWithCards ? tx(' · С артом', ' · With Art') : ''}${cfg.safeFandomArtPrompt ? tx(' · Без имён', ' · Safe Art') : ''}${cfg.gachaSacrificeFailEnabled ? ` · ${tx(`Риск жертвы ${cfg.gachaSacrificeFailChance}%`, `Sacrifice risk ${cfg.gachaSacrificeFailChance}%`)}` : ''}`;
+    const gachaDrawerSummary = `${hasGachaPrefsFilled ? tx('Пожелания заданы', 'Wishes set') : tx('Пустая анкета = полный рандом по тегам', 'Blank = pure tag randomness')} · ${luckShort}${gc.allowSameNames ? tx(' · Повтор имён', ' · Same Names') : ''}${cfg.gachaSacrificeFailEnabled ? ` · ${tx(`Риск жертвы ${cfg.gachaSacrificeFailChance}%`, `Sacrifice risk ${cfg.gachaSacrificeFailChance}%`)}` : ''}`;
 
     return `
     <!-- ATTACHED GACHA QUESTIONNAIRE & RULES DRAWER (RIGHT ABOVE SUMMONS!) -->
@@ -3271,7 +3663,7 @@ function renderGachaSummonSubScreen(sess) {
                         ${esc(tx('Анкета призыва', 'Summon Wishes'))}
                     </button>
                     <button type="button" class="nmf-seg-btn ${gTab === 'rules' ? 'nmf-active' : ''}" data-act="set-gacha-drawer-tab" data-gtab="rules">
-                        ${esc(tx('Правила, арт и таймер', 'Rules, Art & Timer'))}
+                        ${esc(tx('Правила и таймер', 'Rules & Timer'))}
                     </button>
                 </div>
 
@@ -3326,6 +3718,8 @@ function renderGachaSummonSubScreen(sess) {
                         <span>${esc(ratingObj.warn)}</span>
                     </div>` : ''}
 
+                    ${renderStoryDynamicFieldHtml(sess, getSettings(), { scope: 'gacha' })}
+
                     <div class="nmf-field">
                         <label class="nmf-label">${esc(tx('Особые пожелания к призыву (необязательно)', 'Special Wishes (Optional)'))}</label>
                         <textarea class="nmf-textarea" style="min-height:62px" data-gacha-pref="wishesNote" placeholder="${esc(tx('Оставьте пустым для большей рандомизации или добавьте штрих...', 'Leave blank for higher randomness or add a note...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(wp.wishesNote || '')}</textarea>
@@ -3360,14 +3754,13 @@ function renderGachaSummonSubScreen(sess) {
                         </select>
                     </div>
 
-                    <div class="nmf-field">
-                        <label class="nmf-label">${esc(tx('Формат артов для этой Гачи (не трогает SillyImages)', 'Gacha Art Aspect Ratio'))}</label>
-                        <select class="nmf-select" data-gacha="aspectRatio" ${sess.frozen ? 'disabled' : ''}>
-                            ${GACHA_RESOLUTION_OPTIONS.map((opt) => `<option value="${opt.id}" ${(gc.aspectRatio || 'sillyimages_default') === opt.id ? 'selected' : ''}>${esc(isEn() ? opt.labelEn : opt.label)}</option>`).join('')}
-                        </select>
+                    <div class="nmf-toggle-line" data-act="toggle-gacha-same-names">
+                        <div class="nmf-toggle-copy">
+                            <strong>${esc(tx('Разрешить одинаковые имена (вариации одного героя)', 'Allow Same Names (Character Variations)'))}</strong>
+                            <small>${esc(tx('Включите, если призываете разные образы одного канона или персонажа (выкл. по умолчанию)', 'Enable to summon multiple versions of the same named character (off by default)'))}</small>
+                        </div>
+                        <div class="nmf-switch ${gc.allowSameNames ? 'nmf-on' : ''}"></div>
                     </div>
-
-                    ${renderArtSyncTogglesBlock(sess, cfg, { context: 'gacha' })}
 
                     <div class="nmf-toggle-line" data-act="toggle-gacha-timer-cfg">
                         <span style="font-size:12px;font-weight:600">${esc(tx('Лимит и пополнение Молитв по таймеру', 'Prayer Cycle Limit & Cooldown Timer'))}</span>
@@ -3560,7 +3953,7 @@ function renderWishRevealOverlay(sess) {
                     <div style="font-family:var(--nmf-font-title);font-size:20px;font-weight:700;color:#ffffff;max-width:340px;line-height:1.28">
                         ${esc(unpackCopy.stageGachaTitle)}
                     </div>
-                    <div class="nmf-sealed-card-totem">
+                    <div class="nmf-sealed-card-totem" style="cursor:pointer" data-act="unpack-wish-cards" title="${esc(unpackCopy.gachaBtn)}">
                         <div style="color:${wishColor};transform:scale(1.5)">${rev.isFusion ? NMF_ICONS.alchemy : NMF_ICONS.primogem}</div>
                         <div style="display:inline-flex;gap:3px;color:${wishColor}">${renderStarsRowHtml(maxS)}</div>
                         <div style="font-family:var(--nmf-font-mono);font-size:10px;color:#e2e8f0;letter-spacing:1px">
@@ -3619,14 +4012,21 @@ function renderWishRevealOverlay(sess) {
                         </div>
 
                         <div class="nmf-profile-body">
-                            ${canArt ? `
+                            ${canArt ? (() => {
+                                const cardAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                                const curCardOv = colItem.gachaAspectOverride
+                                    ? coerceAspectToSupported(colItem.gachaAspectOverride, cardAspectInfo.supportedIds)
+                                    : '';
+                                return `
                             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
                                 <span style="font-size:11px;color:var(--nmf-text-muted)">${esc(tx('Формат арта этой карты:', 'Art format for this card:'))}</span>
                                 <select class="nmf-select" style="width:auto;max-width:190px;height:28px;font-size:11px;padding:0 8px" data-gacha-card-aspect="${esc(colItem.id)}">
-                                    <option value="" ${!colItem.gachaAspectOverride ? 'selected' : ''}>${esc(tx('По настройке Гачи', 'Use Gacha Setting'))}</option>
-                                    ${GACHA_RESOLUTION_OPTIONS.map((opt) => `<option value="${opt.id}" ${colItem.gachaAspectOverride === opt.id ? 'selected' : ''}>${esc(isEn() ? opt.labelEn : opt.label)}</option>`).join('')}
+                                    <option value="" ${!curCardOv ? 'selected' : ''}>${esc(tx('По настройке Гачи', 'Use Gacha Setting'))}</option>
+                                    <option value="sillyimages_default" ${curCardOv === 'sillyimages_default' || curCardOv === 'native' ? 'selected' : ''}>${esc(tx(`SillyImages (${isEn() ? cardAspectInfo.inheritedSummaryEn : cardAspectInfo.inheritedSummaryRu})`, `SillyImages (${isEn() ? cardAspectInfo.inheritedSummaryEn : cardAspectInfo.inheritedSummaryRu})`))}</option>
+                                    ${cardAspectInfo.options.map((opt) => `<option value="${esc(opt.id)}" ${curCardOv === opt.id ? 'selected' : ''}>${esc(isEn() ? opt.labelEn : opt.label)}</option>`).join('')}
                                 </select>
-                            </div>` : ''}
+                            </div>`;
+                            })() : ''}
                             ${colItem.quote ? `<div class="nmf-profile-quote">«${esc(parseCleanQuote(colItem.quote))}»</div>` : ''}
                             <div class="nmf-profile-bio">${esc(colItem.pitch)}</div>
                             ${colItem.appearance ? `
@@ -3685,6 +4085,7 @@ function renderSwipeTab(sess) {
         ${renderGachaSummonSubScreen(sess)}`;
     }
 
+    consolidateLegacyStoryIntakeFields(sess);
     const td = sess.tinder;
     const cfg = getSettings();
     const imgCaps = detectImageExtensions();
@@ -3696,23 +4097,25 @@ function renderSwipeTab(sess) {
     const isArtLoading = current ? state.loadingArtIds.has(current.id) : false;
     const artErrText = current ? (state.artErrors.get(current.id) || '') : '';
     const worldMode = isWorldOrRpgMode(sess.intake);
+    const storyFilled = isSessionStoryQuestionnaireFilled(sess.intake) || Boolean(td.promptHint?.trim());
 
     return `
     ${modeSwitchBar}
 
-    <div style="display:flex;flex-direction:column;gap:4px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-            <input type="text" class="nmf-input" style="flex:1" data-tinder="promptHint" value="${esc(td.promptHint)}" placeholder="${worldMode ? 'Пожелание к миру/РПГ...' : 'Впишите теги вручную (постарше, босс...)...'}" ${sess.frozen ? 'disabled' : ''}/>
-            <button type="button" class="nmf-btn-primary" style="min-height:36px;padding:0 12px" data-act="gen-tinder" ${state.busy || sess.frozen ? 'disabled' : ''}>
-                ${NMF_ICONS.spark} Поиск
-            </button>
-        </div>
-        ${renderTagAssistBoxHtml({ targetKey: 'tinder_promptHint', category: 'vibe', currentValue: td.promptHint || '', separator: ', ', sess, cfg })}
-    </div>
+    ${(!storyFilled && current) ? `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--nmf-border);border-radius:var(--nmf-radius);background:var(--nmf-surface-2)">
+        <span style="font-size:11.5px;color:var(--nmf-text-muted);line-height:1.35">${esc(tx('Сюжетная анкета пуста — заполните её, чтобы Свайпы подбирали героев под ваш сеттинг и вайб.', 'Story Questionnaire is empty — fill it so Swipes match your setting & vibe.'))}</span>
+        <button type="button" class="nmf-btn-secondary" style="height:28px;padding:0 10px;font-size:11px;flex-shrink:0" data-act="open-intake-sheet">${NMF_ICONS.sliders} ${esc(tx('Анкета', 'Fill'))}</button>
+    </div>` : ''}
 
     <details class="nmf-spoiler" ${state.swipeControlsOpen ? 'open' : ''}>
-        <summary><span>${esc(tx(`Параметры колоды (×${Number(td.batchSize) || 1}${cfg.autoArtWithCards ? ' · С артом' : ''}${cfg.safeFandomArtPrompt ? ' · Без имён' : ''}) и стоп-слова (${td.dislikedTags.length + td.dislikedNotes.length})`, `Deck Settings (×${Number(td.batchSize) || 1}${cfg.autoArtWithCards ? ' · With Art' : ''}${cfg.safeFandomArtPrompt ? ' · Safe Art' : ''}) & Bans (${td.dislikedTags.length + td.dislikedNotes.length})`))}</span>${NMF_ICONS.chevronDown}</summary>
+        <summary><span>${esc(tx(`Параметры колоды (×${Number(td.batchSize) || 1}${td.autoRefillDeck ? ' · Автозапуск' : ''}${td.allowSameNames ? ' · Повтор имён' : ''})`, `Deck Settings (×${Number(td.batchSize) || 1}${td.autoRefillDeck ? ' · Auto-Refill' : ''}${td.allowSameNames ? ' · Same Names' : ''})`))}</span>${NMF_ICONS.chevronDown}</summary>
         <div class="nmf-spoiler-body">
+            <div class="nmf-field">
+                <label class="nmf-label">${esc(tx('Разовый акцент на следующий подбор (необязательно)', 'Optional Focus for Next Batch'))}</label>
+                <input type="text" class="nmf-input" data-tinder="promptHint" value="${esc(td.promptHint)}" placeholder="${esc(worldMode ? tx('Уточнение к следующему подбору...', 'Optional focus for next batch...') : tx('Имя или деталь на следующий подбор (основное — в Анкете)...', 'Optional name/detail for next batch...'))}" ${sess.frozen ? 'disabled' : ''}/>
+            </div>
+
             <div class="nmf-field">
                 <label class="nmf-label">${esc(tx('Сколько анкет делать разом', 'Batch Size per Search'))}</label>
                 <select class="nmf-select" data-tinder="batchSize" ${sess.frozen ? 'disabled' : ''}>
@@ -3722,47 +4125,56 @@ function renderSwipeTab(sess) {
                 </select>
             </div>
 
-            ${renderArtSyncTogglesBlock(sess, cfg, { context: 'swipe' })}
-
-            <div class="nmf-field">
-                <label class="nmf-label">Вписать вручную, чего НЕ предлагать в Свайпах</label>
-                <div style="display:flex;gap:6px">
-                    <input type="text" class="nmf-input" id="nmf-manual-ban-input" value="${esc(state.manualBanDraft)}" placeholder="Начните вводить стоп-тег (борода, грубость...)..."/>
-                    <button type="button" class="nmf-btn-secondary" style="min-height:36px;flex-shrink:0" data-act="add-manual-ban">+ В бан</button>
+            <div class="nmf-toggle-line" data-act="toggle-swipe-auto-refill">
+                <div class="nmf-toggle-copy">
+                    <strong>${esc(tx('Автозапуск новой пачки (бесконечная лента)', 'Auto-Launch Next Batch (Endless Deck)'))}</strong>
+                    <small>${esc(tx('Когда вы долистаете текущую пачку до конца, следующая запустится сама (выкл. по умолчанию)', 'Once you finish swiping the current batch, the next batch starts automatically (off by default)'))}</small>
                 </div>
-                ${renderTagAssistBoxHtml({ targetKey: 'manual_ban', category: 'ban', currentValue: state.manualBanDraft || '', separator: ', ', sess, cfg })}
+                <div class="nmf-switch ${td.autoRefillDeck ? 'nmf-on' : ''}"></div>
             </div>
 
-            ${(td.dislikedTags.length > 0 || td.dislikedNotes.length > 0) ? `
-            <div class="nmf-chip-wrap">
-                ${td.dislikedTags.map((t, idx) => `<button type="button" class="nmf-chip nmf-ban" data-act="remove-antitag" data-idx="${idx}">${esc(t)} ×</button>`).join('')}
-                ${td.dislikedNotes.map((n, idx) => `<button type="button" class="nmf-chip nmf-ban" data-act="remove-antinote" data-idx="${idx}">${esc(n)} ×</button>`).join('')}
-            </div>` : ''}
+            <div class="nmf-toggle-line" data-act="toggle-swipe-same-names">
+                <div class="nmf-toggle-copy">
+                    <strong>${esc(tx('Разрешить одинаковые имена (вариации одного героя)', 'Allow Same Names (Character Variations)'))}</strong>
+                    <small>${esc(tx('Включите, чтобы получать разные версии одного конкретного персонажа (выкл. по умолчанию)', 'Enable to generate different versions of one specific character (off by default)'))}</small>
+                </div>
+                <div class="nmf-switch ${td.allowSameNames ? 'nmf-on' : ''}"></div>
+            </div>
+
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:2px;flex-wrap:wrap">
+                <span style="font-size:11px;color:var(--nmf-text-muted);line-height:1.35">${esc(tx('Сеттинг, сюжет, тропы и единый Стоп-лист настраиваются в Анкете.', 'Setting, story, tropes, and Ban list live in the Questionnaire.'))}</span>
+                <div style="display:inline-flex;gap:6px">
+                    <button type="button" class="nmf-btn-secondary" style="height:29px;padding:0 10px;font-size:11px" data-act="open-intake-sheet">${NMF_ICONS.sliders} ${esc(tx('Анкета', 'Questionnaire'))}</button>
+                    ${current ? `<button type="button" class="nmf-btn-primary" style="height:29px;padding:0 10px;font-size:11px" data-act="gen-tinder" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.spark} ${esc(tx('Ещё пачку', 'Add Batch'))}</button>` : ''}
+                </div>
+            </div>
         </div>
     </details>
 
     ${lastRejected ? `
     <div class="nmf-feedback-pop">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
-            <span style="font-size:11.5px;font-weight:700;color:#ff8fa0">«${esc(lastRejected.name)}» в Архиве «Мимо». Отметить анти-теги:</span>
+            <span style="font-size:11.5px;font-weight:700;color:#ff8fa0">${esc(tx(`«${lastRejected.name}» в Архиве «Мимо». Добавить анти-тег в Стоп-лист:`, `"${lastRejected.name}" moved to Passed. Toggle tag in Ban list:`))}</span>
             <div style="display:flex;gap:4px">
-                <button type="button" class="nmf-chip" data-act="undo-last-pass">${NMF_ICONS.undo} Вернуть</button>
-                <button type="button" class="nmf-chip" data-act="dismiss-reject-pop">Скрыть</button>
+                <button type="button" class="nmf-chip" data-act="undo-last-pass">${NMF_ICONS.undo} ${esc(tx('Вернуть', 'Undo'))}</button>
+                <button type="button" class="nmf-chip" data-act="dismiss-reject-pop">${esc(tx('Скрыть', 'Hide'))}</button>
             </div>
         </div>
         <div class="nmf-chip-wrap">
-            ${(lastRejected.tags || []).map((tg) => `
-                <button type="button" class="nmf-chip ${td.dislikedTags.includes(tg) ? 'nmf-ban' : ''}" data-act="quick-ban-tag" data-tag="${esc(tg)}">
-                    - ${esc(tg)}
-                </button>
-            `).join('')}
+            ${(lastRejected.tags || []).map((tg) => {
+                const banned = hasPhraseInCommaField(sess.intake?.hardBans || '', tg);
+                return `
+                <button type="button" class="nmf-chip ${banned ? 'nmf-ban' : ''}" data-act="quick-ban-tag" data-tag="${esc(tg)}">
+                    ${banned ? '× ' : '- '}${esc(tg)}
+                </button>`;
+            }).join('')}
         </div>
     </div>` : ''}
 
     ${current ? `
     <div class="nmf-deck-stage">
-        ${hasNext ? `<div class="nmf-deck-backcard"></div>` : ''}
-        <div class="nmf-swipe-card" id="nmf-active-swipe-card">
+        ${hasNext ? `<div class="nmf-deck-backcard" id="nmf-deck-backcard"></div>` : ''}
+        <div class="nmf-swipe-card${state.justSwipedCardEnter ? ' nmf-swipe-enter' : ''}" id="nmf-active-swipe-card">
             <div class="nmf-stamp nmf-stamp-like" id="nmf-stamp-like">ЛАЙК</div>
             <div class="nmf-stamp nmf-stamp-nope" id="nmf-stamp-nope">МИМО</div>
 
@@ -3775,15 +4187,20 @@ function renderSwipeTab(sess) {
                 ${fSpec.isReal ? renderSealedArtVeilHtml(current.id) : ''}
                 <div class="nmf-hero-topbadges">
                     <span class="nmf-match-badge">${Number(current.compatibility) || 91}% MATCH</span>
-                    <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
-                        <button type="button" class="nmf-art-chip-btn" data-act="send-cand-to-blitz" data-source="tinder" data-ref="queue:${esc(current.id)}" title="Раскрыть этого героя вопросами в Блице">${NMF_ICONS.blitz} В Блиц</button>
-                        <button type="button" class="nmf-art-chip-btn" data-act="send-cand-to-concept" data-ref="queue:${esc(current.id)}" title="Отправить этого героя в Концепт-арт Бюро">${NMF_ICONS.conceptBoard} Концепт</button>
-                        <button type="button" class="nmf-art-chip-btn" data-act="trigger-cand-upload" data-pool="queue" data-idx="0" title="Загрузить свой арт с устройства">${NMF_ICONS.upload} Своё</button>
-                        ${fSpec.isReal ? `<button type="button" class="nmf-art-chip-btn" data-act="open-crop-cand" data-pool="queue" data-idx="0" title="Кадрировать арт">${NMF_ICONS.crop}</button>` : ''}
-                        <button type="button" class="nmf-art-chip-btn" data-act="edit-cand" data-pool="queue" data-idx="0" title="Править превью">${NMF_ICONS.editSmall}</button>
-                        ${canArt ? (isArtLoading
-                            ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(current.id)}">Стоп</button>`
-                            : `<button type="button" class="nmf-art-chip-btn" data-act="gen-cand-art">${NMF_ICONS.image} ${fSpec.isReal ? 'Переснять' : 'Арт'}</button>`) : ''}
+                    <div class="nmf-hero-art-menu-wrap">
+                        ${isArtLoading ? `<button type="button" class="nmf-art-chip-btn" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(current.id)}">${esc(tx('Стоп', 'Stop'))}</button>` : ''}
+                        <button type="button" class="nmf-hero-art-trigger" data-act="toggle-art-overlay-menu" data-menu-key="swipe_${esc(current.id)}" title="${esc(tx('Меню карточки и фото', 'Card & photo actions'))}">
+                            ${NMF_ICONS.moreDots}
+                        </button>
+                        ${state.openArtMenuKey === `swipe_${current.id}` ? `
+                        <div class="nmf-hero-art-dropdown">
+                            ${canArt && !isArtLoading ? `<button type="button" class="nmf-hero-art-item" data-act="gen-cand-art">${NMF_ICONS.image} <span>${esc(fSpec.isReal ? tx('Переснять арт', 'Regenerate Art') : tx('Сделать арт', 'Generate Art'))}</span></button>` : ''}
+                            <button type="button" class="nmf-hero-art-item" data-act="trigger-cand-upload" data-pool="queue" data-idx="0">${NMF_ICONS.upload} <span>${esc(tx('Загрузить своё фото', 'Upload Own Photo'))}</span></button>
+                            ${fSpec.isReal ? `<button type="button" class="nmf-hero-art-item" data-act="open-crop-cand" data-pool="queue" data-idx="0">${NMF_ICONS.crop} <span>${esc(tx('Кадрировать', 'Crop Photo'))}</span></button>` : ''}
+                            <button type="button" class="nmf-hero-art-item" data-act="edit-cand" data-pool="queue" data-idx="0">${NMF_ICONS.editSmall} <span>${esc(tx('Править превью', 'Edit Preview'))}</span></button>
+                            <button type="button" class="nmf-hero-art-item" data-act="send-cand-to-blitz" data-source="tinder" data-ref="queue:${esc(current.id)}">${NMF_ICONS.blitz} <span>${esc(tx('Раскрыть в Блице', 'Send to Blitz'))}</span></button>
+                            <button type="button" class="nmf-hero-art-item" data-act="send-cand-to-concept" data-ref="queue:${esc(current.id)}">${NMF_ICONS.conceptBoard} <span>${esc(tx('В Концепт-арт', 'Send to Concept Lab'))}</span></button>
+                        </div>` : ''}
                     </div>
                 </div>`;
             })()}
@@ -3817,14 +4234,24 @@ function renderSwipeTab(sess) {
         <button type="button" class="nmf-dock-btn nmf-dock-nope" data-act="tinder-dislike" ${sess.frozen ? 'disabled' : ''}>${NMF_ICONS.dislike} Мимо</button>
         <button type="button" class="nmf-dock-btn nmf-dock-super" data-act="tinder-expand-now" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.spark} Собрать</button>
         <button type="button" class="nmf-dock-btn nmf-dock-like" data-act="tinder-like" ${sess.frozen ? 'disabled' : ''}>${NMF_ICONS.heart} В Мэтчи</button>
-    </div>` : `
+    </div>` : (storyFilled ? `
     <div class="nmf-empty-deck">
         <div style="color:var(--nmf-accent)">${NMF_ICONS.flame}</div>
-        <div style="font-family:var(--nmf-font-title);font-size:17px;font-weight:700">${worldMode ? 'Лента миров и РПГ готова' : 'Лента знакомств готова'}</div>
+        <div style="font-family:var(--nmf-font-title);font-size:17px;font-weight:700">${esc(worldMode ? tx('Лента миров и РПГ готова', 'World & RPG Deck Ready') : tx('Лента знакомств готова', 'Match Deck Ready'))}</div>
+        <div style="font-size:12px;color:var(--nmf-text-muted);max-width:300px;line-height:1.45">${esc(tx('Анкета настроена — можно запускать подбор кандидатов под ваш вайб.', 'Your Story Questionnaire is set — launch candidate matching whenever ready.'))}</div>
         <div class="nmf-btn-row" style="justify-content:center;margin-top:4px">
-            <button type="button" class="nmf-btn-primary" data-act="gen-tinder" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.spark} Запустить подбор</button>
+            <button type="button" class="nmf-btn-primary" data-act="gen-tinder" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.spark} ${esc(tx('Запустить подбор', 'Start Matching'))}</button>
         </div>
-    </div>`}`;
+    </div>` : `
+    <div class="nmf-empty-deck">
+        <div style="color:var(--nmf-accent)">${NMF_ICONS.sliders}</div>
+        <div style="font-family:var(--nmf-font-title);font-size:16.5px;font-weight:700">${esc(tx('Сначала заполните Сюжетную анкету', 'Fill Out the Story Questionnaire First'))}</div>
+        <div style="font-size:12px;color:var(--nmf-text-muted);max-width:320px;line-height:1.45">${esc(tx('Свайпы работают от вашей Сюжетной анкеты: сеттинга, жанров, вашей роли и желаемых тропов. Без неё подбор пойдёт вслепую.', 'Swipes build matches from your Story Questionnaire: setting, genres, your role, and desired tropes. Without it, results will be purely random.'))}</div>
+        <div class="nmf-btn-row" style="justify-content:center;margin-top:6px;flex-wrap:wrap">
+            <button type="button" class="nmf-btn-primary" data-act="open-intake-sheet" ${sess.frozen ? 'disabled' : ''}>${NMF_ICONS.sliders} ${esc(tx('Заполнить анкету', 'Fill Questionnaire'))}</button>
+            <button type="button" class="nmf-btn-secondary" data-act="gen-tinder" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.spark} ${esc(tx('Случайный подбор', 'Random Roll'))}</button>
+        </div>
+    </div>`)}`;
 }
 
 function filterAndSortGridEntries(items = [], { isGacha = false, isVault = false } = {}) {
@@ -4014,38 +4441,31 @@ function renderGachaCollectionView(sess) {
                     </div>
                     <div class="nmf-match-thumb-ov">
                         <div style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;line-height:1.2">${esc(c.name)}</div>
-                        <div style="font-family:var(--nmf-font-mono);font-size:9px;color:${c.stars >= 5 ? '#f5c25b' : 'var(--nmf-accent-2)'};margin-top:2px">${esc((c.epithet || c.archetype || '').slice(0, 34))}</div>
+                        <div class="nmf-tile-arch" style="color:${c.stars >= 5 ? '#f5c25b' : 'var(--nmf-accent-2)'}">${esc(c.epithet || c.archetype || '')}</div>
                     </div>
                 </div>
-                <div style="padding:8px 9px;font-size:11.5px;line-height:1.4;color:var(--nmf-text-muted)">
-                    ${esc((c.pitch || '').slice(0, 96))}${(c.pitch || '').length > 96 ? '...' : ''}
+                <div class="nmf-tile-pitch">
+                    ${esc(c.pitch || '')}
                 </div>
             </div>
-            <div style="padding:0 8px 8px;display:flex;flex-direction:column;gap:4px">
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
-                    <button type="button" class="nmf-btn-secondary ${inSlot ? 'nmf-active' : ''}" style="height:26px;font-size:9.5px;padding:0 3px;white-space:nowrap" data-act="gacha-toggle-fusion-slot" data-id="${esc(c.id)}">
-                        ${esc(inSlot ? tx('Выбрано', 'Selected') : tx('+ Алтарь', '+ Altar'))}
+            <div style="padding:0 8px 8px;display:flex;flex-direction:column;gap:5px">
+                <div class="nmf-tile-actions" style="padding:0">
+                    <button type="button" class="nmf-btn-primary" style="flex:1;font-size:10.5px;padding:0 6px" data-act="expand-gacha" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>
+                        ${esc(tx('Собрать', 'Build'))}
                     </button>
-                    <button type="button" class="nmf-btn-secondary" style="height:26px;font-size:9.5px;padding:0 3px;white-space:nowrap" data-act="send-cand-to-concept" data-ref="gacha:${esc(c.id)}" title="${esc(tx('Отправить в Концепт-арт', 'Send to Concept Lab'))}">
-                        ${esc(tx('Концепт', 'Concept'))}
-                    </button>
-                    <button type="button" class="nmf-btn-secondary" style="height:26px;font-size:9.5px;padding:0 3px;white-space:nowrap" data-act="send-cand-to-blitz" data-source="gacha" data-ref="gacha:${esc(c.id)}" title="${esc(tx('Раскрыть в Блице', 'Deepen in Blitz'))}">
-                        ${esc(tx('В Блиц', 'To Blitz'))}
+                    <button type="button" class="nmf-btn-secondary ${inSlot ? 'nmf-active' : ''}" style="font-size:10px;padding:0 7px" data-act="gacha-toggle-fusion-slot" data-id="${esc(c.id)}" title="${esc(tx('Добавить/убрать с Алтаря Слияния', 'Toggle Altar slot'))}">
+                        ${esc(inSlot ? tx('В Алтаре', 'In Altar') : tx('+ Алтарь', '+ Altar'))}
                     </button>
                 </div>
-                <button type="button" class="nmf-btn-primary" style="width:100%;height:27px;font-size:10px;padding:0 4px" data-act="expand-gacha" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>
-                    ${esc(tx('Собрать', 'Build'))}
-                </button>
-                <div style="display:flex;justify-content:space-between;gap:4px">
-                    ${canArt ? (isLoading
-                        ? `<button type="button" class="nmf-icon-btn" style="flex:1;height:26px;font-size:10px;padding:0 4px;border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(c.id)}">${esc(tx('Стоп', 'Stop'))}</button>`
-                        : `<button type="button" class="nmf-icon-btn" style="flex:1;height:26px;font-size:10px;padding:0 4px" data-act="gen-gacha-item-art" data-id="${esc(c.id)}">${NMF_ICONS.image} ${esc(tx('Арт', 'Art'))}</button>`) : ''}
-                    ${c.fusedFromNames?.length ? `<button type="button" class="nmf-icon-btn nmf-sq" style="height:26px;width:26px" data-act="regen-altar-char" data-id="${esc(c.id)}" ${state.busy || sess.frozen ? 'disabled' : ''} title="${esc(tx('Перегенерировать героя Алтаря', 'Regenerate Altar hero'))}">${NMF_ICONS.rework}</button>` : ''}
-                    <button type="button" class="nmf-icon-btn" style="height:26px;padding:0 6px;font-size:10px" data-act="sacrifice-gacha-idx" data-idx="${idx}" title="${esc(tx(`Принести карту в жертву ради +${sacGain} Молитв`, `Sacrifice card for +${sacGain} Prayers`))}">
-                        ${NMF_ICONS.sacrifice}+${sacGain}
+                <div class="nmf-tile-actions" style="padding:0">
+                    <button type="button" class="nmf-icon-btn" style="flex:1;font-size:10px;padding:0 5px" data-act="sacrifice-gacha-idx" data-idx="${idx}" title="${esc(tx(`Принести карту в жертву ради +${sacGain} Молитв`, `Sacrifice card for +${sacGain} Prayers`))}">
+                        ${NMF_ICONS.sacrifice} +${sacGain}
                     </button>
-                    <button type="button" class="nmf-icon-btn nmf-sq" style="height:26px;width:26px" data-act="edit-cand" data-pool="gacha_collection" data-idx="${idx}" title="${esc(tx('Править', 'Edit'))}">${NMF_ICONS.editSmall}</button>
-                    <button type="button" class="nmf-icon-btn nmf-sq" style="height:26px;width:26px" data-act="del-gacha" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
+                    ${canArt ? (isLoading
+                        ? `<button type="button" class="nmf-icon-btn nmf-sq" style="border-color:#ff6b86;color:#ff8fa0" data-act="stop-cand-art" data-id="${esc(c.id)}" title="${esc(tx('Остановить рендер', 'Stop art'))}">${NMF_ICONS.close}</button>`
+                        : `<button type="button" class="nmf-icon-btn nmf-sq" data-act="gen-gacha-item-art" data-id="${esc(c.id)}" title="${esc(tx('Сделать/переснять арт', 'Generate art'))}">${NMF_ICONS.image}</button>`) : ''}
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="edit-cand" data-pool="gacha_collection" data-idx="${idx}" title="${esc(tx('Править', 'Edit'))}">${NMF_ICONS.editSmall}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="del-gacha" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
                 </div>
             </div>
         </div>`;
@@ -4095,27 +4515,23 @@ function renderSavedVaultView(sess) {
             const tileCls = fSpec.isReal ? pSpec.cls : 'nmf-tile-square';
             return `
             <div class="nmf-match-tile ${tileCls}" style="${fSpec.isReal ? pSpec.style : ''}">
-                <div>
+                <div class="nmf-match-click-zone">
                     <div class="nmf-match-thumb nmf-tappable-photo" data-act="open-vault-lightbox" data-idx="${idx}">
                         ${fSpec.src ? `<img src="${esc(fSpec.src)}" alt="Vault"/>` : ''}
                         <div class="nmf-match-thumb-ov">
                             <div style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;line-height:1.2">${esc(v.name || tx('Без имени', 'Untitled'))}</div>
-                            <div style="font-family:var(--nmf-font-mono);font-size:9px;color:var(--nmf-accent);margin-top:2px">${countWords(v.description)} ${esc(tx('слов', 'words'))} · ${v.savedTranslation ? `${esc(tx('Перевод:', 'Translated:'))} ${esc(v.savedTranslation.lang)}` : esc(tx('В Хранилище', 'In Vault'))}</div>
+                            <div class="nmf-tile-arch" style="color:var(--nmf-accent)">${countWords(v.description)} ${esc(tx('слов', 'words'))} · ${v.savedTranslation ? `${esc(tx('Перевод:', 'Translated:'))} ${esc(v.savedTranslation.lang)}` : esc(tx('В Хранилище', 'In Vault'))}</div>
                         </div>
                     </div>
-                    <div style="padding:8px 9px;font-size:11.5px;line-height:1.4;color:var(--nmf-text-muted)">
-                        ${esc((v.description || v.first_mes || '').slice(0, 96))}...
+                    <div class="nmf-tile-pitch">
+                        ${esc(v.description || v.first_mes || '')}
                     </div>
                 </div>
-                <div style="padding:0 8px 8px;display:flex;flex-direction:column;gap:4px">
-                    <div style="display:flex;gap:4px">
-                        <button type="button" class="nmf-btn-primary" style="flex:1;height:28px;font-size:10px;padding:0 5px" data-act="save-vault-to-tavern" data-idx="${idx}" ${state.busy ? 'disabled' : ''}>${esc(tx('В Таверну', 'To Tavern'))}</button>
-                        <button type="button" class="nmf-btn-secondary" style="flex:1;height:28px;font-size:10px;padding:0 5px" data-act="load-vault-to-editor" data-idx="${idx}" ${sess.frozen ? 'disabled' : ''}>${esc(tx('Распаковать', 'Unpack'))}</button>
-                    </div>
-                    <div style="display:flex;gap:4px;justify-content:flex-end">
-                        <button type="button" class="nmf-icon-btn nmf-sq" style="height:26px;flex:1;font-size:10px" data-act="export-vault-png" data-idx="${idx}" title="${esc(tx('Скачать PNG V2', 'Download V2 PNG'))}">${NMF_ICONS.download} PNG</button>
-                        <button type="button" class="nmf-icon-btn nmf-sq" style="height:26px;width:28px" data-act="del-vault-item" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
-                    </div>
+                <div class="nmf-tile-actions">
+                    <button type="button" class="nmf-btn-primary" style="flex:1;font-size:10.5px;padding:0 5px" data-act="save-vault-to-tavern" data-idx="${idx}" ${state.busy ? 'disabled' : ''}>${esc(tx('В Таверну', 'To Tavern'))}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="load-vault-to-editor" data-idx="${idx}" ${sess.frozen ? 'disabled' : ''} title="${esc(tx('Открыть в Редакторе', 'Open in Editor'))}">${NMF_ICONS.editSmall}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="export-vault-png" data-idx="${idx}" title="${esc(tx('Скачать PNG V2', 'Download V2 PNG'))}">${NMF_ICONS.download}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="del-vault-item" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
                 </div>
             </div>`;
         }).join('')}
@@ -4185,20 +4601,20 @@ function renderMatchesTab(sess) {
                     ${fSpec.isReal ? renderSealedArtVeilHtml(c.id) : ''}
                     <div class="nmf-match-thumb-ov">
                         <div style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;line-height:1.2">${esc(c.name)}</div>
-                        <div style="font-family:var(--nmf-font-mono);font-size:9px;color:var(--nmf-accent-2);margin-top:2px">${esc((c.archetype || '').slice(0, 34))}</div>
+                        ${c.archetype ? `<div class="nmf-tile-arch">${esc(c.archetype)}</div>` : ''}
                     </div>
                 </div>
-                <div style="padding:8px 9px;font-size:11.5px;line-height:1.4;color:var(--nmf-text-muted)">
-                    ${esc((c.pitch || '').slice(0, 100))}${(c.pitch || '').length > 100 ? '...' : ''}
+                <div class="nmf-tile-pitch">
+                    ${esc(c.pitch || '')}
                 </div>
             </div>
-            <div style="padding:0 8px 8px;display:flex;flex-wrap:wrap;gap:4px">
-                <button type="button" class="nmf-btn-primary" style="flex:1;height:28px;font-size:10px;padding:0 6px" data-act="${isPassedView ? 'expand-passed' : 'expand-liked'}" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>Собрать</button>
-                ${!isPassedView ? `<button type="button" class="nmf-btn-secondary" style="height:28px;font-size:10px;padding:0 6px" data-act="send-cand-to-concept" data-ref="liked:${esc(c.id)}" title="Отправить в Концепт-арт Бюро">Концепт</button>` : ''}
-                ${!isPassedView ? `<button type="button" class="nmf-btn-secondary" style="height:28px;font-size:10px;padding:0 6px" data-act="send-cand-to-blitz" data-source="tinder" data-ref="liked:${esc(c.id)}" title="Раскрыть этого героя в Блице">В Блиц</button>` : ''}
-                <button type="button" class="nmf-icon-btn nmf-sq" style="height:28px;width:28px" data-act="edit-cand" data-pool="${isPassedView ? 'passed' : 'liked'}" data-idx="${idx}">${NMF_ICONS.editSmall}</button>
-                ${isPassedView ? `<button type="button" class="nmf-icon-btn nmf-sq" style="height:28px;width:28px" data-act="restore-passed-to-deck" data-idx="${idx}">${NMF_ICONS.undo}</button>` : ''}
-                <button type="button" class="nmf-icon-btn nmf-sq" style="height:28px;width:28px" data-act="${isPassedView ? 'del-passed' : 'del-liked'}" data-idx="${idx}">${NMF_ICONS.trash}</button>
+            <div class="nmf-tile-actions">
+                <button type="button" class="nmf-btn-primary" style="flex:1;font-size:10.5px;padding:0 6px" data-act="${isPassedView ? 'expand-passed' : 'expand-liked'}" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>${esc(tx('Собрать', 'Build'))}</button>
+                <button type="button" class="nmf-icon-btn nmf-sq" data-act="edit-cand" data-pool="${isPassedView ? 'passed' : 'liked'}" data-idx="${idx}" title="${esc(tx('Править', 'Edit'))}">${NMF_ICONS.editSmall}</button>
+                ${isPassedView
+                    ? `<button type="button" class="nmf-icon-btn nmf-sq" data-act="restore-passed-to-deck" data-idx="${idx}" title="${esc(tx('Вернуть в ленту Свайпов', 'Restore to Swipe Deck'))}">${NMF_ICONS.undo}</button>`
+                    : `<button type="button" class="nmf-icon-btn nmf-sq" data-act="send-cand-to-blitz" data-source="tinder" data-ref="liked:${esc(c.id)}" title="${esc(tx('Раскрыть в Блице', 'Send to Blitz'))}">${NMF_ICONS.blitz}</button>`}
+                <button type="button" class="nmf-icon-btn nmf-sq" data-act="${isPassedView ? 'del-passed' : 'del-liked'}" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
             </div>
         </div>`;
         }).join('')}
@@ -4239,93 +4655,100 @@ function renderBlitzTab(sess) {
     const bz = sess.blitz;
     const qTargetCount = Number(bz.questionCount) || 10;
     const answeredCount = bz.questions.filter((q) => Boolean(formatQuestionUserDecision(q))).length;
-    const worldMode = isWorldOrRpgMode(sess.intake);
-    const candidatesList = listBlitzSelectableCandidates(sess);
+    const bMode = resolveBlitzEffectiveSourceMode(sess);
+    const worldMode = bMode === 'gacha'
+        ? (sess.gacha?.wishPrefs?.targetType === 'world_rpg' || sess.gacha?.wishPrefs?.targetType === 'artifact')
+        : isWorldOrRpgMode(sess.intake);
+    const candidatesList = listBlitzSelectableCandidates(sess, { includeAll: true });
     const seedHit = resolveBlitzSeedCandidate(sess);
     const seedEntity = seedHit?.entity || null;
     const seedPortraitEnt = seedEntity ? resolveHeroTruePortraitEntity(sess, seedEntity) : null;
     const seedThumb = seedPortraitEnt ? safeImgSrc(resolveEntityDisplayUrl(seedPortraitEnt)) : '';
-    const sourceEnabled = (bz.useTinderContext !== false) || Boolean(bz.useGachaContext) || Boolean(bz.useConceptContext) || Boolean(bz.usePhotoContext);
-    const curSelRef = bz.selectedCandidateRef === '__none__' ? '__none__' : (seedHit?.ref || '__none__');
+    const curSelRef = seedHit?.ref || '__none__';
+
+    const modeSummaryMap = {
+        story: seedEntity
+            ? tx(`Сюжетная анкета + герой «${seedEntity.name}» (Гача отключена)`, `Story Questionnaire + "${seedEntity.name}" (Gacha isolated)`)
+            : tx('Сюжетная анкета сессии (Гача полностью отключена)', 'Main Story Questionnaire (Gacha isolated)'),
+        gacha: seedEntity
+            ? tx(`Анкета Гачи + герой «${seedEntity.name}» (Сюжетная анкета отключена)`, `Gacha Questionnaire + "${seedEntity.name}" (Main Questionnaire isolated)`)
+            : tx('Анкета Гачи (Сюжетная анкета и Свайпы отключены)', 'Gacha Questionnaire (Main Questionnaire isolated)'),
+        none: seedEntity
+            ? tx(`Только досье героя «${seedEntity.name}» без анкет сессии`, `Only "${seedEntity.name}" dossier without session questionnaires`)
+            : tx('Чистый лист — только ваша тема ниже без анкет', 'Clean slate — only your topic below, zero questionnaires'),
+    };
 
     return `
-    ${renderStudioRoomBar(
-        'Блиц-опрос',
-        'Blitz Quiz',
-        `<button type="button" class="nmf-chip" data-act="open-intake-sheet">${NMF_ICONS.sliders} <span>${esc(tx('Анкета', 'Questionnaire'))}</span></button>`,
-    )}
+    ${renderStudioRoomBar('Блиц-опрос', 'Blitz Quiz')}
     <div class="nmf-panel">
-        ${sourceEnabled ? `
         <div class="nmf-field">
             <label class="nmf-label">
-                <span>Герой из Тиндера / Гачи для раскрытия в Блице</span>
+                <span>${esc(tx('1. Какую анкету учитывать', '1. Questionnaire Context'))}</span>
                 ${helpBtn('isolation')}
             </label>
-            ${candidatesList.length > 0 ? `
+            <div class="nmf-seg-bar nmf-seg-3">
+                <button type="button" class="nmf-seg-btn ${bMode === 'story' ? 'nmf-active' : ''}" data-act="set-blitz-source-mode" data-bmode="story" ${sess.frozen ? 'disabled' : ''}>
+                    ${esc(tx('Сюжетная анкета', 'Story'))}
+                </button>
+                <button type="button" class="nmf-seg-btn ${bMode === 'gacha' ? 'nmf-active' : ''}" data-act="set-blitz-source-mode" data-bmode="gacha" ${sess.frozen ? 'disabled' : ''}>
+                    ${esc(tx('Анкета Гачи', 'Gacha'))}
+                </button>
+                <button type="button" class="nmf-seg-btn ${bMode === 'none' ? 'nmf-active' : ''}" data-act="set-blitz-source-mode" data-bmode="none" ${sess.frozen ? 'disabled' : ''}>
+                    ${esc(tx('Без анкет', 'None'))}
+                </button>
+            </div>
+            <div style="font-size:11px;color:var(--nmf-text-muted);line-height:1.35;margin-top:3px">${esc(modeSummaryMap[bMode] || modeSummaryMap.story)}</div>
+        </div>
+
+        <div class="nmf-field">
+            <label class="nmf-label">
+                <span>${esc(tx(`2. Персонаж (новый или из коллекции: ${candidatesList.length})`, `2. Target Character (New or from Collection: ${candidatesList.length})`))}</span>
+                ${seedEntity ? `<button type="button" class="nmf-chip" data-act="clear-blitz-hero" ${sess.frozen ? 'disabled' : ''}>${esc(tx('Сбросить героя', 'Clear Hero'))}</button>` : ''}
+            </label>
             <select class="nmf-select" data-blitz-cand="1" ${sess.frozen ? 'disabled' : ''}>
+                <option value="__none__" ${curSelRef === '__none__' ? 'selected' : ''}>${esc(tx('Новый персонаж (создать по анкете / теме)', 'New Character (build from questionnaire / topic)'))}</option>
                 ${candidatesList.map((item) => `
                     <option value="${esc(item.ref)}" ${curSelRef === item.ref ? 'selected' : ''}>
-                        [${esc(item.badge)}] ${esc(item.entity.name)}${item.entity.archetype || item.entity.epithet ? ` — ${esc((item.entity.archetype || item.entity.epithet).slice(0, 32))}` : ''}
+                        [${esc(item.badge)}] ${esc(item.entity.name)}${item.entity.archetype || item.entity.epithet ? ` — ${esc(item.entity.archetype || item.entity.epithet)}` : ''}
                     </option>
                 `).join('')}
-                <option value="__none__" ${curSelRef === '__none__' ? 'selected' : ''}>— Без карточки (создать нового героя с нуля) —</option>
             </select>
             ${seedEntity ? `
             <div class="nmf-blitz-seed-card">
                 <div class="nmf-blitz-seed-ava">
                     ${seedThumb ? `<img src="${esc(seedThumb)}" alt="${esc(seedEntity.name)}"/>` : NMF_ICONS.flame}
                 </div>
-                <div style="min-width:0">
+                <div style="min-width:0;flex:1">
                     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                         <span style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;color:var(--nmf-text)">${esc(seedEntity.name)}</span>
                         <span style="font-family:var(--nmf-font-mono);font-size:9.5px;padding:1px 6px;border-radius:3px;border:1px solid var(--nmf-accent);color:var(--nmf-accent)">${esc(seedHit.badge)}</span>
                     </div>
-                    <div style="font-size:11.5px;color:var(--nmf-text-muted);line-height:1.35;margin-top:2px">
-                        ${esc((seedEntity.pitch || seedEntity.archetype || seedEntity.epithet || '').slice(0, 110))}${(seedEntity.pitch || '').length > 110 ? '...' : ''}
+                    <div class="nmf-tile-pitch" style="padding:3px 0 0;font-size:11.5px">
+                        ${esc(seedEntity.pitch || seedEntity.archetype || seedEntity.epithet || '')}
                     </div>
                 </div>
-            </div>` : ''}` : `
-            <div class="nmf-warn-box" style="font-size:11.5px">
-                ${NMF_ICONS.flame}
-                <span>В выбранном источнике пока нет анкет — вопросы создадут героя с нуля, либо сначала подберите кандидата в «Свайпах» / «Гаче» и нажмите «В Блиц».</span>
-            </div>`}
-        </div>` : ''}
+            </div>` : ''}
+        </div>
 
         <div class="nmf-field">
-            <label class="nmf-label"><span>${seedEntity ? `Уточняющий фокус вопросов для «${esc(seedEntity.name)}» (по желанию)` : (worldMode ? 'Тема Блиц-конструктора мира / РПГ' : 'Тема Блиц-анкеты персонажа')}</span>${!sourceEnabled ? helpBtn('isolation') : ''}</label>
-            <input type="text" class="nmf-input" data-blitz="topic" value="${esc(bz.topic)}" placeholder="${seedEntity ? `Оставьте пустым для полного раскрытия «${esc(seedEntity.name)}» или укажите акцент...` : (worldMode ? 'Например: Постапокалипсис с мутациями и фракциями...' : 'Например: Опасный мафиози, сосед по комнате, рыцарь...')}" ${sess.frozen ? 'disabled' : ''}/>
+            <label class="nmf-label"><span>${seedEntity ? `Уточняющий фокус вопросов для «${esc(seedEntity.name)}» (по желанию)` : (worldMode ? 'Тема Блиц-конструктора мира / РПГ' : 'Тема Блиц-анкеты персонажа')}</span></label>
+            <input type="text" class="nmf-input" data-blitz="topic" value="${esc(bz.topic)}" placeholder="${esc(seedEntity ? `Оставьте пустым для полного раскрытия «${seedEntity.name}» или укажите акцент...` : tx('Опишите идею или оставьте пустым, если выбрана анкета...', 'Write a topic/focus or leave blank if using a questionnaire...'))}" ${sess.frozen ? 'disabled' : ''}/>
         </div>
 
         <details class="nmf-spoiler">
-            <summary><span>Настройки Блица (${qTargetCount} вопр. · Тиндер: ${bz.useTinderContext !== false ? 'ДА' : 'НЕТ'} · Гача: ${bz.useGachaContext ? 'ДА' : 'НЕТ'})</span>${NMF_ICONS.chevronDown}</summary>
+            <summary><span>${esc(tx(`Параметры вопросов (${qTargetCount} вопр.${bz.includeChoices ? ' · С вариантами' : ''})`, `Question Options (${qTargetCount} Qs${bz.includeChoices ? ' · With Choices' : ''})`))}</span>${NMF_ICONS.chevronDown}</summary>
             <div class="nmf-spoiler-body">
                 <div class="nmf-field">
-                    <label class="nmf-label">Количество вопросов</label>
+                    <label class="nmf-label">${esc(tx('Количество вопросов', 'Number of Questions'))}</label>
                     <div class="nmf-chip-wrap">
                         ${BLITZ_COUNT_OPTIONS.map((n) => `
-                            <button type="button" class="nmf-chip ${qTargetCount === n ? 'nmf-on' : ''}" data-act="set-blitz-count" data-count="${n}" ${sess.frozen ? 'disabled' : ''}>${n} вопр.</button>
+                            <button type="button" class="nmf-chip ${qTargetCount === n ? 'nmf-on' : ''}" data-act="set-blitz-count" data-count="${n}" ${sess.frozen ? 'disabled' : ''}>${n} ${esc(tx('вопр.', 'Qs'))}</button>
                         `).join('')}
                     </div>
                 </div>
                 <div class="nmf-toggle-line" data-act="toggle-blitz-choices">
-                    <span style="font-size:12px;font-weight:600">Предлагать варианты ответов с галочками</span>
+                    <span style="font-size:12px;font-weight:600">${esc(tx('Предлагать варианты ответов с галочками', 'Include checkable answer suggestions'))}</span>
                     <div class="nmf-switch ${bz.includeChoices ? 'nmf-on' : ''}"></div>
-                </div>
-                <div class="nmf-toggle-line" data-act="toggle-blitz-tinder-ctx">
-                    <span style="font-size:12px;font-weight:600">Брать анкету из Тиндера (по умолч. ДА)</span>
-                    <div class="nmf-switch ${bz.useTinderContext !== false ? 'nmf-on' : ''}"></div>
-                </div>
-                <div class="nmf-toggle-line" data-act="toggle-blitz-gacha-ctx">
-                    <span style="font-size:12px;font-weight:600">Брать анкету из Гачи (по умолч. НЕТ)</span>
-                    <div class="nmf-switch ${bz.useGachaContext ? 'nmf-on' : ''}"></div>
-                </div>
-                <div class="nmf-toggle-line" data-act="toggle-blitz-concept-ctx">
-                    <span style="font-size:12px;font-weight:600">Брать из Концепт Артов (по умолч. НЕТ)</span>
-                    <div class="nmf-switch ${bz.useConceptContext ? 'nmf-on' : ''}"></div>
-                </div>
-                <div class="nmf-toggle-line" data-act="toggle-blitz-photo-ctx">
-                    <span style="font-size:12px;font-weight:600">Брать из Герой по Фото (по умолч. НЕТ)</span>
-                    <div class="nmf-switch ${bz.usePhotoContext ? 'nmf-on' : ''}"></div>
                 </div>
             </div>
         </details>
@@ -4495,9 +4918,14 @@ function renderCreateTab(sess) {
                             <label class="nmf-label">${esc(tx('Режим адаптации', 'Adaptation Mode'))}</label>
                             <select class="nmf-select" data-rework="reworkMode" ${sess.frozen ? 'disabled' : ''}>
                                 <option value="au_shift" ${rw.reworkMode === 'au_shift' ? 'selected' : ''}>${esc(tx('Перевод всех реалий под новую эпоху + сохранить вёрстку', 'Translate all lore to new era + preserve author layout'))}</option>
-                                <option value="full_rebuild" ${(rw.reworkMode === 'full_rebuild' || rw.reworkMode === 'full_rework') ? 'selected' : ''}>${esc(tx('Полная пересборка под шаблон Анкеты', 'Full rebuild using Questionnaire template'))}</option>
+                                <option value="full_rebuild" ${(rw.reworkMode === 'full_rebuild' || rw.reworkMode === 'full_rework') ? 'selected' : ''}>${esc(tx('Полная пересборка под выбранный Формат карточки', 'Full rebuild using selected Card Template'))}</option>
                             </select>
                         </div>
+                        ${(rw.reworkMode === 'full_rebuild' || rw.reworkMode === 'full_rework') ? `
+                        <div class="nmf-field">
+                            <label class="nmf-label">${esc(tx('Формат структуры карточки (V2)', 'Card Structure Template (V2)'))}</label>
+                            ${renderTemplateManagerWidgetHtml({ sess, cfg: getSettings(), state, esc, rosterChars: state.rosterChars || [] })}
+                        </div>` : ''}
                         <div class="nmf-field">
                             <label class="nmf-label">${esc(tx('Идея первой встречи (опционально)', 'Opening Scene Premise (optional)'))}</label>
                             <textarea class="nmf-textarea" style="min-height:56px" data-rework="encounterIdea" placeholder="${esc(tx('Короткая завязка первого сообщения...', 'Short hook for the first message...'))}" ${sess.frozen ? 'disabled' : ''}>${esc(rw.encounterIdea)}</textarea>
@@ -4656,6 +5084,8 @@ function renderFullscreenFieldEditorModal(sess) {
         curVal = String(c.alternate_greetings?.[fs.altIdx] ?? '');
     } else if (fs.kind === 'imagePrompt') {
         curVal = String(c.imagePrompt ?? '');
+    } else if (fs.kind === 'intake' && fs.field) {
+        curVal = String(sess.intake?.[fs.field] ?? '');
     } else {
         curVal = String(c[fs.field] ?? '');
     }
@@ -4701,15 +5131,7 @@ function renderPostCardSavedModal(sess) {
     const info = state.postSavePromptInfo;
     if (!info || !sess) return '';
     const it = sess.intake || {};
-    const hasStoryFilled = Boolean(
-        it.fandomName?.trim()
-        || it.settingEra?.trim()
-        || it.favFandomHero?.trim()
-        || it.userRoleAndDesire?.trim()
-        || it.tropesWanted?.trim()
-        || it.hardBans?.trim()
-        || (it.genres && it.genres.length),
-    );
+    const hasStoryFilled = isSessionStoryQuestionnaireFilled(it);
 
     let titleText = tx('СОХРАНЕНО В ТАВЕРНУ', 'SAVED TO TAVERN');
     let explainText = tx(
@@ -5113,13 +5535,19 @@ function renderEditorTab(sess) {
         (c.system_prompt || c.post_history_instructions) ? tx('+ Sys/Post', '+ Sys/Post') : '',
     ].filter(Boolean).join(' · ');
 
+    const isActualAuCard = (sess.activeCardSlot === 'architect' && sess.architect?.subMode === 'rework')
+        || (Boolean(c.sourceLoadedFromTavern) && Boolean(sess.rework?.targetUniverse?.trim()));
     const effectiveOriginKind = sess.activeCardSlot === 'blitz' || c.originMethod === 'blitz'
         ? 'blitz'
         : ((sess.activeCardSlot === 'gacha' || c.originMethod === 'gacha')
             ? 'gacha'
             : ((sess.activeCardSlot === 'swipe' || c.originMethod === 'swipe')
                 ? 'swipe'
-                : (((sess.activeCardSlot === 'architect' && sess.architect?.subMode === 'rework') || c.sourceLoadedFromTavern) ? 'au_rework' : 'idea')));
+                : (isActualAuCard
+                    ? 'au_rework'
+                    : (sess.activeCardSlot === 'photo'
+                        ? 'photo'
+                        : (['manual', 'concept', 'vault'].includes(sess.activeCardSlot) ? 'standalone' : 'idea')))));
 
     const selectedPickAvatar = state.profilePickAvatar || sess.rework?.sourceAvatar || '';
 
@@ -5904,26 +6332,68 @@ export function renderWindow() {
     const prevTab = win.dataset.renderedTab || '';
     const prevSheetBody = typeof win.querySelector === 'function' ? win.querySelector('.nmf-sheet-body') : null;
     const prevSheetScrollTop = prevSheetBody ? prevSheetBody.scrollTop : 0;
+    const getSpoilerSignature = (detEl, fallbackIdx) => {
+        const sumTxt = String(detEl?.querySelector?.('summary')?.textContent || '')
+            .replace(/\(\d+[^)]*\)/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 64);
+        return sumTxt || `__idx_${fallbackIdx}`;
+    };
+    const savedFocusElSupportsSelection = (el) => {
+        if (!el || typeof el.setSelectionRange !== 'function') return false;
+        if (el.tagName === 'TEXTAREA') return true;
+        const t = String(el.type || 'text').toLowerCase();
+        return ['text', 'search', 'url', 'tel', 'password'].includes(t);
+    };
     const prevOpenBodySpoilers = typeof win.querySelectorAll === 'function'
-        ? [...win.querySelectorAll('.nmf-body details.nmf-spoiler')].map((d) => Boolean(d.open))
+        ? [...win.querySelectorAll('.nmf-body details.nmf-spoiler')].map((d, i) => ({ open: Boolean(d.open), sig: getSpoilerSignature(d, i) }))
         : [];
     const prevOpenSheetSpoilers = typeof win.querySelectorAll === 'function'
-        ? [...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')].map((d) => Boolean(d.open))
+        ? [...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')].map((d, i) => ({ open: Boolean(d.open), sig: getSpoilerSignature(d, i) }))
         : [];
+
+    let savedFocusSpec = null;
+    try {
+        const actEl = document.activeElement;
+        if (actEl && typeof win.contains === 'function' && win.contains(actEl) && (actEl.tagName === 'INPUT' || actEl.tagName === 'TEXTAREA') && actEl.type !== 'file') {
+            let sel = '';
+            if (actEl.id) {
+                sel = `#${actEl.id}`;
+            } else if (actEl.attributes) {
+                for (let ai = 0; ai < actEl.attributes.length; ai++) {
+                    const at = actEl.attributes[ai];
+                    if (at && at.name && at.name.startsWith('data-') && at.name !== 'data-act') {
+                        sel = `${actEl.tagName.toLowerCase()}[${at.name}="${String(at.value).replace(/"/g, '\\"')}"]`;
+                        break;
+                    }
+                }
+            }
+            if (sel) {
+                savedFocusSpec = {
+                    sel,
+                    start: typeof actEl.selectionStart === 'number' ? actEl.selectionStart : null,
+                    end: typeof actEl.selectionEnd === 'number' ? actEl.selectionEnd : null,
+                };
+            }
+        }
+    } catch {}
 
     const cfg = getSettings();
     const sess = getActiveSession();
     const activeTheme = NMF_THEMES.find((t) => t.id === cfg.theme) || NMF_THEMES[0];
     const activeThemeDisp = getThemeDisplay(activeTheme.id);
 
-    const ratioClass = cfg.imageAspectRatio === 'native'
+    const gridAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+    const effectiveGridRatio = coerceAspectToSupported(cfg.imageAspectRatio || 'native', gridAspectInfo.supportedIds);
+    const ratioClass = effectiveGridRatio === 'native'
         ? ' nmf-ratio-native'
-        : (cfg.imageAspectRatio === '16:9' ? ' nmf-ratio-wide' : '');
+        : (isWideCardAspect(effectiveGridRatio) ? ' nmf-ratio-wide' : '');
     win.className = `nmf-theme-${activeTheme.id}${ratioClass}`;
     win.dataset.renderedTab = state.activeTab;
 
-    const ratioCss = cfg.imageAspectRatio === 'native' ? 'auto' : (cfg.imageAspectRatio || '1:1').replace(':', ' / ');
-    const fitCss = (cfg.imageCropFocus === 'contain' || cfg.imageAspectRatio === 'native') ? 'contain' : 'cover';
+    const ratioCss = effectiveGridRatio === 'native' ? 'auto' : effectiveGridRatio.replace(':', ' / ');
+    const fitCss = (cfg.imageCropFocus === 'contain' || effectiveGridRatio === 'native') ? 'contain' : 'cover';
     const posCss = cfg.imageCropFocus === 'top' ? '50% 6%' : '50% 50%';
     win.style.setProperty('--nmf-art-ratio', ratioCss);
     win.style.setProperty('--nmf-art-fit', fitCss);
@@ -6041,14 +6511,23 @@ export function renderWindow() {
         applyEnglishDomTranslation(win);
     }
 
+    const restoreSpoilersList = (nextList, prevList) => {
+        if (!nextList.length || !prevList.length) return;
+        const openSigs = new Set(prevList.filter((x) => x.open && x.sig).map((x) => x.sig));
+        if (nextList.length === prevList.length) {
+            nextList.forEach((d, idx) => {
+                if (prevList[idx]?.open || openSigs.has(getSpoilerSignature(d, idx))) d.open = true;
+            });
+        } else {
+            nextList.forEach((d, idx) => {
+                if (openSigs.has(getSpoilerSignature(d, idx))) d.open = true;
+            });
+        }
+    };
+
     if (prevTab === state.activeTab) {
         if (typeof win.querySelectorAll === 'function' && prevOpenBodySpoilers.length > 0) {
-            const nextSpoilers = [...win.querySelectorAll('.nmf-body details.nmf-spoiler')];
-            if (nextSpoilers.length === prevOpenBodySpoilers.length) {
-                nextSpoilers.forEach((d, idx) => {
-                    if (prevOpenBodySpoilers[idx]) d.open = true;
-                });
-            }
+            restoreSpoilersList([...win.querySelectorAll('.nmf-body details.nmf-spoiler')], prevOpenBodySpoilers);
         }
         if (prevScrollTop > 0) {
             const nextBody = win.querySelector('.nmf-body');
@@ -6056,16 +6535,23 @@ export function renderWindow() {
         }
     }
     if (typeof win.querySelectorAll === 'function' && prevOpenSheetSpoilers.length > 0) {
-        const nextSheetSpoilers = [...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')];
-        if (nextSheetSpoilers.length === prevOpenSheetSpoilers.length) {
-            nextSheetSpoilers.forEach((d, idx) => {
-                if (prevOpenSheetSpoilers[idx]) d.open = true;
-            });
-        }
+        restoreSpoilersList([...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')], prevOpenSheetSpoilers);
     }
     if (prevSheetScrollTop > 0 && typeof win.querySelector === 'function') {
         const nextSheet = win.querySelector('.nmf-sheet-body');
         if (nextSheet) nextSheet.scrollTop = prevSheetScrollTop;
+    }
+
+    if (savedFocusSpec && typeof win.querySelector === 'function') {
+        try {
+            const nextFocusEl = win.querySelector(savedFocusSpec.sel);
+            if (nextFocusEl && typeof nextFocusEl.focus === 'function') {
+                nextFocusEl.focus({ preventScroll: true });
+                if (savedFocusElSupportsSelection(nextFocusEl) && savedFocusSpec.start !== null && savedFocusSpec.end !== null) {
+                    nextFocusEl.setSelectionRange(savedFocusSpec.start, savedFocusSpec.end);
+                }
+            }
+        } catch {}
     }
 
     if (state.cropModalInfo) {
@@ -6115,9 +6601,11 @@ async function generateImmediateArtForEntity(cand, {
             cand,
         );
         if (signal?.aborted) throw new Error('Cancelled');
-        const effectiveAspect = isGacha
+        const portAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+        const rawChosenAspect = isGacha
             ? (cand.gachaAspectOverride || sess?.gacha?.aspectRatio || 'sillyimages_default')
-            : (cfg.imageAspectRatio || '1:1');
+            : (cfg.imageAspectRatio || 'native');
+        const effectiveAspect = coerceAspectToSupported(rawChosenAspect, portAspectInfo.supportedIds);
 
         const dataUrl = await generateCharacterPortrait(prompt, {
             imageSource: cfg.imageSource,
@@ -6224,9 +6712,11 @@ async function triggerCandidateArtInBackground(cand, isManual = false, explicitF
             cand,
         );
         const isGachaItem = String(cand.id || '').startsWith('gacha_');
-        const effectiveAspect = isGachaItem
+        const portAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+        const rawChosenAspect = isGachaItem
             ? (cand.gachaAspectOverride || sess?.gacha?.aspectRatio || 'sillyimages_default')
-            : (cfg.imageAspectRatio || '1:1');
+            : (cfg.imageAspectRatio || 'native');
+        const effectiveAspect = coerceAspectToSupported(rawChosenAspect, portAspectInfo.supportedIds);
         const dataUrl = await generateCharacterPortrait(prompt, {
             imageSource: cfg.imageSource,
             imageProfileId: cfg.imageProfileId,
@@ -6327,14 +6817,10 @@ function attachSwipeCardGestures(win) {
         tracking = false;
         cardEl.classList.remove('nmf-dragging');
 
-        if (lockedHorizontal && dx > 85) {
-            cardEl.style.transform = 'translateX(420px) rotate(16deg)';
-            cardEl.style.opacity = '0';
-            setTimeout(() => handleSwipeDecision('like'), 150);
-        } else if (lockedHorizontal && dx < -85) {
-            cardEl.style.transform = 'translateX(-420px) rotate(-16deg)';
-            cardEl.style.opacity = '0';
-            setTimeout(() => handleSwipeDecision('dislike'), 150);
+        if (lockedHorizontal && dx > 80) {
+            triggerAnimatedSwipeDecision('like');
+        } else if (lockedHorizontal && dx < -80) {
+            triggerAnimatedSwipeDecision('dislike');
         } else {
             cardEl.style.transform = '';
             if (likeStamp) likeStamp.style.opacity = '0';
@@ -6346,11 +6832,102 @@ function attachSwipeCardGestures(win) {
     cardEl.addEventListener('pointercancel', finishGesture);
 }
 
+function triggerAnimatedSwipeDecision(kind) {
+    if (state.swipeAnimating) return;
+    const win = typeof document !== 'undefined' ? document.getElementById('nmf-window') : null;
+    const cardEl = win?.querySelector?.('#nmf-active-swipe-card');
+    if (!cardEl) {
+        handleSwipeDecision(kind);
+        return;
+    }
+    state.swipeAnimating = true;
+    const likeStamp = cardEl.querySelector('#nmf-stamp-like');
+    const nopeStamp = cardEl.querySelector('#nmf-stamp-nope');
+    const backCard = win.querySelector('#nmf-deck-backcard');
+    cardEl.classList.remove('nmf-dragging', 'nmf-swipe-enter');
+    cardEl.style.transform = '';
+    if (kind === 'like') {
+        if (likeStamp) likeStamp.style.opacity = '1';
+        if (nopeStamp) nopeStamp.style.opacity = '0';
+        cardEl.classList.add('nmf-swipe-fly-right');
+    } else {
+        if (nopeStamp) nopeStamp.style.opacity = '1';
+        if (likeStamp) likeStamp.style.opacity = '0';
+        cardEl.classList.add('nmf-swipe-fly-left');
+    }
+    if (backCard) backCard.classList.add('nmf-backcard-rise');
+
+    setTimeout(() => {
+        state.swipeAnimating = false;
+        state.justSwipedCardEnter = true;
+        handleSwipeDecision(kind);
+        state.justSwipedCardEnter = false;
+    }, 215);
+}
+
+async function triggerTinderBatchGeneration(sess, cfg) {
+    if (!sess || sess.frozen || state.busy) return;
+    recordSessionTagsIntoUserLibrary(sess, cfg);
+    if (state.manualBanDraft.trim()) {
+        for (const item of state.manualBanDraft.split(',').map((s) => s.trim()).filter(Boolean)) {
+            if (!sess.tinder.dislikedNotes.includes(item)) sess.tinder.dislikedNotes.push(item);
+        }
+        state.manualBanDraft = '';
+    }
+    let addedCount = 0;
+    await withBusy('Подбираем анкеты для вашей ленты', async (signal) => {
+        const rawBatch = Number(sess.tinder.batchSize) || 1;
+        const count = [1, 3, 5].includes(rawBatch) ? rawBatch : 1;
+        const req = buildTinderPreviewRequest(sess, count, cfg.transportMode, {
+            safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
+        });
+        const raw = await runLlmGeneration({
+            ...req,
+            transportMode: cfg.transportMode,
+            presetCorrectionPrompt: cfg.presetCorrectionPrompt,
+            stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+            signal,
+        });
+        const cands = parseTinderPreviewResponse(raw, sess.intake.playerNameMode || 'macro');
+        if (!cands.length) throw new Error('Модель вернула пустую ленту. Попробуйте ещё раз.');
+        if (cfg.autoArtWithCards && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
+            for (let i = 0; i < cands.length; i += 1) {
+                if (signal.aborted) throw new Error('Cancelled');
+                await generateImmediateArtForEntity(cands[i], {
+                    sess,
+                    cfg,
+                    signal,
+                    isGacha: false,
+                    index: i,
+                    total: cands.length,
+                });
+            }
+        }
+        if (signal.aborted) throw new Error('Cancelled');
+        sess.tinder.queue.push(...cands);
+        sess.tinder.lastDislikedCandidate = null;
+        addedCount = cands.length;
+        saveSettings();
+        if (!isForgeDialogVisible() || state.busyMinimized || state.activeTab !== 'swipe' || state.discoverSubMode === 'gacha') {
+            state.pendingMatchReveal = { sessionId: sess.id, count: addedCount };
+        } else {
+            openMatchSignalReveal(addedCount);
+        }
+    }, { taskType: 'llm', cancellable: true });
+}
+
 function handleSwipeDecision(kind) {
     const cfg = getSettings();
     const sess = getActiveSession();
     const cur = sess.tinder.queue.shift();
-    if (!cur) return;
+    if (!sess.tinder.queue.length) {
+        state.pendingMatchReveal = false;
+        state.matchRevealState = null;
+    }
+    if (!cur) {
+        renderWindow();
+        return;
+    }
 
     if (kind === 'dislike' && state.artAborts.has(cur.id)) {
         state.artAborts.get(cur.id)?.abort();
@@ -6380,6 +6957,9 @@ function handleSwipeDecision(kind) {
         pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []).catch(() => {});
     }
     renderWindow();
+    if (sess.tinder.queue.length === 0 && sess.tinder.autoRefillDeck && !state.busy && !sess.frozen) {
+        triggerTinderBatchGeneration(sess, cfg).catch(() => {});
+    }
 }
 
 function openWishRevealAnimation(maxStars = 4, isFusion = false) {
@@ -6641,6 +7221,10 @@ function bindWindowDelegation(win) {
             e.preventDefault();
             win.querySelector('[data-act="save-inline-session-title"]')?.click();
         }
+        if (e.key === 'Enter' && e.target?.id === 'nmf-style-prof-name-input') {
+            e.preventDefault();
+            win.querySelector('[data-act="save-style-profile-draft"]')?.click();
+        }
     });
 
     win.addEventListener('input', (e) => {
@@ -6649,6 +7233,30 @@ function bindWindowDelegation(win) {
         if (!el || !sess) return;
         // Let <select> be handled exclusively by 'change' so conditional inputs (e.g. Custom Gender!) ALWAYS render!
         if (el.tagName === 'SELECT') return;
+
+        if (el.dataset.styleProfDraft === 'name') {
+            state.styleProfileDraftName = el.value;
+            return;
+        }
+        if (el.dataset.cleanLang && sess) {
+            const kind = el.dataset.cleanLang;
+            const clean = stripAccidentalLanguageBraces(el.value);
+            if (kind === 'user') {
+                sess.intake.userLanguage = clean || '{{language}}';
+            } else if (kind === 'card') {
+                sess.intake.cardLanguage = clean || '{{language}}';
+                sess.intake.cardLanguageCustom = '';
+            } else if (kind === 'firstMes') {
+                sess.intake.firstMesLanguage = clean || '{{language}}';
+                sess.intake.firstMesLanguageCustom = '';
+            }
+            const liveHintEl = win.querySelector('#nmf-tr-alt-live-hint');
+            if (liveHintEl) {
+                liveHintEl.textContent = buildTranslatedAltHintText(sess.intake);
+            }
+            scheduleSaveSettings();
+            return;
+        }
 
         if (el.id === 'nmf-home-sess-title-input') {
             state.sessionTitleDraft = el.value;
@@ -6691,11 +7299,7 @@ function bindWindowDelegation(win) {
         }
         if (el.dataset.intake) {
             const k = el.dataset.intake;
-            const prevScenario = k === 'userLanguage' ? resolveSimpleLangScenarioId(sess.intake) : '';
             sess.intake[k] = el.type === 'number' ? Number(el.value) : el.value;
-            if (k === 'userLanguage' && prevScenario === 'all_my_lang') {
-                sess.intake.cardLanguage = sess.intake.userLanguage;
-            }
             if (k === 'originType') {
                 if (el.value === 'world_sandbox') {
                     sess.intake.cardFormat = 'world_sandbox';
@@ -6712,6 +7316,7 @@ function bindWindowDelegation(win) {
             if (['customGenres', 'tropesWanted', 'hardBans'].includes(k)) {
                 refreshLiveTagAssistBoxInDom(win, `intake_${k}`, el.value, sess, getSettings());
             }
+            syncLiveIntakeIndicatorsInDom(win, sess);
             scheduleSaveSettings();
             return;
         }
@@ -6764,6 +7369,8 @@ function bindWindowDelegation(win) {
             } else if (fs.kind === 'imagePrompt') {
                 sess.card.imagePrompt = val;
                 markCardFieldDirty(sess.card, 'imagePrompt');
+            } else if (fs.kind === 'intake' && fs.field) {
+                sess.intake[fs.field] = val;
             } else if (fs.field) {
                 sess.card[fs.field] = val;
                 markCardFieldDirty(sess.card, fs.field);
@@ -6819,6 +7426,13 @@ function bindWindowDelegation(win) {
             else if (rk === 'panX') state.cropModalInfo.panX = Math.max(0, Math.min(100, Number(el.value)));
             else if (rk === 'panY') state.cropModalInfo.panY = Math.max(0, Math.min(100, Number(el.value)));
             syncLiveCropperDom();
+            return;
+        }
+        if (el.dataset.csmDraft) {
+            if (!state.customStoryModeDraft) {
+                state.customStoryModeDraft = { openScope: 'intake', editId: '', name: '', prompt: '' };
+            }
+            state.customStoryModeDraft[el.dataset.csmDraft] = el.value;
             return;
         }
         if (el.dataset.gachaPref) {
@@ -6879,6 +7493,42 @@ function bindWindowDelegation(win) {
             state.lightboxInfo.imagePrompt = el.value;
             return;
         }
+        if (el.dataset.builtinTplInstr) {
+            const cfg = getSettings();
+            const fmtId = el.dataset.builtinTplInstr;
+            if (!cfg.builtinPromptOverrides || typeof cfg.builtinPromptOverrides !== 'object') {
+                cfg.builtinPromptOverrides = { formats: {}, storyModes: {}, greetingStyles: {} };
+            }
+            if (!cfg.builtinPromptOverrides.formats) cfg.builtinPromptOverrides.formats = {};
+            const defInstr = getBuiltinFormatDefaultInstructions(fmtId);
+            const nextVal = String(el.value || '').trim();
+            if (!nextVal || nextVal === defInstr.trim()) {
+                delete cfg.builtinPromptOverrides.formats[fmtId];
+            } else {
+                cfg.builtinPromptOverrides.formats[fmtId] = el.value;
+            }
+            cfg.builtinPromptOverrides = setActiveBuiltinPromptOverrides(cfg.builtinPromptOverrides);
+            scheduleSaveSettings();
+            return;
+        }
+        if (el.dataset.builtinGstylePrompt) {
+            const cfg = getSettings();
+            const stId = el.dataset.builtinGstylePrompt;
+            if (!cfg.builtinPromptOverrides || typeof cfg.builtinPromptOverrides !== 'object') {
+                cfg.builtinPromptOverrides = { formats: {}, storyModes: {}, greetingStyles: {} };
+            }
+            if (!cfg.builtinPromptOverrides.greetingStyles) cfg.builtinPromptOverrides.greetingStyles = {};
+            const defPr = getBuiltinGreetingStyleDefaultPrompt(stId);
+            const nextVal = String(el.value || '').trim();
+            if (!nextVal || nextVal === defPr.trim()) {
+                delete cfg.builtinPromptOverrides.greetingStyles[stId];
+            } else {
+                cfg.builtinPromptOverrides.greetingStyles[stId] = el.value;
+            }
+            cfg.builtinPromptOverrides = setActiveBuiltinPromptOverrides(cfg.builtinPromptOverrides);
+            scheduleSaveSettings();
+            return;
+        }
         if (el.dataset.customTplField) {
             const cfg = getSettings();
             const fmtId = el.dataset.fmt || '';
@@ -6896,7 +7546,16 @@ function bindWindowDelegation(win) {
         }
         if (el.dataset.tplRosterFilter) {
             state.tplExtractFilter = el.value;
-            renderWindow();
+            const selEl = typeof win.querySelector === 'function' ? win.querySelector('select[data-tpl-extract-avatar="1"]') : null;
+            if (selEl) {
+                const q = String(el.value || '').trim().toLowerCase();
+                const allChars = Array.isArray(state.rosterChars) ? state.rosterChars : [];
+                const filtered = q
+                    ? allChars.filter((c) => String(c.name || '').toLowerCase().includes(q) || String(c.avatar || '').toLowerCase().includes(q))
+                    : allChars;
+                selEl.innerHTML = `<option value="">${esc(tx('— Выберите карточку из списка Таверны —', '— Choose a character from Tavern —'))}</option>`
+                    + filtered.slice(0, 250).map((c) => `<option value="${esc(c.avatar)}" ${state.tplExtractAvatar === c.avatar ? 'selected' : ''}>${esc(c.name)} (${esc(c.avatar)})</option>`).join('');
+            }
             return;
         }
         if (el.dataset.tplExtractHint) {
@@ -6978,6 +7637,29 @@ function bindWindowDelegation(win) {
             }
             return;
         }
+        if (el.dataset.styleProfDraft === 'makeDefault') {
+            state.styleProfileMakeDefault = Boolean(el.checked);
+            return;
+        }
+        if (el.dataset.styleProfileSelect && sess) {
+            const chosenId = String(el.value || '').trim();
+            state.styleProfileDraftMode = '';
+            if (!chosenId) {
+                sess.intake.activeStyleProfileId = '';
+                saveSettings();
+                renderWindow();
+                return;
+            }
+            const found = (cfg.styleProfiles || []).find((p) => p.id === chosenId);
+            if (found) {
+                applyStyleProfileToIntake(sess.intake, found, cfg);
+                syncExtSettingsPanel();
+                saveSettings();
+                notifySuccessToast(tx(`Применён профиль «${found.name}»!`, `Applied profile "${found.name}"!`));
+                renderWindow();
+            }
+            return;
+        }
         if (el.id === 'nmf-profile-tavern-select') {
             state.profilePickAvatar = el.value || '';
             return;
@@ -7035,7 +7717,8 @@ function bindWindowDelegation(win) {
                 }
             }
             saveSettings();
-            if (['originType', 'cardFormat', 'rating', 'wordBudgetId', 'greetingBudgetId', 'userGender', 'targetGender', 'userLanguage', 'cardLanguage', 'language', 'firstMesLanguage', 'greetingStyle', 'greetingPov', 'playerNameMode'].includes(k)) {
+            syncLiveIntakeIndicatorsInDom(win, sess);
+            if (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') {
                 renderWindow();
             }
             return;
@@ -7044,7 +7727,7 @@ function bindWindowDelegation(win) {
             const k = el.dataset.tinder;
             sess.tinder[k] = (el.type === 'number' || k === 'batchSize') ? Number(el.value) : el.value;
             saveSettings();
-            if (el.tagName === 'SELECT') {
+            if (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') {
                 renderWindow();
             }
             return;
@@ -7080,6 +7763,16 @@ function bindWindowDelegation(win) {
             saveSettings();
             return;
         }
+        if (el.dataset.storyModeSingle && sess) {
+            const scope = el.dataset.storyModeSingle === 'gacha' ? 'gacha' : 'intake';
+            const holder = getStoryModeTargetContainer(sess, scope);
+            const chosen = String(el.value || 'natural_story').trim() || 'natural_story';
+            holder.storyModeCombo = false;
+            holder.storyModes = [chosen];
+            saveSettings();
+            renderWindow();
+            return;
+        }
         if (el.dataset.gachaPref && sess) {
             if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
             if (!sess.gacha.wishPrefs) sess.gacha.wishPrefs = createDefaultGachaWishPrefs();
@@ -7102,13 +7795,31 @@ function bindWindowDelegation(win) {
             return;
         }
         if (el.dataset.blitzCand && sess) {
-            sess.blitz.selectedCandidateRef = el.value;
+            const pickedRef = el.value || '__none__';
+            sess.blitz.selectedCandidateRef = pickedRef;
+            if (pickedRef && pickedRef !== '__none__') {
+                if (pickedRef.startsWith('gacha:') && sess.blitz.sourceMode === 'story') {
+                    sess.blitz.sourceMode = 'gacha';
+                    sess.blitz.useTinderContext = false;
+                    sess.blitz.useGachaContext = true;
+                } else if ((pickedRef.startsWith('liked:') || pickedRef.startsWith('queue:')) && sess.blitz.sourceMode === 'gacha') {
+                    sess.blitz.sourceMode = 'story';
+                    sess.blitz.useTinderContext = true;
+                    sess.blitz.useGachaContext = false;
+                } else if (!['story', 'gacha', 'none'].includes(sess.blitz.sourceMode)) {
+                    sess.blitz.sourceMode = pickedRef.startsWith('gacha:') ? 'gacha' : 'story';
+                }
+            }
             saveSettings();
             renderWindow();
             return;
         }
         if (el.dataset.cfgLive && el.tagName === 'SELECT') {
             cfg[el.dataset.cfgLive] = el.value;
+            if (el.dataset.cfgLive === 'imageProfileId' || el.dataset.cfgLive === 'imageSource') {
+                const nextAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                cfg.imageAspectRatio = coerceAspectToSupported(cfg.imageAspectRatio || 'native', nextAspectInfo.supportedIds);
+            }
             saveSettings();
             renderWindow();
             return;
@@ -7150,7 +7861,9 @@ function bindWindowDelegation(win) {
             if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
             sess.conceptLab[el.dataset.concept] = el.value;
             saveSettings();
-            renderWindow();
+            if (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') {
+                renderWindow();
+            }
             return;
         }
         if (el.dataset.conceptFrameAspect !== undefined && sess) {
@@ -7187,8 +7900,17 @@ function bindWindowDelegation(win) {
                 cfg.imageProfileId = '';
                 cfg.imageStyleId = '';
             }
+            if (el.dataset.cfg === 'imageSource' || el.dataset.cfg === 'imageProfileId') {
+                const nextAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+                cfg.imageAspectRatio = coerceAspectToSupported(cfg.imageAspectRatio || 'native', nextAspectInfo.supportedIds);
+                if (sess?.gacha?.aspectRatio && sess.gacha.aspectRatio !== 'sillyimages_default') {
+                    sess.gacha.aspectRatio = coerceAspectToSupported(sess.gacha.aspectRatio, nextAspectInfo.supportedIds);
+                }
+            }
             saveSettings();
-            renderWindow();
+            if (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') {
+                renderWindow();
+            }
             syncExtSettingsPanel();
             return;
         }
@@ -7388,8 +8110,23 @@ function bindWindowDelegation(win) {
         }
 
         const btn = e.target.closest('[data-act]');
-        if (!btn) return;
+        if (!btn) {
+            if (state.openArtMenuKey) {
+                state.openArtMenuKey = '';
+                renderWindow();
+            }
+            return;
+        }
         const act = btn.dataset.act;
+        if (act === 'toggle-art-overlay-menu') {
+            e.stopPropagation();
+            const key = String(btn.dataset.menuKey || '').trim();
+            state.openArtMenuKey = state.openArtMenuKey === key ? '' : key;
+            return renderWindow();
+        }
+        if (state.openArtMenuKey) {
+            state.openArtMenuKey = '';
+        }
         const cfg = getSettings();
         const sess = getActiveSession();
 
@@ -7422,7 +8159,13 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
         if (act === 'refresh-sillyimages-sync') {
-            notifySuccessToast(tx('Профили, стили и библиотеки референсов перечитаны из Inline Image Generation!', 'Profiles, styles, and reference libraries reloaded from Inline Image Generation!'));
+            const nextAspectInfo = getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId);
+            cfg.imageAspectRatio = coerceAspectToSupported(cfg.imageAspectRatio || 'native', nextAspectInfo.supportedIds);
+            if (sess?.gacha?.aspectRatio && sess.gacha.aspectRatio !== 'sillyimages_default') {
+                sess.gacha.aspectRatio = coerceAspectToSupported(sess.gacha.aspectRatio, nextAspectInfo.supportedIds);
+            }
+            saveSettings();
+            notifySuccessToast(tx('Профили, стили, пропорции модели и референсы перечитаны из Inline Image Generation!', 'Profiles, styles, model aspect ratios, and references reloaded from Inline Image Generation!'));
             return renderWindow();
         }
         if (act === 'toggle-pick-silly-ref') {
@@ -7585,6 +8328,7 @@ function bindWindowDelegation(win) {
             state.intakeSheetOpen = false;
             state.activeTab = 'home';
             state.homeOpenCards.mandatory = false;
+            state.homeOpenCards.setup = true;
             state.homeOpenCards.langStyle = true;
             renderWindow();
             setTimeout(() => {
@@ -7592,9 +8336,125 @@ function bindWindowDelegation(win) {
             }, 40);
             return;
         }
-        if (act === 'pick-simple-lang-scenario') {
+        if (act === 'open-new-style-profile') {
             if (sess.frozen) return;
-            applySimpleLangScenario(sess.intake, String(btn.dataset.lscen || 'all_my_lang'));
+            state.styleProfileDraftMode = 'create';
+            const nextNum = ((cfg.styleProfiles || []).length || 0) + 1;
+            state.styleProfileDraftName = tx(`Мой профиль ${nextNum}`, `My Profile ${nextNum}`);
+            state.styleProfileMakeDefault = !cfg.defaultStyleProfileId || (cfg.styleProfiles || []).length === 0;
+            renderWindow();
+            setTimeout(() => {
+                const inp = document.getElementById('nmf-style-prof-name-input');
+                if (inp) {
+                    inp.focus({ preventScroll: true });
+                    inp.select();
+                }
+            }, 30);
+            return;
+        }
+        if (act === 'open-rename-style-profile') {
+            if (sess.frozen) return;
+            const curProf = (cfg.styleProfiles || []).find((p) => p.id === sess.intake?.activeStyleProfileId);
+            if (!curProf) return;
+            state.styleProfileDraftMode = 'rename';
+            state.styleProfileDraftName = curProf.name;
+            renderWindow();
+            setTimeout(() => {
+                const inp = document.getElementById('nmf-style-prof-name-input');
+                if (inp) {
+                    inp.focus({ preventScroll: true });
+                    inp.select();
+                }
+            }, 30);
+            return;
+        }
+        if (act === 'cancel-style-profile-draft') {
+            state.styleProfileDraftMode = '';
+            state.styleProfileDraftName = '';
+            return renderWindow();
+        }
+        if (act === 'save-style-profile-draft') {
+            if (sess.frozen) return;
+            const inpEl = win.querySelector('#nmf-style-prof-name-input');
+            const cleanName = String(inpEl?.value ?? state.styleProfileDraftName ?? '').trim() || tx('Мой профиль', 'My Profile');
+            if (!Array.isArray(cfg.styleProfiles)) cfg.styleProfiles = [];
+
+            if (state.styleProfileDraftMode === 'rename') {
+                const curProf = cfg.styleProfiles.find((p) => p.id === sess.intake?.activeStyleProfileId);
+                if (curProf) {
+                    curProf.name = cleanName.slice(0, 60);
+                    curProf.updatedAt = Date.now();
+                    notifySuccessToast(tx(`Профиль переименован в «${curProf.name}»`, `Profile renamed to "${curProf.name}"`));
+                }
+            } else {
+                const created = extractStyleProfileFromIntake(sess.intake, cleanName, '', cfg);
+                cfg.styleProfiles = normalizeStyleProfiles([...cfg.styleProfiles, created]);
+                sess.intake.activeStyleProfileId = created.id;
+                if (state.styleProfileMakeDefault) {
+                    cfg.defaultStyleProfileId = created.id;
+                }
+                notifySuccessToast(tx(`Профиль «${created.name}» сохранён!`, `Profile "${created.name}" saved!`));
+            }
+            state.styleProfileDraftMode = '';
+            state.styleProfileDraftName = '';
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'update-active-style-profile') {
+            if (sess.frozen) return;
+            if (!Array.isArray(cfg.styleProfiles)) cfg.styleProfiles = [];
+            const idx = cfg.styleProfiles.findIndex((p) => p.id === sess.intake?.activeStyleProfileId);
+            if (idx >= 0) {
+                const prev = cfg.styleProfiles[idx];
+                cfg.styleProfiles[idx] = extractStyleProfileFromIntake(sess.intake, prev.name, prev.id, cfg);
+                saveSettings();
+                notifySuccessToast(tx(`Изменения сохранены в профиль «${prev.name}»!`, `Saved changes to profile "${prev.name}"!`));
+                return renderWindow();
+            }
+            return;
+        }
+        if (act === 'toggle-default-style-profile') {
+            const curProf = (cfg.styleProfiles || []).find((p) => p.id === sess.intake?.activeStyleProfileId);
+            if (!curProf) return;
+            if (cfg.defaultStyleProfileId === curProf.id) {
+                cfg.defaultStyleProfileId = '';
+                notifyToast(tx(`«${curProf.name}» больше не стоит по умолчанию.`, `"${curProf.name}" removed as default.`));
+            } else {
+                cfg.defaultStyleProfileId = curProf.id;
+                notifySuccessToast(tx(`«${curProf.name}» теперь подставляется во все новые сессии!`, `"${curProf.name}" is now default for new sessions!`));
+            }
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'delete-active-style-profile') {
+            const curId = String(sess.intake?.activeStyleProfileId || '');
+            const curProf = (cfg.styleProfiles || []).find((p) => p.id === curId);
+            if (!curProf) return;
+            cfg.styleProfiles = (cfg.styleProfiles || []).filter((p) => p.id !== curId);
+            if (cfg.defaultStyleProfileId === curId) cfg.defaultStyleProfileId = '';
+            for (const s of cfg.sessions || []) {
+                if (s?.intake?.activeStyleProfileId === curId) {
+                    s.intake.activeStyleProfileId = '';
+                }
+            }
+            state.styleProfileDraftMode = '';
+            saveSettings();
+            notifyToast(tx(`Профиль «${curProf.name}» удалён.`, `Profile "${curProf.name}" deleted.`));
+            return renderWindow();
+        }
+        if (act === 'set-translated-alt-toggle') {
+            if (sess.frozen) return;
+            const wantTr = String(btn.dataset.val || '0') === '1';
+            const extraCnt = getIntakeExtraSceneAltsCount(sess.intake);
+            setIntakeTranslatedAltAndExtras(sess.intake, wantTr, extraCnt);
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'set-extra-scene-alts') {
+            if (sess.frozen) return;
+            const wantTr = hasIntakeTranslatedAlt(sess.intake);
+            const extraCnt = Math.max(0, Math.min(3, Math.round(Number(btn.dataset.cnt || 0))));
+            setIntakeTranslatedAltAndExtras(sess.intake, wantTr, extraCnt);
             saveSettings();
             return renderWindow();
         }
@@ -7642,6 +8502,7 @@ function bindWindowDelegation(win) {
                 if (inp) {
                     inp.value = sess.intake[field];
                     refreshLiveTagAssistBoxInDom(win, tkey, inp.value, sess, cfg);
+                    syncLiveIntakeIndicatorsInDom(win, sess);
                     saveSettings();
                     return;
                 }
@@ -7651,14 +8512,12 @@ function bindWindowDelegation(win) {
         }
         if (act === 'set-intake-alt-count') {
             if (sess.frozen) return;
-            const curScen = resolveSimpleLangScenarioId(sess.intake);
             const nextCnt = Math.max(0, Math.min(4, Math.round(Number(btn.dataset.cnt || 0))));
             sess.intake.altGreetingsCount = nextCnt;
             const prevArr = Array.isArray(sess.intake.altGreetingLangs) ? sess.intake.altGreetingLangs : [];
-            const defaultSlotMode = curScen === 'hybrid_tokens' ? 'target_user_scene' : 'same_as_card';
             sess.intake.altGreetingLangs = Array.from(
-                { length: Math.max(1, nextCnt) },
-                (_, i) => prevArr[i] || (curScen === 'en_with_translation' && i === 0 ? 'target_user_translate' : defaultSlotMode),
+                { length: nextCnt },
+                (_, i) => prevArr[i] || 'same_as_fm',
             );
             saveSettings();
             return renderWindow();
@@ -7855,6 +8714,11 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
         if (act === 'unpack-match-cards') {
+            if (!sess.tinder?.queue?.length) {
+                state.matchRevealState = null;
+                state.pendingMatchReveal = false;
+                return renderWindow();
+            }
             if (state.matchRevealState) {
                 state.matchRevealState.phase = 'unpacked';
             }
@@ -7873,8 +8737,12 @@ function bindWindowDelegation(win) {
             targetSess.homeCompleted = true;
             state.activeTab = 'swipe';
             state.discoverSubMode = 'swipe';
-            openMatchSignalReveal(cnt);
-            if (state.matchRevealState) state.matchRevealState.phase = 'unpacked';
+            if (targetSess.tinder?.queue?.length) {
+                openMatchSignalReveal(cnt);
+                if (state.matchRevealState) state.matchRevealState.phase = 'unpacked';
+            } else {
+                state.matchRevealState = null;
+            }
             return renderWindow();
         }
         if (act === 'toggle-home-mandatory') {
@@ -8016,6 +8884,28 @@ function bindWindowDelegation(win) {
             state.guideModalOpen = true;
             return renderWindow();
         }
+        if (act === 'toggle-anti-slop') {
+            if (sess.frozen) return;
+            sess.intake.antiSlopEnabled = !(sess.intake.antiSlopEnabled !== false);
+            if (sess.intake.antiSlopEnabled && !String(sess.intake.antiSlopRules || '').trim()) {
+                sess.intake.antiSlopRules = getDefaultAntiSlopPreset();
+            }
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'reset-anti-slop') {
+            if (sess.frozen) return;
+            sess.intake.antiSlopEnabled = true;
+            sess.intake.antiSlopRules = getDefaultAntiSlopPreset();
+            saveSettings();
+            notifySuccessToast(tx('Стандартный пресет Анти-Слопа восстановлен!', 'Default Anti-Slop preset restored!'));
+            return renderWindow();
+        }
+        if (act === 'toggle-ext-streaming') {
+            cfg.enableStreaming = !Boolean(cfg.enableStreaming);
+            saveSettings();
+            return renderWindow();
+        }
         if (act === 'toggle-strip-active-char') {
             cfg.stripActiveCharFromPreset = !(cfg.stripActiveCharFromPreset !== false);
             saveSettings();
@@ -8049,7 +8939,7 @@ function bindWindowDelegation(win) {
             const rawLang = state.translateTargetLang || sess.intake?.userLanguage || 'Русский';
             const targetLang = rawLang === '{{language}}' ? detectUserLocaleLanguage() : (stripAccidentalLanguageBraces(rawLang) || 'Русский');
             await withBusy(`Переводим карточку на ${targetLang}`, async (signal) => {
-                const req = buildCardTranslationRequest(c, targetLang, cfg.transportMode);
+                const req = buildCardTranslationRequest(c, targetLang, cfg.transportMode, sess.intake);
                 const raw = await runLlmGeneration({
                     ...req,
                     transportMode: cfg.transportMode,
@@ -8287,9 +9177,11 @@ function bindWindowDelegation(win) {
                 return renderWindow();
             }
             const entityToExpand = linkedConcept || rawCand;
-            const slotHint = ref.pool === 'concept_collection'
-                ? 'concept'
-                : (ref.pool === 'photo_collection' ? 'photo' : (ref.pool === 'gacha_collection' ? 'gacha' : ''));
+            const slotHint = ref.pool === 'vault'
+                ? 'vault'
+                : (ref.pool === 'concept_collection'
+                    ? 'concept'
+                    : (ref.pool === 'photo_collection' ? 'photo' : (ref.pool === 'gacha_collection' ? 'gacha' : '')));
             await expandCandidateIntoFullCard(sess, entityToExpand, cfg.transportMode, slotHint);
             return;
         }
@@ -8613,6 +9505,187 @@ function bindWindowDelegation(win) {
             saveSettings();
             return renderWindow();
         }
+        if (act === 'toggle-story-mode-combo') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            const holder = getStoryModeTargetContainer(sess, scope);
+            const currentIds = normalizeStoryModeIds(holder.storyModes, cfg.customStoryModes);
+            const nextCombo = !Boolean(holder.storyModeCombo);
+            holder.storyModeCombo = nextCombo;
+            holder.storyModes = nextCombo ? currentIds : [currentIds[0] || 'natural_story'];
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'toggle-story-mode-chip') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            const modeId = String(btn.dataset.modeId || '').trim();
+            if (!modeId) return;
+            const holder = getStoryModeTargetContainer(sess, scope);
+            const currentIds = normalizeStoryModeIds(holder.storyModes, cfg.customStoryModes);
+            const exists = currentIds.includes(modeId);
+            let nextIds = exists
+                ? currentIds.filter((id) => id !== modeId)
+                : [...currentIds, modeId];
+            if (nextIds.length === 0) {
+                nextIds = ['natural_story'];
+            }
+            holder.storyModeCombo = true;
+            holder.storyModes = nextIds;
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'open-custom-story-mode') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            if (state.customStoryModeDraft?.openScope === scope && !state.customStoryModeDraft?.editId) {
+                state.customStoryModeDraft = { openScope: '', editId: '', isBuiltin: false, name: '', prompt: '' };
+            } else {
+                state.customStoryModeDraft = { openScope: scope, editId: '', isBuiltin: false, name: '', prompt: '' };
+            }
+            return renderWindow();
+        }
+        if (act === 'edit-builtin-story-mode') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            const modeId = String(btn.dataset.modeId || '').trim();
+            const builtIn = STORY_DYNAMIC_OPTIONS.find((m) => m.id === modeId);
+            if (!builtIn) return;
+            if (state.customStoryModeDraft?.openScope === scope && state.customStoryModeDraft?.editId === modeId) {
+                state.customStoryModeDraft = { openScope: '', editId: '', isBuiltin: false, name: '', prompt: '' };
+            } else {
+                state.customStoryModeDraft = {
+                    openScope: scope,
+                    editId: builtIn.id,
+                    isBuiltin: true,
+                    name: isEn() ? builtIn.labelEn : builtIn.label,
+                    prompt: getEffectiveBuiltinStoryModePrompt(builtIn.id),
+                };
+            }
+            return renderWindow();
+        }
+        if (act === 'reset-builtin-story-mode') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            const modeId = String(btn.dataset.modeId || '').trim();
+            if (!modeId) return;
+            if (cfg.builtinPromptOverrides?.storyModes) {
+                delete cfg.builtinPromptOverrides.storyModes[modeId];
+                cfg.builtinPromptOverrides = setActiveBuiltinPromptOverrides(cfg.builtinPromptOverrides);
+            }
+            const builtIn = STORY_DYNAMIC_OPTIONS.find((m) => m.id === modeId);
+            if (builtIn && state.customStoryModeDraft?.editId === modeId) {
+                state.customStoryModeDraft.prompt = getBuiltinStoryModeDefaultPrompt(modeId);
+            }
+            saveSettings();
+            notifySuccessToast(tx('Промпт режима сброшен к стандарту!', 'Mode prompt reset to default!'));
+            return renderWindow();
+        }
+        if (act === 'edit-custom-story-mode') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            const modeId = String(btn.dataset.modeId || '').trim();
+            const found = (cfg.customStoryModes || []).find((m) => m.id === modeId);
+            if (!found) return;
+            state.customStoryModeDraft = {
+                openScope: scope,
+                editId: found.id,
+                isBuiltin: false,
+                name: found.name,
+                prompt: found.prompt,
+            };
+            return renderWindow();
+        }
+        if (act === 'cancel-custom-story-mode') {
+            state.customStoryModeDraft = { openScope: '', editId: '', isBuiltin: false, name: '', prompt: '' };
+            return renderWindow();
+        }
+        if (act === 'save-custom-story-mode') {
+            if (sess.frozen) return;
+            const scope = btn.dataset.scope === 'gacha' ? 'gacha' : 'intake';
+            const draft = state.customStoryModeDraft || {};
+            const prompt = String(draft.prompt || '').trim().slice(0, 2000);
+            if (draft.isBuiltin && draft.editId) {
+                if (!prompt) {
+                    notifyWarnToast(tx('Текст промпта не может быть пустым!', 'Prompt text cannot be empty!'));
+                    return;
+                }
+                if (!cfg.builtinPromptOverrides || typeof cfg.builtinPromptOverrides !== 'object') {
+                    cfg.builtinPromptOverrides = { formats: {}, storyModes: {}, greetingStyles: {} };
+                }
+                if (!cfg.builtinPromptOverrides.storyModes) cfg.builtinPromptOverrides.storyModes = {};
+                const defPr = getBuiltinStoryModeDefaultPrompt(draft.editId);
+                if (prompt === defPr.trim()) {
+                    delete cfg.builtinPromptOverrides.storyModes[draft.editId];
+                } else {
+                    cfg.builtinPromptOverrides.storyModes[draft.editId] = prompt;
+                }
+                cfg.builtinPromptOverrides = setActiveBuiltinPromptOverrides(cfg.builtinPromptOverrides);
+                state.customStoryModeDraft = { openScope: '', editId: '', isBuiltin: false, name: '', prompt: '' };
+                saveSettings();
+                notifySuccessToast(tx('Промпт режима сохранён!', 'Mode prompt saved!'));
+                return renderWindow();
+            }
+            const name = String(draft.name || '').trim().slice(0, 80);
+            if (!name || !prompt) {
+                notifyWarnToast(tx('Укажите и название режима, и текст промпта!', 'Please enter both mode title and prompt!'));
+                return;
+            }
+            const list = Array.isArray(cfg.customStoryModes) ? [...cfg.customStoryModes] : [];
+            let savedId = String(draft.editId || '').trim();
+            if (savedId) {
+                const idx = list.findIndex((m) => m.id === savedId);
+                if (idx >= 0) {
+                    list[idx] = { id: savedId, name, prompt };
+                } else {
+                    savedId = 'csm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+                    list.push({ id: savedId, name, prompt });
+                }
+            } else {
+                savedId = 'csm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+                list.push({ id: savedId, name, prompt });
+            }
+            cfg.customStoryModes = setActiveCustomStoryModes(list);
+            const holder = getStoryModeTargetContainer(sess, scope);
+            if (holder.storyModeCombo) {
+                const cur = normalizeStoryModeIds(holder.storyModes, cfg.customStoryModes);
+                if (!cur.includes(savedId)) cur.push(savedId);
+                holder.storyModes = cur;
+            } else {
+                holder.storyModes = [savedId];
+            }
+            state.customStoryModeDraft = { openScope: '', editId: '', isBuiltin: false, name: '', prompt: '' };
+            saveSettings();
+            notifySuccessToast(tx(`Свой режим «${name}» сохранён!`, `Custom mode "${name}" saved!`));
+            return renderWindow();
+        }
+        if (act === 'delete-custom-story-mode') {
+            if (sess.frozen) return;
+            const modeId = String(btn.dataset.modeId || '').trim();
+            if (!modeId) return;
+            const found = (cfg.customStoryModes || []).find((m) => m.id === modeId);
+            cfg.customStoryModes = setActiveCustomStoryModes(
+                (cfg.customStoryModes || []).filter((m) => m.id !== modeId),
+            );
+            for (const s of (cfg.sessions || [])) {
+                if (s?.intake && Array.isArray(s.intake.storyModes)) {
+                    const filtered = s.intake.storyModes.filter((id) => id !== modeId);
+                    s.intake.storyModes = filtered.length > 0 ? filtered : ['natural_story'];
+                }
+                if (s?.gacha?.wishPrefs && Array.isArray(s.gacha.wishPrefs.storyModes)) {
+                    const filteredG = s.gacha.wishPrefs.storyModes.filter((id) => id !== modeId);
+                    s.gacha.wishPrefs.storyModes = filteredG.length > 0 ? filteredG : ['natural_story'];
+                }
+            }
+            if (state.customStoryModeDraft?.editId === modeId) {
+                state.customStoryModeDraft = { openScope: '', editId: '', name: '', prompt: '' };
+            }
+            saveSettings();
+            if (found) {
+                notifySuccessToast(tx(`Режим «${found.name}» удалён.`, `Mode "${found.name}" deleted.`));
+            }
+            return renderWindow();
+        }
         if (act === 'clear-gacha-prefs') {
             if (sess.frozen) return;
             if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
@@ -8692,7 +9765,7 @@ function bindWindowDelegation(win) {
             sess.gacha.lastRevealBatch = (sess.gacha.lastRevealBatch || []).filter((x) => x.id !== target.id);
             sess.gacha.fusionSlotIds = (sess.gacha.fusionSlotIds || []).filter((id) => id !== target.id);
             if (sess.blitz?.selectedCandidateRef === `gacha:${target.id}`) {
-                sess.blitz.selectedCandidateRef = '';
+                sess.blitz.selectedCandidateRef = '__none__';
             }
             if (!cfg.gachaWallet) cfg.gachaWallet = createDefaultGachaWallet();
 
@@ -8937,7 +10010,7 @@ function bindWindowDelegation(win) {
                     sess.gacha.collection = (sess.gacha.collection || []).filter((x) => !consumedIds.has(x.id));
                     sess.gacha.lastRevealBatch = (sess.gacha.lastRevealBatch || []).filter((x) => !consumedIds.has(x.id));
                     if (sess.blitz?.selectedCandidateRef && [...consumedIds].some((id) => sess.blitz.selectedCandidateRef === `gacha:${id}`)) {
-                        sess.blitz.selectedCandidateRef = '';
+                        sess.blitz.selectedCandidateRef = '__none__';
                     }
                     sess.gacha.collection.unshift(born);
                     if (sess.gacha.collection.length > MAX_GACHA_COLLECTION) {
@@ -9169,6 +10242,13 @@ function bindWindowDelegation(win) {
             state.activeTab = 'home';
             state.sessionsDrawerOpen = false;
             const ns = createDefaultSession(cfg.sessions.length + 1);
+            const defProf = cfg.defaultStyleProfileId
+                ? (cfg.styleProfiles || []).find((p) => p.id === cfg.defaultStyleProfileId)
+                : null;
+            if (defProf) {
+                applyStyleProfileToIntake(ns.intake, defProf, cfg);
+                syncExtSettingsPanel();
+            }
             cfg.sessions.push(ns);
             cfg.activeSessionId = ns.id;
             saveSettings();
@@ -9183,6 +10263,13 @@ function bindWindowDelegation(win) {
                 tplId,
                 getUiLang(),
             );
+            const defProf = cfg.defaultStyleProfileId
+                ? (cfg.styleProfiles || []).find((p) => p.id === cfg.defaultStyleProfileId)
+                : null;
+            if (defProf) {
+                applyStyleProfileToIntake(ns.intake, defProf, cfg);
+                syncExtSettingsPanel();
+            }
             cfg.sessions.push(ns);
             cfg.activeSessionId = ns.id;
             state.homeOpenCards.sessions = false;
@@ -9233,9 +10320,14 @@ function bindWindowDelegation(win) {
         }
         if (act === 'toggle-genre') {
             if (sess.frozen) return;
-            const g = btn.dataset.genre;
-            const arr = Array.isArray(sess.intake.genres) ? sess.intake.genres : [];
-            sess.intake.genres = arr.includes(g) ? arr.filter((x) => x !== g) : [...arr, g];
+            const g = String(btn.dataset.genre || '').trim();
+            if (!g) return;
+            sess.intake.settingEra = togglePhraseInCommaField(sess.intake.settingEra || '', g, ', ');
+            const inp = win.querySelector('input[data-intake="settingEra"]');
+            if (inp) {
+                inp.value = sess.intake.settingEra;
+            }
+            syncLiveIntakeIndicatorsInDom(win, sess);
             saveSettings();
             return renderWindow();
         }
@@ -9290,6 +10382,48 @@ function bindWindowDelegation(win) {
             saveSettings();
             return renderWindow();
         }
+        if (act === 'toggle-swipe-auto-refill') {
+            if (sess.frozen) return;
+            sess.tinder.autoRefillDeck = !Boolean(sess.tinder.autoRefillDeck);
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'toggle-swipe-same-names') {
+            if (sess.frozen) return;
+            sess.tinder.allowSameNames = !Boolean(sess.tinder.allowSameNames);
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'toggle-gacha-same-names') {
+            if (sess.frozen) return;
+            if (!sess.gacha) sess.gacha = createDefaultSession(1).gacha;
+            sess.gacha.allowSameNames = !Boolean(sess.gacha.allowSameNames);
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'set-blitz-source-mode') {
+            if (sess.frozen) return;
+            const bm = String(btn.dataset.bmode || 'story');
+            sess.blitz.sourceMode = ['story', 'gacha', 'none'].includes(bm) ? bm : 'story';
+            if (sess.blitz.sourceMode === 'story') {
+                sess.blitz.useTinderContext = true;
+                sess.blitz.useGachaContext = false;
+            } else if (sess.blitz.sourceMode === 'gacha') {
+                sess.blitz.useTinderContext = false;
+                sess.blitz.useGachaContext = true;
+            } else {
+                sess.blitz.useTinderContext = false;
+                sess.blitz.useGachaContext = false;
+            }
+            saveSettings();
+            return renderWindow();
+        }
+        if (act === 'clear-blitz-hero') {
+            if (sess.frozen) return;
+            sess.blitz.selectedCandidateRef = '__none__';
+            saveSettings();
+            return renderWindow();
+        }
         if (act === 'send-cand-to-blitz') {
             if (sess.frozen) return;
             state.viewingCandRef = null;
@@ -9297,14 +10431,18 @@ function bindWindowDelegation(win) {
             const src = btn.dataset.source || 'tinder';
             const ref = btn.dataset.ref || '';
             if (src === 'gacha') {
-                sess.blitz.useGachaContext = true;
-            } else if (src === 'concept') {
-                sess.blitz.useConceptContext = true;
+                sess.blitz.sourceMode = 'gacha';
             } else if (src === 'photo') {
-                sess.blitz.usePhotoContext = true;
+                sess.blitz.sourceMode = sess.photoLab?.useIntake ? 'story' : 'none';
+            } else if (src === 'concept') {
+                sess.blitz.sourceMode = 'story';
             } else {
-                sess.blitz.useTinderContext = true;
+                sess.blitz.sourceMode = 'story';
             }
+            sess.blitz.useTinderContext = sess.blitz.sourceMode === 'story';
+            sess.blitz.useGachaContext = sess.blitz.sourceMode === 'gacha';
+            sess.blitz.useConceptContext = src === 'concept';
+            sess.blitz.usePhotoContext = src === 'photo';
             if (ref) {
                 sess.blitz.selectedCandidateRef = ref;
             }
@@ -9365,6 +10503,32 @@ function bindWindowDelegation(win) {
                 state.tplCreatorOpen = false;
                 refreshRosterData().then(() => renderWindow());
             }
+            return renderWindow();
+        }
+        if (act === 'toggle-greeting-style-inspector') {
+            state.greetingStyleInspectorOpen = !Boolean(state.greetingStyleInspectorOpen);
+            return renderWindow();
+        }
+        if (act === 'reset-builtin-greeting-style') {
+            if (sess.frozen) return;
+            const stId = String(btn.dataset.styleId || sess.intake?.greetingStyle || 'fanfic').trim();
+            if (cfg.builtinPromptOverrides?.greetingStyles) {
+                delete cfg.builtinPromptOverrides.greetingStyles[stId];
+                cfg.builtinPromptOverrides = setActiveBuiltinPromptOverrides(cfg.builtinPromptOverrides);
+            }
+            saveSettings();
+            notifySuccessToast(tx('Промпт стиля сброшен к стандарту!', 'Style prompt reset to default!'));
+            return renderWindow();
+        }
+        if (act === 'reset-builtin-tpl') {
+            if (sess.frozen) return;
+            const fmtId = String(btn.dataset.fmt || sess.intake?.cardFormat || 'dossier_19').trim();
+            if (cfg.builtinPromptOverrides?.formats) {
+                delete cfg.builtinPromptOverrides.formats[fmtId];
+                cfg.builtinPromptOverrides = setActiveBuiltinPromptOverrides(cfg.builtinPromptOverrides);
+            }
+            saveSettings();
+            notifySuccessToast(tx('Промпт шаблона анкеты сброшен к стандарту!', 'Template prompt reset to default!'));
             return renderWindow();
         }
         if (act === 'clone-builtin-tpl') {
@@ -9664,6 +10828,8 @@ function bindWindowDelegation(win) {
                     transportMode: cfg.transportMode,
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: resolveConceptVisionImageUrls(sess, seedHit?.entity || null),
+                    visionOptional: true,
                     signal,
                 });
                 const plan = parseConceptSinglePlanResponse(raw);
@@ -9728,6 +10894,8 @@ function bindWindowDelegation(win) {
                     transportMode: cfg.transportMode,
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: resolveConceptVisionImageUrls(sess, seedHit?.entity || null),
+                    visionOptional: true,
                     signal,
                 });
                 const newFrames = parseConceptSeriesPlanResponse(raw, aspect);
@@ -9939,6 +11107,8 @@ function bindWindowDelegation(win) {
                     transportMode: cfg.transportMode,
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: resolveConceptVisionImageUrls(sess, seedHit?.entity || null, { forQuestionsOnly: true }),
+                    visionOptional: true,
                     signal,
                 });
                 sess.conceptLab.questions = parseBlitzQuestionsResponse(raw);
@@ -9991,6 +11161,8 @@ function bindWindowDelegation(win) {
                     transportMode: cfg.transportMode,
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: resolveConceptVisionImageUrls(sess, seedHit?.entity || null, { forQuestionsOnly: true }),
+                    visionOptional: true,
                     signal,
                 });
                 const repl = parseBlitzQuestionsResponse(raw)[0];
@@ -10012,6 +11184,8 @@ function bindWindowDelegation(win) {
                     transportMode: cfg.transportMode,
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: resolveConceptVisionImageUrls(sess, seedHit?.entity || null),
+                    visionOptional: true,
                     signal,
                 });
                 const plan = parseConceptSinglePlanResponse(raw);
@@ -10113,6 +11287,8 @@ function bindWindowDelegation(win) {
                     transportMode: cfg.transportMode,
                     presetCorrectionPrompt: cfg.presetCorrectionPrompt,
                     stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
+                    visionImageUrls: resolveConceptVisionImageUrls(sess, seedHit?.entity || null),
+                    visionOptional: true,
                     signal,
                 });
                 const frames = parseConceptSeriesPlanResponse(raw, aspect);
@@ -10202,6 +11378,11 @@ function bindWindowDelegation(win) {
         if (act === 'send-concept-to-blitz') {
             if (sess.frozen) return;
             const savedEntry = await upsertConceptVaultEntry(sess);
+            const srcRef = String(savedEntry?.sourceRef || '');
+            sess.blitz.sourceMode = srcRef.startsWith('gacha:') ? 'gacha' : (srcRef.startsWith('liked:') || srcRef.startsWith('queue:') ? 'story' : 'none');
+            sess.blitz.useTinderContext = sess.blitz.sourceMode === 'story';
+            sess.blitz.useGachaContext = sess.blitz.sourceMode === 'gacha';
+            sess.blitz.usePhotoContext = false;
             sess.blitz.useConceptContext = true;
             sess.blitz.selectedCandidateRef = `concept:${savedEntry.id}`;
             state.activeTab = 'blitz';
@@ -10345,12 +11526,12 @@ function bindWindowDelegation(win) {
             return renderWindow();
         }
         if (act === 'quick-ban-tag') {
-            const tg = btn.dataset.tag;
-            const list = sess.tinder.dislikedTags;
-            const idx = list.indexOf(tg);
-            if (idx >= 0) list.splice(idx, 1);
-            else list.push(tg);
-            saveSettings();
+            const tg = String(btn.dataset.tag || '').trim();
+            if (tg) {
+                sess.intake.hardBans = togglePhraseInCommaField(sess.intake.hardBans || '', tg, ', ');
+                syncLiveIntakeIndicatorsInDom(win, sess);
+                saveSettings();
+            }
             return renderWindow();
         }
         if (act === 'remove-antitag') {
@@ -10401,53 +11582,7 @@ function bindWindowDelegation(win) {
 
         // SWIPE DECK ACTIONS
         if (act === 'gen-tinder') {
-            recordSessionTagsIntoUserLibrary(sess, cfg);
-            if (state.manualBanDraft.trim()) {
-                for (const item of state.manualBanDraft.split(',').map((s) => s.trim()).filter(Boolean)) {
-                    if (!sess.tinder.dislikedNotes.includes(item)) sess.tinder.dislikedNotes.push(item);
-                }
-                state.manualBanDraft = '';
-            }
-            let addedCount = 0;
-            await withBusy('Подбираем анкеты для вашей ленты', async (signal) => {
-                const rawBatch = Number(sess.tinder.batchSize) || 1;
-                const count = [1, 3, 5].includes(rawBatch) ? rawBatch : 1;
-                const req = buildTinderPreviewRequest(sess, count, cfg.transportMode, {
-                    safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
-                });
-                const raw = await runLlmGeneration({
-                    ...req,
-                    transportMode: cfg.transportMode,
-                    presetCorrectionPrompt: cfg.presetCorrectionPrompt,
-                    stripActiveCharFromPreset: cfg.stripActiveCharFromPreset !== false,
-                    signal,
-                });
-                const cands = parseTinderPreviewResponse(raw, sess.intake.playerNameMode || 'macro');
-                if (!cands.length) throw new Error('Модель вернула пустую ленту. Попробуйте ещё раз.');
-                if (cfg.autoArtWithCards && cfg.imageSource !== 'off' && detectImageExtensions().hasAny) {
-                    for (let i = 0; i < cands.length; i += 1) {
-                        if (signal.aborted) throw new Error('Cancelled');
-                        await generateImmediateArtForEntity(cands[i], {
-                            sess,
-                            cfg,
-                            signal,
-                            isGacha: false,
-                            index: i,
-                            total: cands.length,
-                        });
-                    }
-                }
-                if (signal.aborted) throw new Error('Cancelled');
-                sess.tinder.queue.push(...cands);
-                sess.tinder.lastDislikedCandidate = null;
-                addedCount = cands.length;
-                saveSettings();
-                if (!isForgeDialogVisible() || state.busyMinimized || state.activeTab !== 'swipe' || state.discoverSubMode === 'gacha') {
-                    state.pendingMatchReveal = { sessionId: sess.id, count: addedCount };
-                } else {
-                    openMatchSignalReveal(addedCount);
-                }
-            }, { taskType: 'llm', cancellable: true });
+            await triggerTinderBatchGeneration(sess, cfg);
             return;
         }
         if (act === 'gen-cand-art') {
@@ -10471,8 +11606,8 @@ function bindWindowDelegation(win) {
             notifyToast('Генерация арта остановлена.');
             return renderWindow();
         }
-        if (act === 'tinder-dislike') return handleSwipeDecision('dislike');
-        if (act === 'tinder-like') return handleSwipeDecision('like');
+        if (act === 'tinder-dislike') return triggerAnimatedSwipeDecision('dislike');
+        if (act === 'tinder-like') return triggerAnimatedSwipeDecision('like');
         if (act === 'tinder-expand-now') {
             const cur = sess.tinder.queue.shift();
             if (!cur) return;
@@ -10593,16 +11728,20 @@ function bindWindowDelegation(win) {
                 .filter(Boolean)
                 .join('\n\n');
 
+            const blitzConceptInsp = (seedEntity && seedHit?.source !== 'concept' && seedHit?.ref)
+                ? buildConceptInspirationBlock(sess, seedHit.ref)
+                : '';
             const brief = seedEntity
                 ? [
                     `[BASE CHARACTER DOSSIER FROM ${seedHit.source === 'gacha' ? 'GACHA' : 'TINDER'} — MANDATORY SUBJECT, KEEP THIS EXACT PERSON, NAME & APPEARANCE]`,
                     buildCleanBriefFromEntity(seedEntity),
+                    blitzConceptInsp ? `\n${blitzConceptInsp}` : '',
                     sess.blitz.topic ? `\n[ADDITIONAL FOCUS]: ${sess.blitz.topic}` : '',
                     answered ? `\n[USER BLITZ ANSWERS DEEPENING "${seedEntity.name}" — MANDATORY CANON]\n${answered}` : '',
                 ].filter(Boolean).join('\n')
                 : [
                     `[BLITZ QUESTIONNAIRE TOPIC]`,
-                    sess.blitz.topic || 'Matchmaking & Character Design',
+                    sess.blitz.topic || 'Character & Story Design',
                     answered
                         ? `\n[USER BLITZ ANSWERS — MANDATORY CANON (Incorporate EVERY checked option and custom answer below faithfully; creatively fill in any skipped angles)]\n${answered}`
                         : `\nSynthesize creatively from Topic & Intake.`,
@@ -10613,8 +11752,9 @@ function bindWindowDelegation(win) {
                 : 'Собираем карточку в слот «Блиц»';
 
             await withBusy(busyLabel, async (signal) => {
-                const gachaOnlyNoSeed = !seedHit && sess.blitz?.useTinderContext === false && Boolean(sess.blitz?.useGachaContext);
-                const blitzCtxMode = (seedHit?.source === 'gacha' || gachaOnlyNoSeed) ? 'gacha' : 'blitz';
+                const bMode = resolveBlitzEffectiveSourceMode(sess);
+                const blitzCtxMode = bMode === 'gacha' ? 'gacha' : 'blitz';
+                const useBlitzIntake = bMode !== 'none';
                 const liveSrcForBlitz = (seedEntity && (seedEntity.singleSheet || Array.isArray(seedEntity.seriesFrames)))
                     ? resolveLiveSourceEntityForConcept(sess, seedEntity)
                     : seedEntity;
@@ -10622,7 +11762,8 @@ function bindWindowDelegation(win) {
                 const portraitEnt = seedEntity ? resolveHeroTruePortraitEntity(sess, seedEntity) : null;
                 const seedMediaUrl = portraitEnt ? resolveEntityAvatarUrl(portraitEnt) : '';
                 const req = buildFullCardRequest(sess, brief, cfg.transportMode, {
-                    modeContext: blitzCtxMode,
+                    modeContext: useBlitzIntake ? blitzCtxMode : 'architect',
+                    useIntake: useBlitzIntake,
                     safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
                     customFormats: cfg.customCardFormats,
                     skipImagePrompt: Boolean(seedEntity),
@@ -10835,6 +11976,7 @@ function bindWindowDelegation(win) {
                     const req = buildFullCardRegenerateRequest(sess, curCard, instruction, {
                         originKind,
                         useIntake: sess.architect?.useIntake !== false,
+                        updateArtPrompt: updateArt,
                         mode: cfg.transportMode,
                         safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
                         customFormats: cfg.customCardFormats,
@@ -10857,6 +11999,9 @@ function bindWindowDelegation(win) {
                         fallbackName: curCard.name || '',
                         fallbackImagePrompt: curCard.imagePrompt || '',
                     });
+                    if (!updateArt && curCard.imagePrompt) {
+                        rebuiltIdea.imagePrompt = curCard.imagePrompt;
+                    }
                     if (curCard.avatarDataUrl) rebuiltIdea.avatarDataUrl = curCard.avatarDataUrl;
                     if (curCard.originalAvatarId) rebuiltIdea.originalAvatarId = curCard.originalAvatarId;
                     if (curCard.croppedAspect) rebuiltIdea.croppedAspect = curCard.croppedAspect;
@@ -11197,7 +12342,10 @@ function bindWindowDelegation(win) {
                     styleWrapMode: cfg.styleWrapMode || 'plain_prefix',
                     imageNegativeId: cfg.imageNegativeId || '',
                     imageCustomNegative: cfg.imageCustomNegative || '',
-                    aspectRatio: cfg.imageAspectRatio || '1:1',
+                    aspectRatio: coerceAspectToSupported(
+                        cfg.imageAspectRatio || 'native',
+                        getSupportedAspectRatiosForImageConfig(cfg.imageSource, cfg.imageProfileId).supportedIds,
+                    ),
                     safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
                     ...refOpts,
                     signal: ctl.signal,
@@ -11311,12 +12459,53 @@ function bindWindowDelegation(win) {
 
 async function expandCandidateIntoFullCard(sess, cand, transportMode, slotTarget = '') {
     const cfg = getSettings();
-    const isGachaItem = slotTarget === 'gacha' || String(cand?.id || '').startsWith('gacha_');
-    const resolvedSlot = isGachaItem ? 'gacha' : (slotTarget || 'swipe');
+    const candId = String(cand?.id || '');
+    const srcRef = String(cand?.sourceRef || '');
+    const isVaultOrigin = slotTarget === 'vault' || Boolean(cand?.vaultId);
+    const isGachaOrigin = !isVaultOrigin && (
+        slotTarget === 'gacha'
+        || candId.startsWith('gacha_')
+        || candId.startsWith('fuse_')
+        || Array.isArray(cand?.fusedFromNames)
+        || cand?.stars !== undefined
+        || srcRef.startsWith('gacha:')
+    );
+    const isPhotoOrigin = !isVaultOrigin && !isGachaOrigin && (slotTarget === 'photo' || srcRef.startsWith('photo:'));
+    const isConceptOrigin = !isVaultOrigin && !isGachaOrigin && !isPhotoOrigin && (
+        slotTarget === 'concept'
+        || Boolean(cand?.singleSheet || Array.isArray(cand?.seriesFrames))
+    );
+
+    const resolvedSlot = isVaultOrigin
+        ? 'manual'
+        : (isGachaOrigin ? 'gacha' : (isPhotoOrigin ? 'photo' : (isConceptOrigin ? 'concept' : (slotTarget || 'swipe'))));
+
+    let effectiveModeCtx = 'swipe';
+    let effectiveUseIntake = true;
+    if (isVaultOrigin) {
+        effectiveModeCtx = 'architect';
+        effectiveUseIntake = false;
+    } else if (isGachaOrigin) {
+        effectiveModeCtx = 'gacha';
+        effectiveUseIntake = true;
+    } else if (isPhotoOrigin) {
+        effectiveModeCtx = 'architect';
+        effectiveUseIntake = Boolean(sess.photoLab?.useIntake);
+    } else if (isConceptOrigin) {
+        const linkedToSwipe = /^(?:tinder|liked|queue):/.test(srcRef);
+        effectiveModeCtx = 'architect';
+        effectiveUseIntake = linkedToSwipe;
+    }
+
+    const candConceptLookupRef = !isConceptOrigin && candId
+        ? (isGachaOrigin ? `gacha:${candId}` : (isPhotoOrigin ? `photo:${candId}` : `liked:${candId}`))
+        : '';
+    const candConceptInsp = candConceptLookupRef ? buildConceptInspirationBlock(sess, candConceptLookupRef) : '';
     const brief = [
         `Expand this approved Character Concept into a complete SillyTavern V2 Card:`,
         buildCleanBriefFromEntity(cand),
-    ].join('\n');
+        candConceptInsp ? `\n${candConceptInsp}` : '',
+    ].filter(Boolean).join('\n');
 
     await withBusy(`Собираем полную карточку «${cand.name}»`, async (signal) => {
         const liveSrcHero = (cand && (cand.singleSheet || Array.isArray(cand.seriesFrames)))
@@ -11327,7 +12516,8 @@ async function expandCandidateIntoFullCard(sess, cand, transportMode, slotTarget
         const candMediaUrl = portraitEnt ? resolveEntityAvatarUrl(portraitEnt) : '';
 
         const req = buildFullCardRequest(sess, brief, transportMode, {
-            modeContext: isGachaItem ? 'gacha' : 'swipe',
+            modeContext: effectiveModeCtx,
+            useIntake: effectiveUseIntake,
             safeFandomArtPrompt: Boolean(cfg.safeFandomArtPrompt),
             customFormats: cfg.customCardFormats,
             skipImagePrompt: true,

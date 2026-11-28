@@ -429,11 +429,36 @@ export function extractActiveTypingTagFragment(rawInput = '') {
     };
 }
 
+export function hasPhraseInCommaField(currentValue = '', phrase = '') {
+    const clean = normalizeTagString(phrase).toLowerCase();
+    if (!clean) return false;
+    return splitInputIntoTags(String(currentValue ?? '')).some((t) => t.toLowerCase() === clean);
+}
+
+export function togglePhraseInCommaField(currentValue = '', phrase = '', separator = ', ') {
+    const clean = normalizeTagString(phrase);
+    if (!clean) return String(currentValue ?? '');
+    const items = splitInputIntoTags(String(currentValue ?? ''));
+    const low = clean.toLowerCase();
+    const exists = items.some((t) => t.toLowerCase() === low);
+    const next = exists
+        ? items.filter((t) => t.toLowerCase() !== low)
+        : [...items, clean];
+    return next.join(separator);
+}
+
 export function applyChosenTagToInputValue(currentValue = '', chosenTag = '', defaultSeparator = ', ') {
     const cleanTag = normalizeTagString(chosenTag);
     if (!cleanTag) return String(currentValue ?? '');
     const raw = String(currentValue ?? '');
     if (!raw.trim()) return cleanTag;
+
+    const existingTags = splitInputIntoTags(raw);
+    const lowChosen = cleanTag.toLowerCase();
+    if (existingTags.some((t) => t.toLowerCase() === lowChosen)) {
+        // Clicking an already added tag toggles it off cleanly
+        return existingTags.filter((t) => t.toLowerCase() !== lowChosen).join(defaultSeparator);
+    }
 
     const lastPlus = raw.lastIndexOf('+');
     const lastComma = raw.lastIndexOf(',');
@@ -441,17 +466,22 @@ export function applyChosenTagToInputValue(currentValue = '', chosenTag = '', de
     const lastIdx = Math.max(lastPlus, lastComma, lastSemi);
 
     if (lastIdx >= 0) {
-        const sep = raw[lastIdx] === '+' ? ' + ' : ', ';
+        const sep = raw[lastIdx] === '+' ? ' + ' : defaultSeparator;
         const head = raw.slice(0, lastIdx).trimEnd();
-        return head ? `${head}${sep}${cleanTag}${sep}` : `${cleanTag}${defaultSeparator}`;
+        const tail = raw.slice(lastIdx + 1).trim();
+        // If tail is an unfinished prefix of chosenTag (or empty), replace tail; otherwise keep tail and append!
+        if (!tail || lowChosen.startsWith(tail.toLowerCase())) {
+            return head ? `${head}${sep}${cleanTag}` : cleanTag;
+        }
+        return `${raw.trim()}${sep}${cleanTag}`;
     }
 
-    // User was typing the very first word fragment -> replace fragment with chosenTag + separator so they can keep typing!
-    const existingTags = splitInputIntoTags(raw).map((t) => t.toLowerCase());
-    if (existingTags.includes(cleanTag.toLowerCase())) {
-        return raw;
+    const trimmed = raw.trim();
+    // Only replace the first word if it is a short unfinished prefix of chosenTag; otherwise append after separator!
+    if (trimmed.length < cleanTag.length && lowChosen.startsWith(trimmed.toLowerCase())) {
+        return cleanTag;
     }
-    return `${cleanTag}${defaultSeparator}`;
+    return `${trimmed}${defaultSeparator}${cleanTag}`;
 }
 
 export function getSessionRotatingTagSuggestions({
@@ -733,12 +763,16 @@ export function populateSessionFromPresetTemplate(baseSession, templateId, uiLan
     baseSession.intake.cardFormat = loc.cardFormat || 'dossier_19';
     baseSession.intake.greetingStyle = loc.greetingStyle || 'fanfic';
     baseSession.intake.greetingPov = loc.greetingPov || 'third';
-    baseSession.intake.genres = [...(loc.genres || [])];
-    baseSession.intake.customGenres = loc.customGenres || '';
-    baseSession.intake.settingEra = loc.settingEra || '';
-    baseSession.intake.favFandomHero = loc.favFandomHero || '';
+    baseSession.intake.genres = [];
+    baseSession.intake.customGenres = '';
+    baseSession.intake.settingEra = [loc.settingEra, ...(loc.genres || []), loc.customGenres]
+        .filter(Boolean)
+        .join(', ');
+    baseSession.intake.favFandomHero = '';
     baseSession.intake.userRoleAndDesire = loc.userRoleAndDesire || '';
-    baseSession.intake.tropesWanted = loc.tropesWanted || '';
+    baseSession.intake.tropesWanted = [loc.tropesWanted, loc.favFandomHero]
+        .filter(Boolean)
+        .join(', ');
     baseSession.intake.hardBans = loc.hardBans || '';
     // Always follow Tavern language ({{language}}) out of the box!
     baseSession.intake.userLanguage = '{{language}}';

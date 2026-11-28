@@ -3,7 +3,7 @@
 // Zero emojis inside code or UI strings.
 // ═══════════════════════════════════════════════════════════════════════════
 
-let activeUiLang = 'ru';
+let activeUiLang = globalThis.__nmfActiveUiLang || 'ru';
 
 export function normalizeUiLang(raw) {
     const clean = String(raw || '').trim().toLowerCase();
@@ -21,20 +21,21 @@ export function detectDefaultUiLang() {
 }
 
 export function getUiLang() {
-    return activeUiLang;
+    return globalThis.__nmfActiveUiLang || activeUiLang;
 }
 
 export function setUiLang(lang) {
     activeUiLang = normalizeUiLang(lang);
+    globalThis.__nmfActiveUiLang = activeUiLang;
     return activeUiLang;
 }
 
 export function isEn() {
-    return activeUiLang === 'en';
+    return getUiLang() === 'en';
 }
 
 export function tx(ruText, enText) {
-    return activeUiLang === 'en' ? enText : ruText;
+    return isEn() ? enText : ruText;
 }
 
 // ── 13 THEMES: LOCALIZED NAMES & SUBTITLES ──
@@ -96,7 +97,7 @@ export const THEME_I18N = Object.freeze({
 export function getThemeDisplay(themeObjOrId) {
     const id = typeof themeObjOrId === 'string' ? themeObjOrId : (themeObjOrId?.id || 'tavern');
     const entry = THEME_I18N[id] || THEME_I18N.tavern;
-    return activeUiLang === 'en' ? entry.en : entry.ru;
+    return isEn() ? entry.en : entry.ru;
 }
 
 // ── 39 UNIQUE THEMED UNPACK / REVEAL BUTTON INSCRIPTIONS (13 THEMES × MATCH / GACHA / ART) ──
@@ -196,7 +197,7 @@ export const THEME_UNPACK_LABELS = Object.freeze({
 
 export function getThemeUnpackCopy(themeId = 'tavern') {
     const entry = THEME_UNPACK_LABELS[themeId] || THEME_UNPACK_LABELS.tavern;
-    const lang = activeUiLang === 'en' ? 'en' : 'ru';
+    const lang = isEn() ? 'en' : 'ru';
     return {
         matchBtn: entry.match[lang],
         gachaBtn: entry.gacha[lang],
@@ -265,7 +266,7 @@ const SACRIFICE_FAIL_LORE = Object.freeze({
 export function getThemedSacrificeFailMessage(themeId = 'tavern', heroName = '') {
     const cleanName = String(heroName || tx('Незнакомец', 'Stranger')).trim();
     const entry = SACRIFICE_FAIL_LORE[themeId] || SACRIFICE_FAIL_LORE.tavern;
-    return activeUiLang === 'en' ? entry.en(cleanName) : entry.ru(cleanName);
+    return isEn() ? entry.en(cleanName) : entry.ru(cleanName);
 }
 
 // ── RARITY PALETTE LABELS (RU / EN) ──
@@ -278,7 +279,7 @@ export function getRarityLabel(stars = 3) {
         4: { ru: '4 ЗВ. · АМЕТИСТОВОЕ СИЯНИЕ', en: '4 STARS · AMETHYST RADIANCE' },
         5: { ru: '5 ЗВ. · ЗОЛОТО СОЗВЕЗДИЯ', en: '5 STARS · GOLDEN CONSTELLATION' },
     };
-    return map[s][activeUiLang === 'en' ? 'en' : 'ru'];
+    return map[s][isEn() ? 'en' : 'ru'];
 }
 
 // ── LOADING QUIPS IN ENGLISH (RU stays in nmf_templates_and_prompts or bridged here) ──
@@ -370,12 +371,12 @@ const GENRE_EN_MAP = Object.freeze({
 });
 
 export function localizeGenreTag(ruGenre) {
-    if (activeUiLang !== 'en') return ruGenre;
+    if (!isEn()) return ruGenre;
     return GENRE_EN_MAP[ruGenre] || ruGenre;
 }
 
 export function localizeOptionLabel(group, id, fallbackRu = '') {
-    if (activeUiLang !== 'en') return fallbackRu;
+    if (!isEn()) return fallbackRu;
     const dict = OPTION_LABELS_EN[group];
     return (dict && dict[id]) ? dict[id] : fallbackRu;
 }
@@ -624,7 +625,7 @@ const EXACT_PHRASE_EN = new Map([
     ['Вселенная / Сеттинг для Гачи (необязательно)', 'Universe / Setting for Gacha (Optional)'],
     ['Пол в Призыве', 'Summoned Gender'],
     ['Рейтинг Гачи', 'Gacha Rating'],
-    ['Особые пожелания к призыву (вайб, химия с вами, детали)', 'Special Summon Wishes (vibe, chemistry, details)'],
+    ['Особые пожелания к призыву (вайб, сюжетные детали)', 'Special Summon Wishes (vibe, story details)'],
     ['Запреты Баннера (чего точно НЕ должно выпасть)', 'Banner Hard Bans (never summon these)'],
     ['Языки', 'Languages'],
     ['Сохранить пожелания', 'Save Wishes'],
@@ -998,7 +999,7 @@ const PROTECTED_CONTENT_SELECTOR = [
 ].join(', ');
 
 export function applyEnglishDomTranslation(rootEl) {
-    if (activeUiLang !== 'en' || !rootEl || typeof document === 'undefined' || typeof document.createTreeWalker !== 'function') return;
+    if (!isEn() || !rootEl || typeof document === 'undefined' || typeof document.createTreeWalker !== 'function') return;
 
     const walker = document.createTreeWalker(rootEl, 4 /* NodeFilter.SHOW_TEXT */);
     const textNodes = [];

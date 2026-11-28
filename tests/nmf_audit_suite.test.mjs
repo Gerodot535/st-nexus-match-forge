@@ -2118,7 +2118,7 @@ test('v1.5.0 UX Upgrade: Modal-safe triggerDownload inside <dialog>, pure art bl
         },
     ];
     const rwReq = buildReworkCardRequest(sess, kingSource, 'prefill_user_msg');
-    assert.ok(rwReq.user.includes('ZERO ANACHRONISMS & TOTAL WORLD TRANSLATION LAW'));
+    assert.ok(rwReq.user.includes('ZERO ANACHRONISMS & WORLD ADAPTATION LAW'));
     assert.ok(rwReq.user.includes('Томми-ган в футляре от скрипки'));
 
     // 3. Pure artwork blob extraction for Lightbox download
@@ -2188,8 +2188,9 @@ test('v1.7.0 Dual Languages (User Preview/Notes vs AI Card) & Strict Card Meta-P
     assert.ok(swipeReq.user.includes('Preview Display Language (for name, archetype, pitch, looks, quote, tags — read by the user): Русский'));
 
     const fullReq = buildFullCardRequest(sess, 'Test hero', 'prefill_user_msg');
-    assert.ok(fullReq.user.includes('Target Output Language for AI Card Fields (Description, Personality, Scenario, First Message, Dialogue): English'));
-    assert.ok(fullReq.user.includes('Target Language for Human-Facing Creator Notes & Summaries: Русский'));
+    assert.ok(fullReq.user.includes('Target Output Language for AI Card Fields & Creator Notes (Description, Personality, Scenario, Example Dialogue, Creator Notes): English'));
+    assert.ok(fullReq.user.includes('Target Language for Human-Facing Previews & Quizzes: Русский'));
+    assert.ok(fullReq.user.includes('Write Creator Notes (creator_notes / [[NMF_CREATOR_NOTES]]) strictly in English'));
     assert.equal(fullReq.user.includes('[[NMF_DESC]]Full Description[[/NMF_DESC]]'), true);
     assert.ok(fullReq.user.includes('CLEAN HEADINGS RULE'));
     assert.equal(fullReq.user.includes('META-PURITY LAW'), false);
@@ -2237,8 +2238,8 @@ test('v1.7.0 Honest 1-5 Star External Randomizer (Preserving Role & Looks), Sacr
 
     const sess = createDefaultSession(1);
     const sumReq = buildGachaSummonRequest(sess, tags, [1, 5], 'prefill_user_msg');
-    assert.ok(sumReq.user.includes('NEVER downgrade their appearance or strip their requested title!'));
-    assert.ok(sumReq.user.includes('APEX / HYPER-OP SCALE'));
+    assert.ok(sumReq.user.includes('never downgrade their design or strip their requested role'));
+    assert.ok(sumReq.user.includes('SUPREME / PEAK SCALE'));
 
     const rawDrops = [
         '[[NMF_DROP]]',
@@ -2377,10 +2378,10 @@ test('v1.7.0 Preset Macro Leak Sanitizer, Flexible <ART_MECHANISM> (Group/Artifa
 
     // 2. Flexible <ART_MECHANISM> adapts to Duo/Group, Artifact/Object, and World without medium words
     const groupRule = buildFlexibleAvatarArtMechanismRule({ originType: 'duo_group' });
-    assert.ok(groupRule.includes('FIGURE 1 (NAME):') && groupRule.includes('FIGURE 2 (NAME):') && groupRule.includes('INTERACTION:'));
+    assert.ok(groupRule.includes('depict the characters of this group together'));
 
     const objRule = buildFlexibleAvatarArtMechanismRule({ originType: 'artifact_object' });
-    assert.ok(objRule.includes('CHARACTERS IN THE IMAGE: no.') && objRule.includes('OBJECT (NAME):'));
+    assert.ok(objRule.includes('depict the central object/artifact itself'));
 
     // 3. Method Isolation: Architect ignores Tinder dislikes & Gacha tags; Blitz defaults Tinder=ON, Gacha=OFF
     const sess = createDefaultSession(1);
@@ -2434,11 +2435,13 @@ test('v1.7.1 Real Tinder/Gacha -> Blitz Character Selection, Fast Blob Display U
         },
     ];
 
-    // 1. Default Blitz selects liked Tinder hero ("Лев Джонсон, 32") and excludes Gacha while useGachaContext=false
+    // 1. Default Blitz does NOT hijack liked[0] until explicitly selected; selecting hero ref targets "Лев Джонсон, 32"
     const candsTinderOnly = listBlitzSelectableCandidates(sess);
     assert.equal(candsTinderOnly.length, 1);
     assert.equal(candsTinderOnly[0].entity.name, 'Лев Джонсон, 32');
+    assert.equal(resolveBlitzSeedCandidate(sess), null);
 
+    sess.blitz.selectedCandidateRef = 'liked:cand_lev';
     const seed1 = resolveBlitzSeedCandidate(sess);
     assert.equal(seed1?.entity.name, 'Лев Джонсон, 32');
 
@@ -2889,7 +2892,7 @@ test('v1.9.6 Dual-Prompt Card Regeneration (Surgical Anti-Slop vs Full Rewrite),
         mode: 'json_schema',
     });
     assert.ok(surgReq.system.includes('SURGICAL COHESION & INTEGRITY LAW'));
-    assert.ok(surgReq.system.includes('ANTI-SLOP'));
+    assert.ok(surgReq.system.includes('AUTHENTIC PROSE LAW'));
     assert.ok(surgReq.user.includes('Убери слоп в пункте 15'));
 
     const appliedLocked = applySurgicalCardEditResult(
@@ -3214,30 +3217,27 @@ test('v2.0.2-beta: Manual Safe Fandom Art Prompt (A1) & Synced Immediate Card Ar
     sess.intake.fandomName = 'Marvel';
 
     const defaultArtRule = mod.buildFlexibleAvatarArtMechanismRule(sess.intake, { safeFandomArtPrompt: false });
-    assert.ok(defaultArtRule.includes('FIGURE 1 (NAME):'), 'Default mode must allow character names in FIGURE 1');
-    assert.equal(defaultArtRule.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'), false);
+    assert.equal(defaultArtRule.includes('SAFE VISUAL SHIELD'), false);
 
     const safeArtRule = mod.buildFlexibleAvatarArtMechanismRule(sess.intake, { safeFandomArtPrompt: true });
-    assert.equal(safeArtRule.includes('FIGURE 1 (NAME):'), false, 'Safe fandom mode must remove (NAME) from FIGURE 1');
-    assert.ok(safeArtRule.includes('FIGURE 1:'), 'Safe fandom mode must use plain FIGURE 1:');
-    assert.ok(safeArtRule.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+    assert.ok(safeArtRule.includes('SAFE VISUAL SHIELD'));
 
     // Propagates cleanly to Tinder, Gacha, and Full Card builders across both transport modes
     const gachaSafe = mod.buildGachaSummonRequest(sess, ['iron', 'genius', 'workshop'], [5], 'prefill_user_msg', {
         safeFandomArtPrompt: true,
     });
     assert.equal(gachaSafe.user.includes('FIGURE 1 (NAME):'), false);
-    assert.ok(gachaSafe.user.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+    assert.ok(gachaSafe.user.includes('SAFE VISUAL SHIELD'));
 
     const gachaSafeJson = mod.buildGachaSummonRequest(sess, ['iron', 'genius', 'workshop'], [5], 'json_schema', {
         safeFandomArtPrompt: true,
     });
     assert.equal(gachaSafeJson.system.includes('FIGURE 1 (NAME):'), false);
-    assert.ok(gachaSafeJson.system.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+    assert.ok(gachaSafeJson.system.includes('SAFE VISUAL SHIELD'));
 
     const tinderSafe = mod.buildTinderPreviewRequest(sess, 1, 'prefill_user_msg', { safeFandomArtPrompt: true });
     assert.equal(tinderSafe.user.includes('FIGURE 1 (NAME):'), false);
-    assert.ok(tinderSafe.user.includes('STRICT ANTI-COPYRIGHT & PUBLIC-FIGURE SHIELD'));
+    assert.ok(tinderSafe.user.includes('SAFE VISUAL SHIELD'));
 
     // 3. Runtime visual prompt sanitizer & SillyImages reference label stripping
     const rawWithNames = 'SCENE: Workshop. CHARACTERS IN THE IMAGE: yes. FIGURE 1 (Tony Stark / Iron Man): Tall man with goatee, Tony Stark smirk.';
@@ -3357,3 +3357,700 @@ test('v2.1.0-beta: clean ## Headings across all templates, Custom Templates & AI
     assert.equal(aMod.sanitizeAspectForProvider('21:9', 'gemini'), '21:9');
     assert.equal(aMod.CONCEPT_ALL_ASPECT_OPTIONS.length, 10);
 });
+
+test('v2.1.6-beta: Vibe-over-literalism tags, expressive art framing, Creator Notes in card language, +1 translated alt toggle & saved Style Profiles', async () => {
+    const fs = await import('node:fs');
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.6');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+
+    // 1. Vibe over literalism in Gacha & Tinder + zero forced chest-up three-quarter bias
+    const sess = tMod.createDefaultSession(1);
+    const gachaReq = tMod.buildGachaSummonRequest(sess, ['пепел', 'ночь'], [4], 'prefill_user_msg');
+    assert.ok(gachaReq.user.includes('TAG INTERPRETATION & ORIGINALITY LAW'));
+    assert.ok(gachaReq.user.includes('emotional tone, mood, and undertone'));
+    assert.equal(gachaReq.user.includes('chest-up three-quarter portrait'), false);
+
+    const swipeReq = tMod.buildTinderPreviewRequest(sess, 2, 'prefill_user_msg');
+    assert.ok(swipeReq.user.includes('TAG INTERPRETATION & ORIGINALITY LAW'));
+    assert.equal(swipeReq.user.includes('chest-up three-quarter portrait'), false);
+
+    // 2. Clean languages + +1 Translated Alt resolution + Creator Notes strictly in Card Language
+    sess.intake.userLanguage = 'Русский';
+    sess.intake.cardLanguage = 'English';
+    sess.intake.firstMesLanguage = 'English';
+    tMod.setIntakeTranslatedAltAndExtras(sess.intake, true, 0);
+    assert.equal(tMod.hasIntakeTranslatedAlt(sess.intake), true);
+    assert.equal(tMod.resolveTranslatedAltTargetLanguageLabel(sess.intake), 'Русский');
+
+    const fullReq = tMod.buildFullCardRequest(sess, 'Detective', 'prefill_user_msg');
+    assert.ok(fullReq.user.includes('Main First Message (first_mes / [[NMF_FIRST_MES]]) MUST be written in: English.'));
+    assert.ok(fullReq.user.includes('FULL TRANSLATION of the Main First Message into Русский.'));
+    assert.ok(fullReq.user.includes('Write Creator Notes (creator_notes / [[NMF_CREATOR_NOTES]]) strictly in English'));
+
+    // 3. Unified Style Profiles save & restore languages, alt toggle, POV, style, and persistent custom rules
+    sess.intake.greetingCustomRules = '"Диалоги" в кавычках, мысли в *звёздочках*';
+    const prof = tMod.extractStyleProfileFromIntake(sess.intake, 'Мой EN профиль');
+    const migrated = tMod.normalizeAndMigrateSettings({
+        styleProfiles: [prof],
+        defaultStyleProfileId: prof.id,
+    });
+    assert.equal(migrated.settings.styleProfiles.length, 1);
+    assert.equal(migrated.settings.defaultStyleProfileId, prof.id);
+
+    const freshSess = tMod.createDefaultSession(2);
+    tMod.applyStyleProfileToIntake(freshSess.intake, migrated.settings.styleProfiles[0]);
+    assert.equal(freshSess.intake.cardLanguage, 'English');
+    assert.equal(freshSess.intake.firstMesLanguage, 'English');
+    assert.equal(freshSess.intake.greetingCustomRules, '"Диалоги" в кавычках, мысли в *звёздочках*');
+    assert.equal(tMod.hasIntakeTranslatedAlt(freshSess.intake), true);
+
+    // 4. UI renders clean language inputs and unified profile selector
+    assert.ok(entrySrc.includes('data-style-profile-select="1"'));
+    assert.ok(entrySrc.includes('data-clean-lang="user"'));
+    assert.ok(entrySrc.includes('data-clean-lang="card"'));
+    assert.ok(entrySrc.includes('data-clean-lang="firstMes"'));
+    assert.ok(entrySrc.includes('data-act="set-translated-alt-toggle"'));
+});
+
+test('v2.1.15-beta: Zero unhandled buttons/fields, anti-sticking focus/tap guards, spoiler signature persistence & non-streaming default', async () => {
+    const fs = await import('node:fs');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+    const labsSrc = fs.readFileSync(new URL('../modules/nmf_labs_and_templates.js', import.meta.url), 'utf8');
+    const tMod = await import('../modules/nmf_templates_and_prompts.js');
+    const allUi = `${entrySrc}\n${labsSrc}`;
+
+    // 1. Every literal data-act="..." in UI has a corresponding click handler
+    const tplActs = new Set([...allUi.matchAll(/data-act="([^"$]+)"/g)].map((m) => m[1].trim()).filter(Boolean));
+    const handledActs = new Set([...allUi.matchAll(/\bact\s*===\s*['"]([^'"]+)['"]/g)].map((m) => m[1].trim()));
+    const missingActs = [...tplActs].filter((a) => !handledActs.has(a));
+    assert.deepEqual(missingActs, [], `Unhandled data-act buttons found: ${missingActs.join(', ')}`);
+    assert.ok(tplActs.size >= 245);
+
+    // 2. Every data-* binding on <input>/<textarea>/<select> is wired in event listeners
+    const fieldTags = [...allUi.matchAll(/<(?:input|textarea|select)\b[^>]*>/g)].map((m) => m[0]);
+    const fieldKeys = new Set();
+    for (const tag of fieldTags) {
+        for (const dm of tag.matchAll(/\bdata-([a-z0-9-]+)=/gi)) {
+            if (['act', 'idx', 'id'].includes(dm[1])) continue;
+            fieldKeys.add(dm[1].replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase()));
+        }
+    }
+    const datasetHandled = new Set([...entrySrc.matchAll(/el\.dataset\.([a-zA-Z0-9_]+)/g)].map((m) => m[1]));
+    const unhandledFields = [...fieldKeys].filter((k) => !datasetHandled.has(k));
+    assert.deepEqual(unhandledFields, [], `Unhandled input data-* bindings: ${unhandledFields.join(', ')}`);
+
+    // 3. Anti-sticking guards: roster filter updates select in-place without full renderWindow(),
+    //    text blur/change guards only re-render SELECT/checkbox/radio, and spoiler signature + focus restore exist
+    assert.ok(entrySrc.includes('select[data-tpl-extract-avatar="1"]'));
+    assert.ok(entrySrc.includes('getSpoilerSignature'));
+    assert.ok(entrySrc.includes('savedFocusSpec'));
+    assert.ok(entrySrc.includes('syncLiveIntakeIndicatorsInDom'));
+
+    // 4. Default extension streaming is OFF (false) without mutating preset
+    const freshCfg = tMod.normalizeAndMigrateSettings(null).settings;
+    assert.equal(freshCfg.enableStreaming, false);
+});
+
+test('v2.1.16-beta: Strict cross-mode prompt isolation & inheritance matrix across Vault, Gacha/Altar, Photo, Concept, Blitz & Regen', async () => {
+    const tMod = await import('../modules/nmf_templates_and_prompts.js');
+    const sess = tMod.createDefaultSession(1);
+
+    // Populate conflicting contexts in every bucket + global formatting profile
+    sess.intake.originType = 'world_sandbox';
+    sess.intake.fandomName = 'MAIN_CYBERPUNK_FANDOM';
+    sess.intake.settingEra = 'MAIN_NEON_2099';
+    sess.intake.tropesWanted = 'MAIN_TROPE_HACKER';
+    sess.intake.hardBans = 'MAIN_BAN_MAGIC';
+    sess.intake.greetingCustomRules = 'CUSTOM_RULE_DASH_DIALOGUE';
+    sess.intake.cardLanguage = 'Русский';
+    sess.tinder.dislikedTags = ['SWIPE_DISLIKE_ELF'];
+    sess.architect.freeConcept = 'IDEA_TAB_SPACE_PIRATE';
+
+    sess.gacha.tagsInput = 'эльф + лес + флейта';
+    sess.gacha.wishPrefs.fandomOrWorld = 'GACHA_ELVEN_WOODS';
+    sess.gacha.wishPrefs.hardBans = 'GACHA_BAN_TECH';
+
+    // 1. Gacha Summon & Altar Fusion: 100% isolated from Main Story Questionnaire & Swipe dislikes, inherits Custom Rules
+    const gachaSum = tMod.buildGachaSummonRequest(sess, ['эльф', 'лес', 'флейта'], [5], 'prefill_user_msg').user;
+    assert.ok(gachaSum.includes('GACHA_ELVEN_WOODS'));
+    assert.equal(gachaSum.includes('MAIN_CYBERPUNK_FANDOM'), false);
+    assert.equal(gachaSum.includes('SWIPE_DISLIKE_ELF'), false);
+
+    // 2. Direct Idea / Vault / Standalone with useIntake=false: isolated from Main Story Questionnaire AND world_sandbox override, but inherits Custom Rules!
+    const directCard = tMod.buildFullCardRequest(sess, 'Cozy baker character', 'prefill_user_msg', {
+        modeContext: 'architect',
+        useIntake: false,
+        skipImagePrompt: true,
+    }).user;
+    assert.equal(directCard.includes('MAIN_CYBERPUNK_FANDOM'), false);
+    assert.equal(directCard.includes('WORLD SANDBOX'), false, 'useIntake=false must not inherit world_sandbox originType from Main Questionnaire');
+    assert.ok(directCard.includes('CUSTOM_RULE_DASH_DIALOGUE'), 'Global persistent formatting rules MUST still inherit');
+    assert.equal(directCard.includes('[[NMF_IMG_PROMPT]]'), false, 'skipImagePrompt=true must omit image_prompt regeneration');
+
+    // 3. Blitz with a Photo/Concept seed AND useTinderContext=false: strictly respects disabled Main Questionnaire!
+    sess.photoLab.drafts = [{ id: 'ph_1', name: 'Алиса', cardDraft: { name: 'Алиса', description: 'Художница.' } }];
+    sess.blitz.usePhotoContext = true;
+    sess.blitz.useTinderContext = false;
+    sess.blitz.useGachaContext = false;
+    sess.blitz.selectedCandidateRef = 'photo:ph_1';
+    const blitzPhotoQ = tMod.buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg').user;
+    assert.ok(blitzPhotoQ.includes('Алиса'));
+    assert.equal(blitzPhotoQ.includes('MAIN_CYBERPUNK_FANDOM'), false, 'Blitz with useTinderContext=false must not leak Main Questionnaire onto Photo seed');
+
+    // 4. Concept Lab with attached photo or themeBrief (no seed, empty anchorPrompt): isolated from Main Story Questionnaire!
+    sess.conceptLab.anchorPhoto = { avatarId: 'img_anchor_1', avatarDataUrl: '' };
+    sess.conceptLab.themeBrief = 'Личные вещи в рюкзаке';
+    const conceptPlan = tMod.buildConceptSinglePlanRequest(sess, null, 'prefill_user_msg').user;
+    assert.equal(conceptPlan.includes('MAIN_CYBERPUNK_FANDOM'), false, 'Standalone Concept Lab with photo/theme must not pull unrelated Main Questionnaire');
+
+    // 5. Full Card Regeneration on standalone/manual card: isolated from Idea tab freeConcept & Main Questionnaire, skips image_prompt when updateArtPrompt=false!
+    const standaloneRegen = tMod.buildFullCardRegenerateRequest(
+        sess,
+        { name: 'Виктор', description: 'Часовщик.', scenario: 'Старая мастерская.', imagePrompt: 'Existing portrait prompt' },
+        'Сделай характер мягче',
+        { originKind: 'standalone', updateArtPrompt: false, mode: 'prefill_user_msg' },
+    ).user;
+    assert.equal(standaloneRegen.includes('IDEA_TAB_SPACE_PIRATE'), false, 'Standalone card regen must not leak Idea tab text');
+    assert.equal(standaloneRegen.includes('MAIN_CYBERPUNK_FANDOM'), false, 'Standalone card regen must not leak Main Questionnaire');
+    assert.equal(standaloneRegen.includes('[[NMF_IMG_PROMPT]]'), false, 'updateArtPrompt=false must preserve existing imagePrompt without regenerating');
+    assert.ok(standaloneRegen.includes('CUSTOM_RULE_DASH_DIALOGUE'), 'Standalone card regen must still inherit global formatting rules');
+});
+
+test('v2.1.17-beta: Mutually-exclusive Blitz core (zero Mafia-boss hijack), Same-Name variation toggle (off by default), clean art prompt storage & swipe animations', async () => {
+    const fs = await import('node:fs');
+    const tMod = await import('../modules/nmf_templates_and_prompts.js');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+    const themeSrc = fs.readFileSync(new URL('../modules/nmf_themes_and_icons.js', import.meta.url), 'utf8');
+
+    const sess = tMod.createDefaultSession(1);
+    assert.equal(sess.tinder.allowSameNames, false);
+    assert.equal(sess.gacha.allowSameNames, false);
+
+    // Populate conflicting Swipe Mafia Boss + Main Story Questionnaire + Gacha Questionnaire
+    sess.intake.fandomName = 'MAIN_MAFIA_CITY';
+    sess.tinder.liked = [{ id: 'sw_boss', name: 'Дон Сальваторе', archetype: 'Босс мафии', pitch: 'Держит порт.' }];
+    sess.gacha.wishPrefs.fandomOrWorld = 'GACHA_IONIA_ARENA';
+
+    // 1. Default fresh Blitz does NOT hijack liked[0] Mafia Boss!
+    assert.equal(tMod.resolveBlitzSeedCandidate(sess), null, 'Fresh Blitz must NEVER auto-hijack liked[0] Mafia boss');
+
+    // 2. Switching Blitz to Gacha Wishes mode is 100% isolated from both Main Mafia Story AND Swipe Mafia Boss even without touching legacy booleans!
+    sess.blitz.sourceMode = 'gacha';
+    const blitzGachaQ = tMod.buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg').user;
+    assert.ok(blitzGachaQ.includes('GACHA_IONIA_ARENA'));
+    assert.equal(blitzGachaQ.includes('MAIN_MAFIA_CITY'), false);
+    assert.equal(blitzGachaQ.includes('Дон Сальваторе'), false);
+
+    // 3. Same-Name variation toggle (e.g. summoning multiple Sett versions)
+    sess.gacha.collection = [{ id: 'gacha_sett_1', name: 'Сетт, 28', stars: 4 }];
+    const gachaDefaultOff = tMod.buildGachaSummonRequest(sess, ['боец', 'арена', 'босс'], [5], 'prefill_user_msg').user;
+    assert.ok(gachaDefaultOff.includes('STRICT ANTI-CLONE'), 'allowSameNames=false keeps anti-clone active');
+
+    sess.gacha.allowSameNames = true;
+    const gachaSameOn = tMod.buildGachaSummonRequest(sess, ['Сетт', 'арена', 'кулаки'], [4, 5], 'prefill_user_msg').user;
+    assert.equal(gachaSameOn.includes('STRICT ANTI-CLONE'), false, 'allowSameNames=true disables anti-clone');
+    assert.ok(gachaSameOn.includes('SAME-NAME & VARIATION MODE ENABLED'));
+
+    sess.tinder.allowSameNames = true;
+    const swipeSameOn = tMod.buildTinderPreviewRequest(sess, 3, 'prefill_user_msg').user;
+    assert.ok(swipeSameOn.includes('SAME-NAME & VARIATION MODE ENABLED'));
+    assert.ok(swipeSameOn.includes('[[NMF_C_IMG]]Detailed English visual prompt[[/NMF_C_IMG]]'), 'image_prompt still generated cleanly for future art');
+    assert.equal(swipeSameOn.includes('Avatar Art Mechanism'), false);
+    assert.equal(swipeSameOn.includes('SCENE: ... CHARACTERS IN THE IMAGE:'), false);
+
+    // 4. Art Mechanism blocks removed from Swipe & Gacha UI, while swipe card fly-left/fly-right animations exist
+    assert.equal(entrySrc.includes("renderArtSyncTogglesBlock(sess, cfg, { context: 'swipe' })"), false);
+    assert.equal(entrySrc.includes("renderArtSyncTogglesBlock(sess, cfg, { context: 'gacha' })"), false);
+    assert.ok(themeSrc.includes('.nmf-swipe-fly-right') && themeSrc.includes('.nmf-swipe-fly-left'));
+    assert.ok(entrySrc.includes('triggerAnimatedSwipeDecision'));
+});
+
+test('v2.1.18-beta: Single-page Story Questionnaire (1B), direct genre/tag/ban text insertion without overwrite & clickable/auto-clearing reveal card', async () => {
+    const fs = await import('node:fs');
+    const tagsMod = await import('../modules/nmf_tags_and_presets.js');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+
+    // 1. Sequential chip clicks append cleanly without overwriting the first word, and clicking again toggles off
+    const step1 = tagsMod.applyChosenTagToInputValue('', 'Фэнтези', ', ');
+    assert.equal(step1, 'Фэнтези');
+    const step2 = tagsMod.applyChosenTagToInputValue(step1, 'Киберпанк', ', ');
+    assert.equal(step2, 'Фэнтези, Киберпанк');
+    const step3 = tagsMod.applyChosenTagToInputValue(step2, 'Фэнтези', ', ');
+    assert.equal(step3, 'Киберпанк');
+
+    // 2. Genre & quick-ban toggle helper inserts and removes cleanly in comma fields
+    const g1 = tagsMod.togglePhraseInCommaField('Мегаполис', 'Дарк-романс');
+    assert.equal(g1, 'Мегаполис, Дарк-романс');
+    assert.equal(tagsMod.hasPhraseInCommaField(g1, 'дарк-романс'), true);
+    const g2 = tagsMod.togglePhraseInCommaField(g1, 'Дарк-романс');
+    assert.equal(g2, 'Мегаполис');
+
+    // 3. Single-page Story Questionnaire (Variant 1B): no 2-tab intake-step bar, unified 4 text fields, clickable reveal card
+    assert.ok(entrySrc.includes('function renderUnifiedStoryIntakeFieldsHtml('));
+    assert.equal(entrySrc.includes('data-act="intake-step"'), false, 'Old 2-tab intake switcher must be removed');
+    assert.equal(entrySrc.includes('data-intake="customGenres"'), false, 'Confusing duplicate customGenres input must be removed');
+    assert.equal(entrySrc.includes('id="nmf-manual-ban-input"'), false, 'Duplicate manual ban input in Swipes must be removed');
+    assert.ok(entrySrc.includes('class="nmf-sealed-card-totem" style="cursor:pointer" data-act="unpack-match-cards"'));
+    assert.ok(entrySrc.includes('class="nmf-sealed-card-totem" style="cursor:pointer" data-act="unpack-wish-cards"'));
+});
+
+test('v2.1.20-beta: Controlled editable Anti-Slop preset in Profile inherits everywhere & cleanly turns off when disabled', async () => {
+    const tMod = await import('../modules/nmf_templates_and_prompts.js');
+    const sess = tMod.createDefaultSession(1);
+
+    // Default preset is ON and pre-populated
+    assert.equal(sess.intake.antiSlopEnabled, true);
+    assert.ok(sess.intake.antiSlopRules.length > 50);
+
+    // Custom edit propagates into ALL 10 prompt builders + StyleProfiles
+    sess.intake.antiSlopRules = 'CUSTOM_ANTISLOP_NO_SHIVERS_777';
+    const marker = 'CUSTOM_ANTISLOP_NO_SHIVERS_777';
+
+    assert.ok(tMod.buildFullCardRequest(sess, 'Hero', 'prefill_user_msg').user.includes(marker), 'FullCard V2 inherits Anti-Slop');
+    assert.ok(tMod.buildTinderPreviewRequest(sess, 1, 'prefill_user_msg').user.includes(marker), 'Swipes inherit Anti-Slop');
+    assert.ok(tMod.buildGachaSummonRequest(sess, ['меч', 'ночь', 'тень'], [4], 'prefill_user_msg').user.includes(marker), 'Gacha inherits Anti-Slop');
+    assert.ok(tMod.buildGachaFusionRequest(sess, [{ name: 'A' }, { name: 'B' }], '', 'prefill_user_msg').user.includes(marker), 'Altar Fusion inherits Anti-Slop');
+    assert.ok(tMod.buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg').user.includes(marker), 'Blitz Quiz inherits Anti-Slop');
+    assert.ok(tMod.buildAuReworkQuestionsRequest(sess, { name: 'Hero' }, -1, 'prefill_user_msg').user.includes(marker), 'AU Quiz inherits Anti-Slop');
+    assert.ok(tMod.buildConceptSeriesQuestionsRequest(sess, null, -1, 'prefill_user_msg').user.includes(marker), 'Concept Quiz inherits Anti-Slop');
+    assert.ok(tMod.buildReworkCardRequest(sess, { name: 'Hero', description: 'Desc' }, 'prefill_user_msg').user.includes(marker), 'AU Rework inherits Anti-Slop');
+    assert.ok(tMod.buildConceptSinglePlanRequest(sess, null, 'prefill_user_msg').user.includes(marker), 'Concept Sheet inherits Anti-Slop');
+    assert.ok(tMod.buildConceptSeriesPlanRequest(sess, null, 'prefill_user_msg').user.includes(marker), 'Concept Series inherits Anti-Slop');
+    assert.ok(tMod.buildSurgicalCardEditRequest(sess, { name: 'Hero', description: 'Desc' }, 'Fix', { mode: 'prefill_user_msg' }).user.includes(marker), 'Surgical Edit inherits Anti-Slop');
+    assert.ok(tMod.buildFullCardRegenerateRequest(sess, { name: 'Hero', description: 'Desc' }, 'Rebuild', { mode: 'prefill_user_msg' }).user.includes(marker), 'Full Regen inherits Anti-Slop');
+    assert.ok(tMod.buildCardTranslationRequest({ name: 'Hero', description: 'Desc' }, 'English', 'prefill_user_msg', sess.intake).user.includes(marker), 'Translator inherits Anti-Slop');
+
+    // Saved inside StyleProfiles
+    const prof = tMod.extractStyleProfileFromIntake(sess.intake, 'AntiSlop Prof');
+    assert.equal(prof.antiSlopRules, marker);
+    const s2 = tMod.createDefaultSession(2);
+    tMod.applyStyleProfileToIntake(s2.intake, prof);
+    assert.equal(s2.intake.antiSlopRules, marker);
+
+    // Turning toggle OFF cleanly removes Anti-Slop everywhere (100% user-controlled!)
+    sess.intake.antiSlopEnabled = false;
+    assert.equal(tMod.buildFullCardRequest(sess, 'Hero', 'prefill_user_msg').user.includes(marker), false);
+    assert.equal(tMod.buildTinderPreviewRequest(sess, 1, 'prefill_user_msg').user.includes(marker), false);
+    assert.equal(tMod.buildGachaSummonRequest(sess, ['меч', 'ночь', 'тень'], [4], 'prefill_user_msg').user.includes(marker), false);
+    assert.equal(tMod.buildSurgicalCardEditRequest(sess, { name: 'Hero', description: 'Desc' }, 'Fix', { mode: 'prefill_user_msg' }).user.includes('ANTI-SLOP'), false);
+});
+
+test('v2.1.26-beta: Variant 1A unified model-aware Studio aspect selector & 100% SillyImages v3.0 inheritance across GPT-Image, OpenRouter (Flux/Gemini), xAI, Naistera, NovelAI, A1111 & Pollinations', async () => {
+    const fs = await import('node:fs');
+    const aMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.26');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+
+    // 1. Studio Step 2 uses dynamic studioAspectInfo (Variant 1A), not hardcoded IMAGE_ASPECT_OPTIONS.map
+    assert.equal(entrySrc.includes('IMAGE_ASPECT_OPTIONS.map'), false, 'Main Studio aspect selector must be dynamically bound to connected model');
+    assert.ok(entrySrc.includes('studioAspectInfo.studioNativeLabelRu'), 'First Studio option must inherit from SillyImages profile');
+    assert.equal(aMod.CONCEPT_ALL_ASPECT_OPTIONS.length, 10, 'Standard 10-option array preserved');
+
+    // 2. Orientation-preserving coercion when switching between Gemini (3:4 / 16:9) -> GPT Image (1:1, 2:3, 3:2) -> DALL-E 3 (1:1, 9:16, 16:9)
+    assert.equal(aMod.coerceAspectToSupported('3:4', ['1:1', '2:3', '3:2']), '2:3');
+    assert.equal(aMod.coerceAspectToSupported('16:9', ['1:1', '2:3', '3:2']), '3:2');
+    assert.equal(aMod.coerceAspectToSupported('2:3', ['1:1', '9:16', '16:9']), '9:16');
+    assert.equal(aMod.coerceAspectToSupported('native', ['1:1', '2:3', '3:2']), 'native');
+    assert.equal(aMod.isWideCardAspect('3:2'), true);
+    assert.equal(aMod.isWideCardAspect('2:3'), false);
+
+    const origFetch = globalThis.fetch;
+    const tinyPngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    try {
+        // 3. GPT-Image-1.5: 3 native options + safe normalization of SillyImages DALL-E portrait size (1024x1792 -> 1024x1536) on 'native'
+        let capturedBody = null;
+        globalThis.fetch = async (_url, init = {}) => {
+            capturedBody = JSON.parse(init.body);
+            return new Response(JSON.stringify({ data: [{ b64_json: tinyPngB64 }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        };
+        aMod.setTestTavernContext({
+            extensionSettings: {
+                sillyimages: {
+                    enabled: true,
+                    apiType: 'openai',
+                    endpoint: 'https://api.openai.com/v1',
+                    apiKey: 'sk-test',
+                    model: 'gpt-image-1.5',
+                    size: '1024x1792',
+                    quality: 'hd',
+                },
+            },
+        });
+        const gptInfo = aMod.getSupportedAspectRatiosForImageConfig('auto', '');
+        assert.deepEqual(gptInfo.supportedIds, ['1:1', '2:3', '3:2']);
+        assert.ok(gptInfo.inheritedSummaryRu.includes('1024x1536'), 'DALL-E 1024x1792 in SillyImages must normalize to 1024x1536 for gpt-image');
+        await aMod.generateCharacterPortrait('Portrait test', { imageSource: 'auto', aspectRatio: 'native' });
+        assert.equal(capturedBody.size, '1024x1536');
+        assert.equal(capturedBody.quality, 'high');
+
+        // 4. OpenRouter non-Gemini (Flux): all 10 ratios, modalities=['image'], and inherits settings.aspectRatio ('4:5') on 'native'!
+        capturedBody = null;
+        globalThis.fetch = async (_url, init = {}) => {
+            capturedBody = JSON.parse(init.body);
+            return new Response(JSON.stringify({ choices: [{ message: { images: [{ image_url: { url: `data:image/png;base64,${tinyPngB64}` } }] } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        };
+        aMod.setTestTavernContext({
+            extensionSettings: {
+                sillyimages: {
+                    enabled: true,
+                    apiType: 'openrouter',
+                    endpoint: 'https://openrouter.ai/api/v1',
+                    apiKey: 'sk-or-test',
+                    model: 'black-forest-labs/flux.2-pro',
+                    aspectRatio: '4:5',
+                    imageSize: '2K',
+                },
+            },
+        });
+        const orFluxInfo = aMod.getSupportedAspectRatiosForImageConfig('auto', '');
+        assert.equal(orFluxInfo.supportedIds.length, 10);
+        assert.equal(orFluxInfo.inheritedSummaryRu, '4:5');
+        await aMod.generateCharacterPortrait('Flux portrait', { imageSource: 'auto', aspectRatio: 'native' });
+        assert.deepEqual(capturedBody.modalities, ['image'], 'Flux on OpenRouter must send image-only modality');
+        assert.deepEqual(capturedBody.image_config, { aspect_ratio: '4:5' }, 'OpenRouter must inherit profile aspectRatio on native without unsupported image_size');
+
+        // 5. OpenRouter google/gemini-3.1-flash-image: 14 ratios + modalities=['image','text'] + image_size='2K'
+        aMod.setTestTavernContext({
+            extensionSettings: {
+                sillyimages: {
+                    enabled: true,
+                    apiType: 'openrouter',
+                    endpoint: 'https://openrouter.ai/api/v1',
+                    apiKey: 'sk-or-test',
+                    model: 'google/gemini-3.1-flash-image-preview',
+                    aspectRatio: '21:9',
+                    imageSize: '2K',
+                },
+            },
+        });
+        const orGemInfo = aMod.getSupportedAspectRatiosForImageConfig('auto', '');
+        assert.equal(orGemInfo.supportedIds.length, 14);
+        await aMod.generateCharacterPortrait('Panorama', { imageSource: 'auto', aspectRatio: 'native' });
+        assert.deepEqual(capturedBody.modalities, ['image', 'text']);
+        assert.deepEqual(capturedBody.image_config, { aspect_ratio: '21:9', image_size: '2K' });
+
+        // 6. xAI Grok Imagine: 13 ratios + inherits xaiAspectRatio='2:3' on 'native'
+        capturedBody = null;
+        globalThis.fetch = async (_url, init = {}) => {
+            capturedBody = JSON.parse(init.body);
+            return new Response(JSON.stringify({ data: [{ b64_json: tinyPngB64 }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        };
+        aMod.setTestTavernContext({
+            extensionSettings: {
+                sillyimages: {
+                    enabled: true,
+                    apiType: 'xai',
+                    endpoint: 'https://api.x.ai/v1',
+                    apiKey: 'xai-test',
+                    model: 'grok-imagine-image',
+                    xaiAspectRatio: '2:3',
+                    xaiResolution: '2k',
+                },
+            },
+        });
+        const xaiInfo = aMod.getSupportedAspectRatiosForImageConfig('auto', '');
+        assert.equal(xaiInfo.supportedIds.length, 13);
+        await aMod.generateCharacterPortrait('Grok portrait', { imageSource: 'auto', aspectRatio: 'native' });
+        assert.equal(capturedBody.aspect_ratio, '2:3');
+        assert.equal(capturedBody.resolution, '2k');
+    } finally {
+        globalThis.fetch = origFetch;
+        aMod.setTestTavernContext(null);
+    }
+});
+
+test('v2.1.29-beta: End-to-end prompt isolation audit — Blitz Full Regenerate in "None" mode & Concept Lab Gacha/Character isolation never leak Story Questionnaire', async () => {
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.29');
+    const sess = tMod.createDefaultSession(1);
+
+    // Populate Main Story Questionnaire with World Sandbox + distinct canary markers
+    sess.intake.originType = 'world_sandbox';
+    sess.intake.fandomName = 'STORY_FANDOM_LEAK_CANARY';
+    sess.intake.tropesWanted = 'STORY_TROPE_LEAK_CANARY';
+    sess.intake.hardBans = 'STORY_BAN_LEAK_CANARY';
+    sess.gacha.wishPrefs.targetType = 'oc';
+    sess.gacha.wishPrefs.wishesNote = 'GACHA_WISH_ISOLATED_CANARY';
+
+    // 1. Blitz Full Regenerate when sourceMode === 'none' ("Без анкет") must NOT leak Story Questionnaire or Gacha Questionnaire
+    sess.blitz.sourceMode = 'none';
+    sess.blitz.useTinderContext = false;
+    sess.blitz.useGachaContext = false;
+    sess.blitz.topic = 'Clean standalone detective concept';
+    const blitzRegenNone = tMod.buildFullCardRegenerateRequest(
+        sess,
+        { name: 'Det', description: 'Old desc', first_mes: 'Old fm', imagePrompt: 'keep_this_prompt' },
+        'Make him sharper',
+        { originKind: 'blitz', mode: 'prefill_user_msg' },
+    );
+    const blitzNoneTxt = `${blitzRegenNone.system}\n${blitzRegenNone.user}`;
+    assert.equal(blitzNoneTxt.includes('STORY_FANDOM_LEAK_CANARY'), false, 'Blitz None full-regen must never leak Story fandom');
+    assert.equal(blitzNoneTxt.includes('STORY_TROPE_LEAK_CANARY'), false, 'Blitz None full-regen must never leak Story tropes');
+    assert.equal(blitzNoneTxt.includes('GACHA_WISH_ISOLATED_CANARY'), false, 'Blitz None full-regen must never leak Gacha wishes');
+    assert.equal(blitzNoneTxt.includes('WORLD SANDBOX'), false, 'Blitz None full-regen must not inherit world_sandbox from Story intake');
+    assert.equal(blitzNoneTxt.includes('[[NMF_IMG_PROMPT]]'), false, 'Existing imagePrompt must be preserved without asking LLM to overwrite it');
+
+    // 2. Blitz Full Regenerate when sourceMode === 'gacha' must use Gacha Questionnaire and isolate Story Questionnaire
+    sess.blitz.sourceMode = 'gacha';
+    sess.blitz.useGachaContext = true;
+    const blitzRegenGacha = tMod.buildFullCardRegenerateRequest(
+        sess,
+        { name: 'GachaDet', description: 'Old desc', first_mes: 'Old fm', imagePrompt: 'keep_this_prompt' },
+        'Refine scene',
+        { originKind: 'blitz', mode: 'prefill_user_msg' },
+    );
+    const blitzGachaTxt = `${blitzRegenGacha.system}\n${blitzRegenGacha.user}`;
+    assert.equal(blitzGachaTxt.includes('GACHA_WISH_ISOLATED_CANARY'), true, 'Blitz Gacha full-regen must include Gacha wishes');
+    assert.equal(blitzGachaTxt.includes('STORY_FANDOM_LEAK_CANARY'), false, 'Blitz Gacha full-regen must isolate Story intake');
+
+    // 3. Concept Art Lab linked to a Gacha Character must remain a CHARACTER sheet even when Story Questionnaire is set to world_sandbox!
+    sess.conceptLab.linkedCandidateRef = 'gacha:gacha_1';
+    sess.conceptLab.subjectKind = 'character';
+    const gachaHero = { id: 'gacha_1', name: 'Aurelia', stars: 5, pitch: 'Knight', appearance: 'Silver armor' };
+    const conceptSheetReq = tMod.buildConceptSinglePlanRequest(sess, gachaHero, 'prefill_user_msg');
+    const conceptTxt = `${conceptSheetReq.system}\n${conceptSheetReq.user}`;
+    assert.ok(conceptTxt.includes('CHARACTER REFERENCE & CONCEPT SHEET'), 'Gacha hero in Concept Lab must stay Character Sheet despite Story world_sandbox');
+    assert.equal(conceptTxt.includes('WORLD / SETTING CONCEPT ART SHEET'), false);
+    assert.equal(conceptTxt.includes('STORY_FANDOM_LEAK_CANARY'), false);
+    assert.equal(/\b5\s*(?:stars|зв)/i.test(conceptTxt), false, 'Gacha star meta must never leak into Concept prompt');
+});
+
+test('v2.1.30-beta: Full outgoing attachment audit — Swipe seen-names anti-clone, saved Concept Vault inspiration in Blitz/V2 & Concept Lab Vision attachment', async () => {
+    const fs = await import('node:fs');
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.30');
+    const entrySrc = fs.readFileSync(new URL('../nmf_entry.js', import.meta.url), 'utf8');
+    const sess = tMod.createDefaultSession(1);
+
+    // 1. Tinder Swipes attaches already-seen names from liked/passed/queue when allowSameNames === false, and omits restriction when allowSameNames === true
+    sess.tinder.allowSameNames = false;
+    sess.tinder.liked = [{ id: 'c1', name: 'Салим Хаддад, 35' }];
+    sess.tinder.passed = [{ id: 'c2', name: 'Марко Беллуччи, 29' }];
+    const swipeNoDup = tMod.buildTinderPreviewRequest(sess, 2, 'prefill_user_msg');
+    assert.ok(swipeNoDup.user.includes('Салим Хаддад'), 'Liked swipe names must attach to prevent duplicate clones');
+    assert.ok(swipeNoDup.user.includes('Марко Беллуччи'), 'Passed swipe names must attach to prevent duplicate clones');
+
+    sess.tinder.allowSameNames = true;
+    const swipeAllowDup = tMod.buildTinderPreviewRequest(sess, 2, 'prefill_user_msg');
+    assert.equal(swipeAllowDup.user.includes('ALREADY SEEN NAMES'), false);
+
+    // 2. Saved Concept Vault captions for Hero A stay attached even after Concept Lab workspace moves on to Hero B or __none__!
+    sess.tinder.liked = [{ id: 'hero_a', name: 'Дамиан Кортес, 31', pitch: 'Ex-racer', appearance: 'Dark hair' }];
+    sess.conceptLab.linkedCandidateRef = '__none__';
+    sess.conceptLab.vault = [{
+        id: 'cv_1',
+        sourceRef: 'liked:hero_a',
+        conceptMode: 'series',
+        singleSheet: { masterCaption: 'CONCEPT_SHEET_JACKET_DETAIL_777' },
+        seriesFrames: [{ title: 'Гараж', caption: 'CONCEPT_GARAGE_WRENCH_DETAIL_888' }],
+    }];
+    const inspBlock = tMod.buildConceptInspirationBlock(sess, 'liked:hero_a');
+    assert.ok(inspBlock.includes('CONCEPT_SHEET_JACKET_DETAIL_777'));
+    assert.ok(inspBlock.includes('CONCEPT_GARAGE_WRENCH_DETAIL_888'));
+    assert.equal(tMod.buildConceptInspirationBlock(sess, 'liked:unrelated_hero'), '');
+
+    // 3. Blitz Questions & Blitz Full Regen for Hero A automatically attach Hero A's saved Concept Vault inspiration
+    sess.blitz.sourceMode = 'story';
+    sess.blitz.selectedCandidateRef = 'liked:hero_a';
+    const blitzQ = tMod.buildBlitzQuestionsRequest(sess, -1, 'prefill_user_msg');
+    assert.ok(blitzQ.user.includes('CONCEPT_GARAGE_WRENCH_DETAIL_888'), 'Blitz questions must receive linked concept captions');
+    const blitzRegen = tMod.buildFullCardRegenerateRequest(sess, { name: 'Дамиан', description: 'D', first_mes: 'F' }, 'Fix', { originKind: 'blitz' });
+    assert.ok(blitzRegen.user.includes('CONCEPT_GARAGE_WRENCH_DETAIL_888'), 'Blitz full-regen must receive linked concept captions');
+
+    // 4. Concept Art Lab passes visionImageUrls: resolveConceptVisionImageUrls(...) across all 6 LLM calls & expandCandidateToFullCard calls buildConceptInspirationBlock
+    const visionCalls = (entrySrc.match(/visionImageUrls:\s*resolveConceptVisionImageUrls/g) || []).length;
+    assert.equal(visionCalls, 6, 'All 6 Concept Lab LLM actions must attach anchor/seed Vision image when available');
+    assert.ok(entrySrc.includes('buildConceptInspirationBlock(sess, candConceptLookupRef)'), 'V2 card expansion from Hero must attach linked Concept inspiration');
+});
+
+test('v2.1.31-beta: Cross-regression wear guard — favFandomHero never collides with seenSwipeNames, SVG covers blocked from Vision, visionOptional graceful fallback & all 10 manual ratios when generator is off', async () => {
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.31');
+    const aMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.31');
+    const sess = tMod.createDefaultSession(1);
+
+    // 1. Requested canon hero (favFandomHero = "Сетт") is NEVER banned by seenSwipeNames even when allowSameNames === false!
+    sess.intake.originType = 'fandom_au';
+    sess.intake.fandomName = 'League of Legends';
+    sess.intake.favFandomHero = 'Сетт';
+    sess.tinder.allowSameNames = false;
+    sess.tinder.liked = [{ id: '1', name: 'Сетт, 28' }, { id: '2', name: 'Дариус, 34' }];
+    const swipeAu = tMod.buildTinderPreviewRequest(sess, 2, 'prefill_user_msg');
+    assert.equal(swipeAu.user.includes('ALREADY SEEN NAMES IN THIS SESSION (DO NOT REPEAT OR REUSE ANY OF THESE NAMES OR FIRST NAMES): Сетт'), false, 'Requested favFandomHero must never be banned by anti-dup');
+    assert.ok(swipeAu.user.includes('Дариус'), 'Non-requested seen names remain deduplicated');
+
+    sess.intake.originType = 'canon';
+    const swipeCanon = tMod.buildTinderPreviewRequest(sess, 2, 'prefill_user_msg');
+    assert.equal(swipeCanon.user.includes('ALREADY SEEN NAMES'), false, 'Canon mode with favFandomHero never blocks variations');
+
+    // 2. Generator OFF & Naistera nano-banana-2 & Electron Hub ratio checks
+    const offInfo = aMod.getSupportedAspectRatiosForImageConfig('off', '');
+    assert.equal(offInfo.supportedIds.length, 10);
+    assert.ok(offInfo.supportedIds.includes('4:5') && offInfo.supportedIds.includes('21:9'));
+
+    aMod.setTestTavernContext({
+        extensionSettings: {
+            sillyimages: {
+                enabled: true,
+                apiType: 'naistera',
+                apiKey: 'nai-test',
+                naisteraModel: 'nano-banana-2',
+                naisteraAspectRatio: '2:3',
+            },
+        },
+    });
+    const naisteraNbInfo = aMod.getSupportedAspectRatiosForImageConfig('auto', '');
+    assert.deepEqual(naisteraNbInfo.supportedIds, ['1:1', '2:3', '3:2', '9:16', '16:9'], 'Naistera nano-banana-2 must keep Naistera server 5 supported ratios');
+
+    aMod.setTestTavernContext({
+        extensionSettings: {
+            sillyimages: {
+                enabled: true,
+                apiType: 'electronhub',
+                apiKey: 'eh-test',
+                model: 'flux-1-kontext-pro',
+                size: '1024x1536',
+            },
+        },
+    });
+    const ehInfo = aMod.getSupportedAspectRatiosForImageConfig('auto', '');
+    assert.equal(ehInfo.supportedIds.length, 10, 'Electron Hub / Flux exposes all 10 canvas ratios');
+
+    // 3. SVG procedural covers (data:image/svg+xml) are strictly filtered out of Vision & visionOptional falls back to text-only on non-Vision models
+    let textFallbackCalled = false;
+    aMod.setTestTavernContext({
+        mainApi: 'openai',
+        ChatCompletionService: {
+            processRequest: async () => {
+                throw new Error('400 Model does not support image_url');
+            },
+        },
+        generateRaw: async ({ prompt }) => {
+            textFallbackCalled = prompt.includes('CONCEPT_FALLBACK_OK');
+            return 'FALLBACK_SUCCESS_TEXT';
+        },
+    });
+    try {
+        // 3a. SVG cover ignored immediately -> goes straight to text path without Vision crash
+        const svgRes = await aMod.runLlmGeneration({
+            user: 'CONCEPT_FALLBACK_OK',
+            transportMode: 'json_schema',
+            visionImageUrls: ['data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C/svg%3E'],
+        });
+        assert.equal(svgRes, 'FALLBACK_SUCCESS_TEXT');
+        assert.equal(textFallbackCalled, true);
+
+        // 3b. Real PNG on a text-only model with visionOptional: true gracefully falls back to text-only!
+        textFallbackCalled = false;
+        const optRes = await aMod.runLlmGeneration({
+            user: 'CONCEPT_FALLBACK_OK',
+            transportMode: 'json_schema',
+            visionImageUrls: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='],
+            visionOptional: true,
+        });
+        assert.equal(optRes, 'FALLBACK_SUCCESS_TEXT');
+        assert.equal(textFallbackCalled, true);
+
+        // 3c. Rate-limit (429) or server error (502) MUST NEVER trigger a second fallback request that wastes proxy quota!
+        textFallbackCalled = false;
+        aMod.setTestTavernContext({
+            mainApi: 'openai',
+            ChatCompletionService: {
+                processRequest: async () => {
+                    throw new Error('HTTP 429 Too Many Requests: Quota exceeded');
+                },
+            },
+            generateRaw: async () => {
+                textFallbackCalled = true;
+                return 'SHOULD_NOT_HAPPEN';
+            },
+        });
+        await assert.rejects(
+            () => aMod.runLlmGeneration({
+                user: 'CONCEPT_FALLBACK_OK',
+                transportMode: 'json_schema',
+                visionImageUrls: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='],
+                visionOptional: true,
+            }),
+            /429/,
+        );
+        assert.equal(textFallbackCalled, false, '429 Quota error must never double-fire onto generateRaw');
+    } finally {
+        aMod.setTestTavernContext(null);
+    }
+});
+
+test('v2.1.34-beta: Pairwise prompt harmony & all 27 SillyTavern 1.19 text LLM sources (xAI, GPT, Claude, DeepSeek, Chutes, NanoGPT, ElectronHub, Z.ai, SiliconFlow)', async () => {
+    const tMod = await import('../modules/nmf_templates_and_prompts.js?v=2.1.34');
+    const aMod = await import('../modules/nmf_card_io_and_art.js?v=2.1.34');
+
+    // 1. Blank Concept Lab with subjectKind="character" NEVER contradicts itself even when Story intake has world_sandbox!
+    const s = tMod.createDefaultSession(1);
+    s.intake.originType = 'world_sandbox';
+    s.intake.cardFormat = 'world_sandbox';
+    s.conceptLab.linkedCandidateRef = '__none__';
+    s.conceptLab.subjectKind = 'character';
+    const blankConcept = tMod.buildConceptSinglePlanRequest(s, null, 'prefill_user_msg').user;
+    assert.ok(blankConcept.includes('CHARACTER REFERENCE & CONCEPT SHEET'));
+    assert.equal(blankConcept.includes('WORLD SANDBOX'), false, 'Character Concept Sheet fallback must never inject contradictory WORLD SANDBOX directive');
+
+    // 2. Swipe quick wish (promptHint = "Хочу другую версию Марко") exempts "Марко" from seenSwipeNames ban!
+    s.intake.originType = 'oc';
+    s.tinder.allowSameNames = false;
+    s.tinder.liked = [{ id: '1', name: 'Марко Беллуччи, 29' }, { id: '2', name: 'Салим Хаддад, 35' }];
+    s.tinder.promptHint = 'Хочу другую версию Марко в осеннем Милане';
+    const swipeWish = tMod.buildTinderPreviewRequest(s, 2, 'prefill_user_msg').user;
+    assert.equal(swipeWish.includes('DO NOT REPEAT OR REUSE ANY OF THESE NAMES OR FIRST NAMES): Марко'), false, 'promptHint name must be exempted from anti-duplicate ban');
+    assert.ok(swipeWish.includes('Салим Хаддад'));
+
+    // 3. Multi-step chain (Hero -> Concept Vault -> Blitz -> Regen) includes Concept block EXACTLY once (never 0, never 2)
+    s.conceptLab.vault = [{
+        id: 'cv_m',
+        name: 'Марко Беллуччи, 29',
+        sourceRef: 'liked:1',
+        baseBrief: tMod.buildCleanBriefFromEntity(s.tinder.liked[0]),
+        conceptMode: 'single',
+        singleSheet: { masterCaption: 'Шлем на полке' },
+        seriesFrames: [],
+    }];
+    for (const ref of ['liked:1', 'concept:cv_m']) {
+        s.blitz.selectedCandidateRef = ref;
+        const q = tMod.buildBlitzQuestionsRequest(s, -1, 'prefill_user_msg').user;
+        const r = tMod.buildFullCardRegenerateRequest(s, { name: 'Марко', description: 'D', first_mes: 'F' }, 'Fix', { originKind: 'blitz' }).user;
+        assert.equal((q.match(/CONCEPT ART VISUAL/g) || []).length, 1);
+        assert.equal((r.match(/CONCEPT ART VISUAL/g) || []).length, 1);
+    }
+
+    // 4. All SillyTavern 1.19 text LLM chat_completion_source models (xai, chutes, nanogpt, electronhub, zai, siliconflow, deepseek, claude, openrouter, openai) resolve cleanly in ChatCompletionService!
+    for (const [src, modelField, expectedModel] of [
+        ['xai', 'xai_model', 'grok-4-latest'],
+        ['chutes', 'chutes_model', 'deepseek-ai/DeepSeek-V3'],
+        ['nanogpt', 'nanogpt_model', 'kimi-k2'],
+        ['electronhub', 'electronhub_model', 'claude-sonnet-4-5'],
+        ['zai', 'zai_model', 'glm-4.6'],
+        ['siliconflow', 'siliconflow_model', 'Qwen/Qwen3-235B'],
+    ]) {
+        let sentModel = '';
+        aMod.setTestTavernContext({
+            mainApi: 'openai',
+            generateRaw: async () => 'FALLBACK',
+            chatCompletionSettings: {
+                chat_completion_source: src,
+                [modelField]: expectedModel,
+                openai_model: 'wrong-fallback-model',
+            },
+            ChatCompletionService: {
+                processRequest: async (reqData) => reqData,
+                sendRequest: async (reqData) => {
+                    sentModel = reqData.model;
+                    return { choices: [{ message: { content: 'OK_TEXT' } }] };
+                },
+            },
+        });
+        const out = await aMod.runLlmGeneration({ user: 'Ping', transportMode: 'prefill_user_msg' });
+        assert.equal(out, 'OK_TEXT');
+        assert.equal(sentModel, expectedModel, `Text LLM source "${src}" must send its own model "${expectedModel}"`);
+    }
+    aMod.setTestTavernContext(null);
+});
+
+
+
+
+

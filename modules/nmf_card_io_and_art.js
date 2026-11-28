@@ -3,7 +3,7 @@ import {
     getCardBackupById,
     base64ToBytes,
     isValidNonEmptyPngBytes,
-} from './nmf_media_vault.js?v=2.1.5';
+} from './nmf_media_vault.js?v=2.1.34';
 
 // CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {
@@ -704,6 +704,58 @@ export const CONCEPT_ALL_ASPECT_OPTIONS = Object.freeze([
     { id: '21:9', label: '21:9 (Ультраширокий)', labelEn: '21:9 (Ultrawide)' },
 ]);
 
+export const EXTENDED_PROVIDER_ASPECT_OPTIONS = Object.freeze([
+    ...CONCEPT_ALL_ASPECT_OPTIONS,
+    { id: '2:1', label: '2:1 (Широкая панорама)', labelEn: '2:1 (Wide Panorama)' },
+    { id: '1:2', label: '1:2 (Высокая лента)', labelEn: '1:2 (Tall Vertical)' },
+    { id: '19.5:9', label: '19.5:9 (Экран смартфона, альбом)', labelEn: '19.5:9 (Mobile Wide)' },
+    { id: '9:19.5', label: '9:19.5 (Экран смартфона, портрет)', labelEn: '9:19.5 (Mobile Portrait)' },
+    { id: '20:9', label: '20:9 (Киноэкран, альбом)', labelEn: '20:9 (Cinema Wide)' },
+    { id: '9:20', label: '9:20 (Киноэкран, портрет)', labelEn: '9:20 (Cinema Portrait)' },
+    { id: '4:1', label: '4:1 (Ультра-баннер)', labelEn: '4:1 (Ultra Banner)' },
+    { id: '1:4', label: '1:4 (Вертикальный свиток)', labelEn: '1:4 (Vertical Scroll)' },
+    { id: '8:1', label: '8:1 (Панорамная полоса)', labelEn: '8:1 (Panoramic Strip)' },
+    { id: '1:8', label: '1:8 (Высокая полоса)', labelEn: '1:8 (Tall Strip)' },
+]);
+
+const STUDIO_ASPECT_DESCRIPTIONS = Object.freeze({
+    '1:1': { ru: '1:1 — Квадрат (ровная сетка)', en: '1:1 — Square (even grid)' },
+    '2:3': { ru: '2:3 — Высокий вертикальный портрет', en: '2:3 — Tall Portrait' },
+    '3:2': { ru: '3:2 — Альбомный кадр (1 колонка)', en: '3:2 — Landscape Story Card (1 col)' },
+    '3:4': { ru: '3:4 — Классическая портретная карточка', en: '3:4 — Classic Portrait Card' },
+    '4:3': { ru: '4:3 — Классический альбом (1 колонка)', en: '4:3 — Classic Landscape (1 col)' },
+    '4:5': { ru: '4:5 — Компактный портрет', en: '4:5 — Compact Portrait' },
+    '5:4': { ru: '5:4 — Компактный альбом (1 колонка)', en: '5:4 — Compact Landscape (1 col)' },
+    '9:16': { ru: '9:16 — Полный вертикальный постер', en: '9:16 — Full Vertical Poster' },
+    '16:9': { ru: '16:9 — Широкий кадр (1 колонка, Миры / Сцены)', en: '16:9 — Widescreen (1 col, Worlds / Scenes)' },
+    '21:9': { ru: '21:9 — Ультраширокий кино-кадр (1 колонка)', en: '21:9 — Ultrawide Cinema (1 col)' },
+    '2:1': { ru: '2:1 — Широкая панорама (1 колонка)', en: '2:1 — Wide Panorama (1 col)' },
+    '1:2': { ru: '1:2 — Высокая вертикальная лента', en: '1:2 — Tall Vertical Strip' },
+    '19.5:9': { ru: '19.5:9 — Широкий мобильный экран (1 колонка)', en: '19.5:9 — Mobile Widescreen (1 col)' },
+    '9:19.5': { ru: '9:19.5 — Экран смартфона (вертикальный)', en: '9:19.5 — Full Mobile Portrait' },
+    '20:9': { ru: '20:9 — Широкий киноэкран (1 колонка)', en: '20:9 — Cinema Widescreen (1 col)' },
+    '9:20': { ru: '9:20 — Узкий вертикальный постер', en: '9:20 — Narrow Vertical Poster' },
+    '4:1': { ru: '4:1 — Горизонтальный баннер (1 колонка)', en: '4:1 — Horizontal Banner (1 col)' },
+    '1:4': { ru: '1:4 — Вертикальный свиток', en: '1:4 — Vertical Scroll' },
+    '8:1': { ru: '8:1 — Узкая панорамная полоса (1 колонка)', en: '8:1 — Panoramic Strip (1 col)' },
+    '1:8': { ru: '1:8 — Узкая вертикальная полоса', en: '1:8 — Narrow Vertical Strip' },
+});
+
+function buildAspectOptionList(ids = [], sizeMap = null) {
+    const idSet = new Set(ids);
+    return EXTENDED_PROVIDER_ASPECT_OPTIONS
+        .filter((o) => idSet.has(o.id))
+        .map((o) => {
+            const desc = STUDIO_ASPECT_DESCRIPTIONS[o.id];
+            const sz = sizeMap && sizeMap[o.id] ? ` · ${sizeMap[o.id]}` : '';
+            return {
+                ...o,
+                studioLabelRu: `${desc ? desc.ru : o.label}${sz}`,
+                studioLabelEn: `${desc ? desc.en : o.labelEn}${sz}`,
+            };
+        });
+}
+
 function getTargetCanvasDimensions(aspectRatio = '1:1') {
     if (aspectRatio === '2:3') return { width: 1024, height: 1536 };
     if (aspectRatio === '3:4') return { width: 1152, height: 1536 };
@@ -714,21 +766,53 @@ function getTargetCanvasDimensions(aspectRatio = '1:1') {
     if (aspectRatio === '16:9') return { width: 1536, height: 864 };
     if (aspectRatio === '9:16') return { width: 864, height: 1536 };
     if (aspectRatio === '21:9') return { width: 1792, height: 768 };
+    if (aspectRatio === '2:1') return { width: 1536, height: 768 };
+    if (aspectRatio === '1:2') return { width: 768, height: 1536 };
+    if (aspectRatio === '19.5:9' || aspectRatio === '20:9') return { width: 1600, height: 720 };
+    if (aspectRatio === '9:19.5' || aspectRatio === '9:20') return { width: 720, height: 1600 };
+    if (aspectRatio === '4:1') return { width: 1792, height: 448 };
+    if (aspectRatio === '1:4') return { width: 448, height: 1792 };
+    if (aspectRatio === '8:1') return { width: 1792, height: 224 };
+    if (aspectRatio === '1:8') return { width: 224, height: 1792 };
     return { width: 1024, height: 1024 };
 }
 
-function parseAspectRatioNumber(aspectRatio = '1:1') {
-    if (aspectRatio === '2:3') return 2 / 3;
-    if (aspectRatio === '3:4') return 3 / 4;
-    if (aspectRatio === '4:5') return 4 / 5;
-    if (aspectRatio === '3:2') return 3 / 2;
-    if (aspectRatio === '4:3') return 4 / 3;
-    if (aspectRatio === '5:4') return 5 / 4;
-    if (aspectRatio === '16:9') return 16 / 9;
-    if (aspectRatio === '9:16') return 9 / 16;
-    if (aspectRatio === '21:9') return 21 / 9;
-    if (aspectRatio === '1:1') return 1;
+export function parseAspectRatioNumber(aspectRatio = '1:1') {
+    const m = String(aspectRatio || '').trim().match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+    if (m) {
+        const a = Number(m[1]);
+        const b = Number(m[2]);
+        if (a > 0 && b > 0) return a / b;
+    }
     return null;
+}
+
+export function isWideCardAspect(aspectRatio = '') {
+    const n = parseAspectRatioNumber(aspectRatio);
+    return n !== null && n > 1.15;
+}
+
+export function coerceAspectToSupported(rawAspect = 'native', supportedIds = []) {
+    const clean = String(rawAspect || '').trim();
+    if (!clean || clean === 'native' || clean === 'sillyimages_default' || clean === 'auto') {
+        return clean || 'native';
+    }
+    if (!Array.isArray(supportedIds) || supportedIds.length === 0 || supportedIds.includes(clean)) {
+        return clean;
+    }
+    const num = parseAspectRatioNumber(clean);
+    if (num !== null && num < 0.96) {
+        for (const p of ['2:3', '3:4', '9:16', '4:5', '1:2', '9:19.5', '9:20']) {
+            if (supportedIds.includes(p)) return p;
+        }
+    } else if (num !== null && num > 1.04) {
+        for (const l of ['3:2', '16:9', '4:3', '5:4', '21:9', '2:1']) {
+            if (supportedIds.includes(l)) return l;
+        }
+    } else if (supportedIds.includes('1:1')) {
+        return '1:1';
+    }
+    return 'native';
 }
 
 export function sanitizeAspectForProvider(rawAspect = 'native', apiType = '') {
@@ -736,19 +820,21 @@ export function sanitizeAspectForProvider(rawAspect = 'native', apiType = '') {
     if (!clean || clean === 'native' || clean === 'sillyimages_default' || clean === 'auto') {
         return 'native';
     }
-    const allowedAll = new Set(['1:1', '2:3', '3:4', '4:5', '3:2', '4:3', '5:4', '16:9', '9:16', '21:9']);
+    const allowedAll = new Set(EXTENDED_PROVIDER_ASPECT_OPTIONS.map((o) => o.id));
     if (!allowedAll.has(clean)) return 'native';
 
     const pLow = String(apiType || '').toLowerCase();
     if (pLow === 'novelai' || pLow === 'naistera') {
-        if (clean === '3:4' || clean === '4:5') return '2:3';
-        if (clean === '4:3' || clean === '5:4') return '3:2';
-        if (clean === '21:9') return '16:9';
+        if (clean === '3:4' || clean === '4:5' || clean === '1:2' || clean === '9:19.5' || clean === '9:20' || clean === '1:4' || clean === '1:8') return '2:3';
+        if (clean === '4:3' || clean === '5:4' || clean === '2:1') return '3:2';
+        if (clean === '21:9' || clean === '19.5:9' || clean === '20:9' || clean === '4:1' || clean === '8:1') return '16:9';
     }
     if (pLow === 'xai') {
         if (clean === '4:5') return '3:4';
         if (clean === '5:4') return '4:3';
-        if (clean === '21:9') return '16:9';
+        if (clean === '21:9') return '20:9';
+        if (clean === '4:1' || clean === '8:1') return '2:1';
+        if (clean === '1:4' || clean === '1:8') return '1:2';
     }
     return clean;
 }
@@ -2052,19 +2138,7 @@ export const MAX_IMAGE_DOWNLOAD_BYTES = 60 * 1024 * 1024; // 60 MB guard for unc
 export function computeLosslessCropGeometry(imgW, imgH, { aspectRatio = '1:1', zoom = 1, panX = 50, panY = 10 } = {}) {
     const w = Math.max(1, Number(imgW) || 1024);
     const h = Math.max(1, Number(imgH) || 1024);
-    const ratioMap = {
-        '1:1': 1,
-        '3:4': 3 / 4,
-        '2:3': 2 / 3,
-        '4:5': 4 / 5,
-        '3:2': 3 / 2,
-        '4:3': 4 / 3,
-        '5:4': 5 / 4,
-        '9:16': 9 / 16,
-        '16:9': 16 / 9,
-        '21:9': 21 / 9,
-    };
-    const targetRatio = ratioMap[aspectRatio] || 1;
+    const targetRatio = parseAspectRatioNumber(aspectRatio) || 1;
     const z = Math.max(1, Math.min(3.5, Number(zoom) || 1));
     const px = Math.max(0, Math.min(100, Number.isFinite(Number(panX)) ? Number(panX) : 50));
     const py = Math.max(0, Math.min(100, Number.isFinite(Number(panY)) ? Number(panY) : 10));
@@ -2795,18 +2869,283 @@ export function getActiveImageModelReferenceInfo(sourcePref = 'auto', requestedP
     }
 }
 
+const GEMINI_31_ASPECT_IDS = Object.freeze([
+    '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9',
+    '1:4', '4:1', '1:8', '8:1',
+]);
+const STANDARD_TEN_ASPECT_IDS = Object.freeze([
+    '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9',
+]);
+const XAI_SUPPORTED_ASPECT_IDS = Object.freeze([
+    '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9',
+    '2:1', '1:2', '19.5:9', '9:19.5', '20:9', '9:20',
+]);
+const NAI_SUPPORTED_ASPECT_IDS = Object.freeze(['1:1', '2:3', '3:2', '9:16', '16:9']);
+const GPT_IMAGE_SIZE_MAP = Object.freeze({
+    '1:1': '1024x1024',
+    '2:3': '1024x1536',
+    '3:2': '1536x1024',
+});
+const DALLE3_SIZE_MAP = Object.freeze({
+    '1:1': '1024x1024',
+    '9:16': '1024x1792',
+    '16:9': '1792x1024',
+});
+
+// 1:1 parity with 0xl0cal/sillyimages v3.0.0-beta.1 src/modelCapabilities.js
+export function classifySillyImagesGeminiModel(modelId) {
+    const id = String(modelId || '').toLowerCase().trim();
+    if (!id) return 'unknown';
+    const clean = id.startsWith('google/') ? id.slice('google/'.length) : id;
+    if (clean.startsWith('gemini-3.1-flash-image') || clean.includes('nano-banana-2') || clean.includes('nano banana 2')) {
+        return 'gemini-3.1-flash-image';
+    }
+    if (clean.startsWith('gemini-3-pro-image') || clean.includes('nano-banana-pro') || clean.includes('nano banana pro')) {
+        return 'gemini-3-pro-image';
+    }
+    if (clean.startsWith('gemini-2.5-flash-image') || clean.includes('nano-banana')) {
+        return 'gemini-2.5-flash-image';
+    }
+    return 'unknown';
+}
+
+export function getSillyImagesGeminiCaps(modelId) {
+    const kind = classifySillyImagesGeminiModel(modelId);
+    if (kind === 'gemini-3.1-flash-image') {
+        return { kind, maxReferences: 14, imageSizes: ['512', '1K', '2K', '4K'], aspectRatios: GEMINI_31_ASPECT_IDS };
+    }
+    if (kind === 'gemini-3-pro-image') {
+        return { kind, maxReferences: 11, imageSizes: ['1K', '2K', '4K'], aspectRatios: STANDARD_TEN_ASPECT_IDS };
+    }
+    if (kind === 'gemini-2.5-flash-image') {
+        return { kind, maxReferences: 3, imageSizes: null, aspectRatios: STANDARD_TEN_ASPECT_IDS };
+    }
+    return { kind: 'unknown', maxReferences: 5, imageSizes: ['1K', '2K', '4K'], aspectRatios: STANDARD_TEN_ASPECT_IDS };
+}
+
+export function classifySillyImagesOpenRouterModel(modelId) {
+    const id = String(modelId || '').toLowerCase().trim();
+    if (!id) return 'unknown';
+    if (id.startsWith('google/') || id.includes('gemini-') || id.includes('nano-banana')) {
+        const gemKind = classifySillyImagesGeminiModel(id);
+        if (gemKind !== 'unknown') return gemKind;
+    }
+    if (id.startsWith('black-forest-labs/')) return 'flux';
+    if (id.startsWith('sourceful/')) return 'sourceful';
+    return 'unknown';
+}
+
+export function getSillyImagesOpenRouterCaps(modelId) {
+    const kind = classifySillyImagesOpenRouterModel(modelId);
+    if (kind === 'gemini-3.1-flash-image' || kind === 'gemini-3-pro-image' || kind === 'gemini-2.5-flash-image') {
+        return { ...getSillyImagesGeminiCaps(kind), isGeminiOpenRouter: true };
+    }
+    return {
+        kind,
+        isGeminiOpenRouter: false,
+        maxReferences: 5,
+        imageSizes: null,
+        aspectRatios: STANDARD_TEN_ASPECT_IDS,
+    };
+}
+
+export function classifySillyImagesOpenAIModel(modelId) {
+    const id = String(modelId || '').toLowerCase().trim();
+    if (id.includes('gpt-image-1.5') || id.includes('gpt-image-1-5')) return 'gpt-image-1.5';
+    if (id.includes('gpt-image-1-mini')) return 'gpt-image-1-mini';
+    if (id.includes('gpt-image-1')) return 'gpt-image-1';
+    if (id.includes('gpt-image')) return 'gpt-image';
+    if (id.includes('flux-1-kontext') || (id.includes('flux') && id.includes('kontext'))) return 'flux-kontext';
+    if (id.includes('dall-e-3')) return 'dall-e-3';
+    if (id.includes('dall-e-2')) return 'dall-e-2';
+    return 'unknown';
+}
+
+export function isSillyImagesGptImageFamily(kind) {
+    return kind === 'gpt-image-1.5' || kind === 'gpt-image-1-mini' || kind === 'gpt-image-1' || kind === 'gpt-image';
+}
+
+export function mapAspectAndSizeForOpenAIModel(requestedAspect, profileSize, modelKind) {
+    const cleanAspect = String(requestedAspect || '').trim();
+    const explicit = cleanAspect && cleanAspect !== 'native' && cleanAspect !== 'sillyimages_default' && cleanAspect !== 'auto';
+    const rawProfSize = String(profileSize || '').trim().toLowerCase();
+
+    if (isSillyImagesGptImageFamily(modelKind)) {
+        if (explicit) {
+            const num = parseAspectRatioNumber(cleanAspect);
+            if (cleanAspect === '1:1' || (num !== null && Math.abs(num - 1) <= 0.04)) {
+                return { size: '1024x1024', aspectLabel: '1:1' };
+            }
+            if (num !== null && num < 1) {
+                return { size: '1024x1536', aspectLabel: '2:3' };
+            }
+            return { size: '1536x1024', aspectLabel: '3:2' };
+        }
+        // Inherit from SillyImages settings.size, safely normalizing DALL-E portrait/landscape sizes for gpt-image-*
+        if (rawProfSize === 'auto') return { size: 'auto', aspectLabel: 'auto' };
+        if (rawProfSize === '1024x1536' || rawProfSize === '1024x1792') return { size: '1024x1536', aspectLabel: '2:3' };
+        if (rawProfSize === '1536x1024' || rawProfSize === '1792x1024') return { size: '1536x1024', aspectLabel: '3:2' };
+        return { size: '1024x1024', aspectLabel: '1:1' };
+    }
+
+    if (modelKind === 'dall-e-3') {
+        if (explicit) {
+            const num = parseAspectRatioNumber(cleanAspect);
+            if (cleanAspect === '1:1' || (num !== null && Math.abs(num - 1) <= 0.04)) {
+                return { size: '1024x1024', aspectLabel: '1:1' };
+            }
+            if (num !== null && num < 1) {
+                return { size: '1024x1792', aspectLabel: '9:16' };
+            }
+            return { size: '1792x1024', aspectLabel: '16:9' };
+        }
+        if (rawProfSize === '1024x1792' || rawProfSize === '1024x1536') return { size: '1024x1792', aspectLabel: '9:16' };
+        if (rawProfSize === '1792x1024' || rawProfSize === '1536x1024') return { size: '1792x1024', aspectLabel: '16:9' };
+        return { size: '1024x1024', aspectLabel: '1:1' };
+    }
+
+    if (modelKind === 'dall-e-2') {
+        const validD2 = new Set(['256x256', '512x512', '1024x1024']);
+        const sz = (!explicit && validD2.has(rawProfSize)) ? rawProfSize : '1024x1024';
+        return { size: sz, aspectLabel: '1:1' };
+    }
+
+    // Generic OpenAI-compatible / Electron Hub / Flux Kontext
+    if (explicit) {
+        const dims = getTargetCanvasDimensions(cleanAspect);
+        return { size: `${dims.width}x${dims.height}`, aspectLabel: cleanAspect };
+    }
+    const fallbackSz = rawProfSize && /^\d+x\d+$/.test(rawProfSize) ? rawProfSize : (rawProfSize || '1024x1024');
+    let derivedLabel = '1:1';
+    const m = fallbackSz.match(/^(\d+)x(\d+)$/);
+    if (m) {
+        const w = Number(m[1]);
+        const h = Number(m[2]);
+        if (w > 0 && h > 0) {
+            if (Math.abs(w - h) <= 4) derivedLabel = '1:1';
+            else if (Math.abs(w / h - 2 / 3) < 0.05) derivedLabel = '2:3';
+            else if (Math.abs(w / h - 3 / 2) < 0.05) derivedLabel = '3:2';
+            else if (Math.abs(w / h - 9 / 16) < 0.05) derivedLabel = '9:16';
+            else if (Math.abs(w / h - 16 / 9) < 0.05) derivedLabel = '16:9';
+            else derivedLabel = w < h ? 'портрет' : 'альбом';
+        }
+    }
+    return { size: fallbackSz, aspectLabel: derivedLabel };
+}
+
+export function resolveInheritedProfileAspectInfo(imgCfg) {
+    if (!imgCfg || typeof imgCfg !== 'object') {
+        return { aspectRatio: '1:1', size: '', summaryRu: '1:1', summaryEn: '1:1' };
+    }
+    const apiType = String(imgCfg.apiType || '').toLowerCase().trim();
+    const model = String(resolveBucketModel(imgCfg) || '');
+    const endpointLow = String(imgCfg.endpoint || '').toLowerCase();
+    const isPollinations = apiType === 'pollinations' || endpointLow.includes('pollinations.ai');
+    const isGeminiDirect = apiType === 'gemini' || (apiType === 'openai' && endpointLow.includes('google-ai'));
+
+    if (apiType === 'openrouter') {
+        const caps = getSillyImagesOpenRouterCaps(model);
+        const profAr = String(imgCfg.aspectRatio || '1:1').trim();
+        const ar = caps.aspectRatios.includes(profAr) ? profAr : '1:1';
+        const sz = Array.isArray(caps.imageSizes) && caps.imageSizes.includes(String(imgCfg.imageSize || '').toUpperCase())
+            ? String(imgCfg.imageSize).toUpperCase()
+            : '';
+        return {
+            aspectRatio: ar,
+            size: sz,
+            summaryRu: sz ? `${ar} · ${sz}` : ar,
+            summaryEn: sz ? `${ar} · ${sz}` : ar,
+        };
+    }
+
+    if (isGeminiDirect) {
+        const caps = getSillyImagesGeminiCaps(model);
+        const profAr = String(imgCfg.aspectRatio || '1:1').trim();
+        const ar = caps.aspectRatios.includes(profAr) ? profAr : '1:1';
+        const sz = Array.isArray(caps.imageSizes) && caps.imageSizes.includes(String(imgCfg.imageSize || '').toUpperCase())
+            ? String(imgCfg.imageSize).toUpperCase()
+            : '';
+        return {
+            aspectRatio: ar,
+            size: sz,
+            summaryRu: sz ? `${ar} · ${sz}` : ar,
+            summaryEn: sz ? `${ar} · ${sz}` : ar,
+        };
+    }
+
+    if (apiType === 'xai') {
+        const validXai = new Set(['auto', ...XAI_SUPPORTED_ASPECT_IDS]);
+        const rawXai = String(imgCfg.xaiAspectRatio || '1:1').trim();
+        const ar = validXai.has(rawXai) ? rawXai : '1:1';
+        const res = String(imgCfg.xaiResolution || '1k').toLowerCase() === '2k' ? '2K' : '1K';
+        return {
+            aspectRatio: ar,
+            size: res,
+            summaryRu: `${ar === 'auto' ? 'Авто' : ar} · ${res}`,
+            summaryEn: `${ar === 'auto' ? 'Auto' : ar} · ${res}`,
+        };
+    }
+
+    if (apiType === 'naistera') {
+        const rawNai = String(imgCfg.naisteraAspectRatio || '1:1').trim();
+        const ar = NAI_SUPPORTED_ASPECT_IDS.includes(rawNai) ? rawNai : '1:1';
+        return { aspectRatio: ar, size: '', summaryRu: ar, summaryEn: ar };
+    }
+
+    if (apiType === 'novelai') {
+        const rawNai = String(imgCfg.novelaiAspectRatio || '2:3').trim();
+        const ar = NAI_SUPPORTED_ASPECT_IDS.includes(rawNai) ? rawNai : '2:3';
+        return { aspectRatio: ar, size: '', summaryRu: ar, summaryEn: ar };
+    }
+
+    if (apiType === 'a1111') {
+        const w = Math.max(64, Number(imgCfg.a1111Width) || 512);
+        const h = Math.max(64, Number(imgCfg.a1111Height) || 512);
+        return { aspectRatio: 'native', size: `${w}x${h}`, summaryRu: `${w}x${h}`, summaryEn: `${w}x${h}` };
+    }
+
+    if (isPollinations) {
+        const rawAr = String(imgCfg.aspectRatio || '').trim();
+        if (STANDARD_TEN_ASPECT_IDS.includes(rawAr)) {
+            const dims = getTargetCanvasDimensions(rawAr);
+            return { aspectRatio: rawAr, size: `${dims.width}x${dims.height}`, summaryRu: `${rawAr} · ${dims.width}x${dims.height}`, summaryEn: `${rawAr} · ${dims.width}x${dims.height}` };
+        }
+        const rawSz = String(imgCfg.size || '').trim();
+        if (/^\d+x\d+$/.test(rawSz)) {
+            return { aspectRatio: '1:1', size: rawSz, summaryRu: rawSz, summaryEn: rawSz };
+        }
+        return { aspectRatio: '1:1', size: '1024x1024', summaryRu: '1:1 · 1024x1024', summaryEn: '1:1 · 1024x1024' };
+    }
+
+    // OpenAI / Electron Hub / OpenAI-compatible
+    const oaKind = classifySillyImagesOpenAIModel(model);
+    const mapped = mapAspectAndSizeForOpenAIModel('native', imgCfg.size, oaKind);
+    const sum = mapped.size === 'auto' ? 'Auto' : `${mapped.aspectLabel} · ${mapped.size}`;
+    return {
+        aspectRatio: mapped.aspectLabel,
+        size: mapped.size,
+        summaryRu: sum,
+        summaryEn: sum,
+    };
+}
+
 export function getSupportedAspectRatiosForImageConfig(sourcePref = 'auto', requestedProfileId = '') {
-    const allTen = CONCEPT_ALL_ASPECT_OPTIONS.map((o) => o.id);
+    const stdFallbackIds = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
     try {
         if (sourcePref === 'off') {
+            const offIds = [...STANDARD_TEN_ASPECT_IDS];
             return {
                 apiType: 'off',
                 model: '',
                 profileName: '',
-                supportedIds: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'],
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'].includes(o.id)),
-                noteRu: 'Генератор отключён — выберите профиль SillyImages.',
-                noteEn: 'Image generator is off — pick a SillyImages profile.',
+                supportedIds: offIds,
+                options: buildAspectOptionList(offIds),
+                inheritedSummaryRu: 'Авто',
+                inheritedSummaryEn: 'Auto',
+                studioNativeLabelRu: 'Авто — Под размер самого арта (без обрезки)',
+                studioNativeLabelEn: 'Auto — Keep Native Art Size (uncropped)',
+                noteRu: 'Генератор отключён — доступны все пропорции для ваших собственных иллюстраций.',
+                noteEn: 'Image generator is off — all frame ratios are available for manual uploads.',
             };
         }
         const picked = pickEffectiveBucket(sourcePref);
@@ -2815,125 +3154,199 @@ export function getSupportedAspectRatiosForImageConfig(sourcePref = 'auto', requ
                 apiType: '',
                 model: '',
                 profileName: '',
-                supportedIds: allTen,
-                options: [...CONCEPT_ALL_ASPECT_OPTIONS],
+                supportedIds: [...STANDARD_TEN_ASPECT_IDS],
+                options: buildAspectOptionList(STANDARD_TEN_ASPECT_IDS),
+                inheritedSummaryRu: '1:1',
+                inheritedSummaryEn: '1:1',
+                studioNativeLabelRu: 'Как в SillyImages (наследовать из профиля · без обрезки)',
+                studioNativeLabelEn: 'Inherit from SillyImages (keep native size)',
                 noteRu: 'Профиль SillyImages ещё не выбран.',
                 noteEn: 'SillyImages profile is not configured yet.',
             };
         }
         const imgCfg = resolveIsolatedImageConfig(picked.cfg, requestedProfileId);
-        const apiType = String(imgCfg.apiType || '').toLowerCase();
+        const apiType = String(imgCfg.apiType || '').toLowerCase().trim();
         const model = String(resolveBucketModel(imgCfg) || '');
         const mLow = model.toLowerCase();
         const endpointLow = String(imgCfg.endpoint || '').toLowerCase();
         const profileName = imgCfg.profileName || 'Активный профиль';
+        const inherited = resolveInheritedProfileAspectInfo(imgCfg);
+        const studioNativeLabelRu = `Как в SillyImages (из профиля · сейчас: ${inherited.summaryRu})`;
+        const studioNativeLabelEn = `Inherit from SillyImages (profile: ${inherited.summaryEn})`;
 
-        const isGeminiModel = apiType === 'gemini'
-            || (apiType === 'openai' && endpointLow.includes('google-ai'))
-            || mLow.includes('gemini')
-            || mLow.includes('nano-banana')
-            || mLow.includes('imagen');
-
-        if (isGeminiModel) {
+        if (apiType === 'openrouter') {
+            const orCaps = getSillyImagesOpenRouterCaps(model);
+            const ids = [...orCaps.aspectRatios];
+            const shortMod = model ? model.split('/').pop() : 'OpenRouter';
             return {
                 apiType,
                 model,
                 profileName,
-                supportedIds: allTen,
-                options: [...CONCEPT_ALL_ASPECT_OPTIONS],
-                noteRu: 'Gemini Image поддерживает все 10 форматов (включая 4:5, 5:4 и широкие листы 16:9 / 21:9).',
-                noteEn: 'Gemini Image supports all 10 aspect ratios (including 4:5, 5:4, 16:9, and ultrawide 21:9).',
+                supportedIds: ids,
+                options: buildAspectOptionList(ids),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: orCaps.isGeminiOpenRouter
+                    ? `OpenRouter (${shortMod}): доступны все ${ids.length} форматов и наследование из SillyImages (${inherited.summaryRu}).`
+                    : `OpenRouter (${shortMod}): доступны все 10 пропорций OpenRouter и прямое наследование из SillyImages (${inherited.summaryRu}).`,
+                noteEn: `OpenRouter (${shortMod}): all ${ids.length} aspect ratios + SillyImages profile inheritance (${inherited.summaryEn}).`,
             };
         }
-        if (mLow.includes('gpt-image')) {
+
+        const isGeminiDirect = apiType === 'gemini'
+            || (apiType === 'openai' && endpointLow.includes('google-ai'));
+
+        if (isGeminiDirect) {
+            const gemCaps = getSillyImagesGeminiCaps(model);
+            const ids = [...gemCaps.aspectRatios];
+            return {
+                apiType,
+                model,
+                profileName,
+                supportedIds: ids,
+                options: buildAspectOptionList(ids),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: `Gemini Image (${model || 'активная модель'}): доступны все ${ids.length} форматов и наследование из SillyImages (${inherited.summaryRu}).`,
+                noteEn: `Gemini Image (${model || 'active model'}): ${ids.length} aspect ratios + SillyImages inheritance (${inherited.summaryEn}).`,
+            };
+        }
+
+        const oaKind = classifySillyImagesOpenAIModel(model);
+        if (isSillyImagesGptImageFamily(oaKind)) {
             const ids = ['1:1', '2:3', '3:2'];
             return {
                 apiType,
                 model,
                 profileName,
                 supportedIds: ids,
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
-                noteRu: 'GPT Image поддерживает 3 родных формата: 1:1, 2:3 (портрет) и 3:2 (альбом для концепт-листа).',
-                noteEn: 'GPT Image supports 3 native formats: 1:1, 2:3 (portrait), and 3:2 (landscape sheet).',
+                options: buildAspectOptionList(ids, GPT_IMAGE_SIZE_MAP),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: `GPT Image (${model}): подключены 3 родных формата OpenAI — 1:1 (1024x1024), 2:3 (1024x1536 портрет) и 3:2 (1536x1024 альбом).`,
+                noteEn: `GPT Image (${model}): 3 native OpenAI formats — 1:1 (1024x1024), 2:3 (1024x1536 portrait), and 3:2 (1536x1024 landscape).`,
             };
         }
-        if (mLow.includes('dall-e-3')) {
+
+        if (oaKind === 'dall-e-3') {
             const ids = ['1:1', '9:16', '16:9'];
             return {
                 apiType,
                 model,
                 profileName,
                 supportedIds: ids,
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
-                noteRu: 'DALL-E 3 поддерживает только 1:1, 9:16 (1024x1792) и 16:9 (1792x1024).',
-                noteEn: 'DALL-E 3 supports 1:1, 9:16 (1024x1792), and 16:9 (1792x1024).',
+                options: buildAspectOptionList(ids, DALLE3_SIZE_MAP),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: 'DALL-E 3: подключены 3 родных формата — 1:1 (1024x1024), 9:16 (1024x1792) и 16:9 (1792x1024).',
+                noteEn: 'DALL-E 3: 3 native formats — 1:1 (1024x1024), 9:16 (1024x1792), and 16:9 (1792x1024).',
             };
         }
-        if (mLow.includes('dall-e-2')) {
+
+        if (oaKind === 'dall-e-2') {
             const ids = ['1:1'];
             return {
                 apiType,
                 model,
                 profileName,
                 supportedIds: ids,
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
-                noteRu: 'DALL-E 2 поддерживает только квадрат 1:1.',
-                noteEn: 'DALL-E 2 supports 1:1 square only.',
+                options: buildAspectOptionList(ids, { '1:1': inherited.size || '1024x1024' }),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: 'DALL-E 2 поддерживает только квадратный формат 1:1.',
+                noteEn: 'DALL-E 2 supports 1:1 square format only.',
             };
         }
+
         if (apiType === 'xai' || mLow.includes('grok')) {
-            const ids = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
+            const ids = [...XAI_SUPPORTED_ASPECT_IDS];
             return {
                 apiType,
                 model,
                 profileName,
                 supportedIds: ids,
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
-                noteRu: 'Grok Imagine поддерживает 7 пропорций (1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9) и референс по фото.',
-                noteEn: 'Grok Imagine supports 7 ratios (1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9) plus image reference.',
+                options: buildAspectOptionList(ids),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: `xAI Grok Imagine: доступны все ${ids.length} родных пропорций и наследование из SillyImages (${inherited.summaryRu}).`,
+                noteEn: `xAI Grok Imagine: all ${ids.length} native aspect ratios + SillyImages inheritance (${inherited.summaryEn}).`,
             };
         }
+
         if (apiType === 'novelai' || apiType === 'naistera') {
-            const ids = ['1:1', '2:3', '3:2', '9:16', '16:9'];
+            const ids = [...NAI_SUPPORTED_ASPECT_IDS];
+            const provName = apiType === 'novelai' ? 'NovelAI' : 'Naistera';
             return {
                 apiType,
                 model,
                 profileName,
                 supportedIds: ids,
-                options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => ids.includes(o.id)),
-                noteRu: 'NovelAI / Naistera поддерживает пропорции 1:1, 2:3, 3:2, 9:16 и 16:9.',
-                noteEn: 'NovelAI / Naistera supports 1:1, 2:3, 3:2, 9:16, and 16:9.',
+                options: buildAspectOptionList(ids),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: `${provName}: подключены 5 родных пропорций (1:1, 2:3, 3:2, 9:16, 16:9) и наследование из SillyImages (${inherited.summaryRu}).`,
+                noteEn: `${provName}: 5 native aspect ratios (1:1, 2:3, 3:2, 9:16, 16:9) + SillyImages inheritance (${inherited.summaryEn}).`,
             };
         }
+
         if (apiType === 'pollinations' || apiType === 'a1111' || endpointLow.includes('pollinations.ai')) {
+            const ids = [...STANDARD_TEN_ASPECT_IDS];
+            const provName = apiType === 'a1111' ? 'A1111 / Forge' : 'Pollinations';
             return {
                 apiType,
                 model,
                 profileName,
-                supportedIds: allTen,
-                options: [...CONCEPT_ALL_ASPECT_OPTIONS],
-                noteRu: 'Свободный размер холста (width/height) — доступны все 10 пропорций.',
-                noteEn: 'Custom canvas dimensions — all 10 aspect ratios available.',
+                supportedIds: ids,
+                options: buildAspectOptionList(ids),
+                inheritedSummaryRu: inherited.summaryRu,
+                inheritedSummaryEn: inherited.summaryEn,
+                studioNativeLabelRu,
+                studioNativeLabelEn,
+                noteRu: `${provName}: свободный холст (все 10 пропорций) и наследование из профиля (${inherited.summaryRu}).`,
+                noteEn: `${provName}: custom canvas (all 10 aspect ratios) + profile inheritance (${inherited.summaryEn}).`,
             };
         }
-        const stdIds = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
+
+        // Electron Hub / Flux Kontext / Generic OpenAI-compatible image models
+        const compatIds = [...STANDARD_TEN_ASPECT_IDS];
         return {
             apiType,
             model,
             profileName,
-            supportedIds: stdIds,
-            options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => stdIds.includes(o.id)),
-            noteRu: 'Доступны стандартные пропорции выбранного провайдера.',
-            noteEn: 'Standard aspect ratios supported by the active provider.',
+            supportedIds: compatIds,
+            options: buildAspectOptionList(compatIds),
+            inheritedSummaryRu: inherited.summaryRu,
+            inheritedSummaryEn: inherited.summaryEn,
+            studioNativeLabelRu,
+            studioNativeLabelEn,
+            noteRu: `${apiType === 'electronhub' ? 'Electron Hub' : 'OpenAI-совместимый генератор'} (${model || 'профиль'}): все 10 пропорций холста и наследование из SillyImages (${inherited.summaryRu}).`,
+            noteEn: `${apiType === 'electronhub' ? 'Electron Hub' : 'OpenAI-compatible'} (${model || 'profile'}): all 10 canvas ratios + SillyImages inheritance (${inherited.summaryEn}).`,
         };
     } catch {
-        const stdIds = ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'];
         return {
             apiType: '',
             model: '',
             profileName: '',
-            supportedIds: stdIds,
-            options: CONCEPT_ALL_ASPECT_OPTIONS.filter((o) => stdIds.includes(o.id)),
+            supportedIds: stdFallbackIds,
+            options: buildAspectOptionList(stdFallbackIds),
+            inheritedSummaryRu: '1:1',
+            inheritedSummaryEn: '1:1',
+            studioNativeLabelRu: 'Как в SillyImages (наследовать из профиля · без обрезки)',
+            studioNativeLabelEn: 'Inherit from SillyImages (keep native size)',
             noteRu: '',
             noteEn: '',
         };
@@ -3107,7 +3520,7 @@ export function listImageExtensionBuckets() {
             model: resolveBucketModel(resolvedActive),
             apiType: resolvedActive.apiType || '',
             activeProfileName: resolvedActive.profileName || 'Default',
-            extAspectRatio: resolvedActive.aspectRatio || resolvedActive.naisteraAspectRatio || '1:1',
+            extAspectRatio: resolveInheritedProfileAspectInfo(resolvedActive).summaryRu,
             profiles,
             styles: (Array.isArray(v.styles) ? v.styles : [])
                 .filter((s) => s && s.id)
@@ -3835,12 +4248,16 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
         custom_photo: 'Своё референс-фото текущей сессии',
         explicit: fusionBlendRefs ? 'Синтез Алтаря (портреты карт-доноров)' : 'Явно переданный референс',
     };
+    const inheritedProfileAspect = resolveInheritedProfileAspectInfo(imgCfg);
+    const effectiveDisplayAspect = aspect === 'native'
+        ? `${inheritedProfileAspect.summaryRu} (SillyImages)`
+        : aspect;
     const artContextSnapshot = {
         sourceExtension: picked.key,
         profileName: imgCfg.profileName || 'Активный профиль',
         apiType: apiType || 'unknown',
         model: model || '(по умолчанию)',
-        aspectRatio: aspect,
+        aspectRatio: effectiveDisplayAspect,
         styleName: styleId === '__none__'
             ? 'Без стиля (отключено)'
             : (styleText ? `Применён (${styleWrapMode})` : 'Пустой / не задан в профиле'),
@@ -3890,11 +4307,17 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             ? `Генерация [Попытка 1/${maxAttempts}]`
             : `Повтор генерации [Попытка ${attemptNum}/${maxAttempts}]`;
 
-        emit(stagePrefix, `Отправка запроса в ${providerLabel || 'API'} (${aspect})...`, attemptNum, providerLabel);
+        emit(stagePrefix, `Отправка запроса в ${providerLabel || 'API'} (${effectiveDisplayAspect})...`, attemptNum, providerLabel);
 
         // 0. POLLINATIONS
         if (isPollinations) {
-            const dims = getTargetCanvasDimensions(aspect);
+            let dims = getTargetCanvasDimensions(aspect === 'native' ? (inheritedProfileAspect.aspectRatio || '1:1') : aspect);
+            if (aspect === 'native' && inheritedProfileAspect.size) {
+                const szMatch = String(inheritedProfileAspect.size).match(/^(\d+)x(\d+)$/);
+                if (szMatch) {
+                    dims = { width: Number(szMatch[1]), height: Number(szMatch[2]) };
+                }
+            }
             const pModel = model || 'flux';
             const seed = Math.floor(Math.random() * 1000000);
             const pUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptWithRefText)}?width=${dims.width}&height=${dims.height}&model=${encodeURIComponent(pModel)}&seed=${seed}&nologo=true`;
@@ -3949,8 +4372,10 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 steps: Math.round(Number(imgCfg.naisteraSteps) || 23),
                 scale: Number(imgCfg.naisteraCfgScale) || 7,
             };
-            if (aspect !== 'native') body.aspect_ratio = aspect;
-            else if (imgCfg.naisteraAspectRatio) body.aspect_ratio = imgCfg.naisteraAspectRatio;
+            const rawNaisteraAr = String(imgCfg.naisteraAspectRatio || '1:1').trim();
+            body.aspect_ratio = aspect !== 'native'
+                ? aspect
+                : (NAI_SUPPORTED_ASPECT_IDS.includes(rawNaisteraAr) ? rawNaisteraAr : '1:1');
             if (negativePrompt) body.negative_prompt = negativePrompt;
             if (canUseNaisteraRefs) {
                 body.reference_objects = imageRefs.map((r) => ({
@@ -3973,16 +4398,16 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 return String(j.data_url);
             }
             if (j?.job_id) {
-                const jobBase = base.replace(/\/api\/generate$/i, '');
-                const pollInterval = Math.max(1000, Math.min(10000, Number(imgCfg.naisteraPollIntervalMs) || 2000));
+                const jobBase = base.replace(/\/api\/generate\/?$/i, '').replace(/\/$/, '');
+                const pollInterval = Math.max(1000, Math.min(30000, Number(imgCfg.naisteraPollIntervalMs) || 3000));
                 const maxPollDeadline = Date.now() + Math.min(timeoutMs, Number(imgCfg.naisteraPollTimeoutMs) || 120000);
                 let poll = 0;
                 while (Date.now() < maxPollDeadline) {
                     poll += 1;
                     await sleepAbortable(pollInterval, signal);
                     emit(stagePrefix, `Очередь Naistera · проверка готовности #${poll}...`, attemptNum, providerLabel);
-                    const jr = await fetchWithTimeout(`${jobBase}/api/jobs/${encodeURIComponent(j.job_id)}`, {
-                        headers: { Authorization: `Bearer ${imgCfg.apiKey}` },
+                    const jr = await fetchWithTimeout(`${jobBase}/api/generate/jobs/${encodeURIComponent(j.job_id)}`, {
+                        headers: { Authorization: `Bearer ${imgCfg.apiKey}`, Accept: 'application/json' },
                     }, Math.min(30000, timeoutMs), signal);
                     if (!jr.ok) throw new Error(formatHttpProviderError('Naistera job', jr.status));
                     const jd = await jr.json();
@@ -4036,13 +4461,23 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             return `data:image/png;base64,${j.images[0]}`;
         }
 
-        // 4. OPENROUTER (1:1 parity with SillyImages v3.0: multimodal image_url refs, 512/1K/2K/4K, enable_base64_output)
+        // 4. OPENROUTER (1:1 parity with SillyImages v3.0: all 10/14 ratios, profile inheritance, modalities, 512/1K/2K/4K)
         if (apiType === 'openrouter') {
             const base = (endpoint || SILLYIMAGES_DEFAULT_ENDPOINTS.openrouter).replace(/\/+$/, '');
             const url = rawEndpointFlag ? base : (base.endsWith('/chat/completions') ? base : `${base}/chat/completions`);
-            const isGeminiOrText = /gemini|gpt|banana/i.test(model);
-            const isGemini25Flash = /gemini-2\.5-flash-image|(?:^|\/)nano-banana(?!-2|-pro)/i.test(model);
-            const supportsImageSize = !isGemini25Flash && /gemini-3|3\.1-flash-image|nano-banana-2|nano-banana-pro/i.test(model);
+            const orCaps = getSillyImagesOpenRouterCaps(model);
+            const profOrAspect = String(imgCfg.aspectRatio || '1:1').trim();
+            let effectiveOrAspect = aspect !== 'native' ? aspect : profOrAspect;
+            if (!orCaps.aspectRatios.includes(effectiveOrAspect)) {
+                effectiveOrAspect = orCaps.aspectRatios.includes(profOrAspect) ? profOrAspect : '1:1';
+            }
+            let effectiveOrSize = '';
+            if (Array.isArray(orCaps.imageSizes) && imgCfg.imageSize) {
+                const candSz = String(imgCfg.imageSize).trim().toUpperCase();
+                effectiveOrSize = orCaps.imageSizes.includes(candSz)
+                    ? candSz
+                    : (orCaps.imageSizes.includes('1K') ? '1K' : '');
+            }
 
             const headers = {
                 Authorization: `Bearer ${imgCfg.apiKey}`,
@@ -4072,18 +4507,15 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 const payload = {
                     model,
                     messages: [{ role: 'user', content: messageContent }],
-                    modalities: isGeminiOrText ? ['image', 'text'] : ['image'],
+                    modalities: orCaps.isGeminiOpenRouter ? ['image', 'text'] : ['image'],
                     enable_base64_output: true,
                 };
                 if (withAspect) {
-                    const imageConfig = {};
-                    if (aspect !== 'native') imageConfig.aspect_ratio = aspect;
-                    if (supportsImageSize && imgCfg.imageSize && /^(512|0\.5K|1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
-                        imageConfig.image_size = String(imgCfg.imageSize).toUpperCase();
+                    const imageConfig = { aspect_ratio: effectiveOrAspect };
+                    if (effectiveOrSize) {
+                        imageConfig.image_size = effectiveOrSize;
                     }
-                    if (Object.keys(imageConfig).length > 0) {
-                        payload.image_config = imageConfig;
-                    }
+                    payload.image_config = imageConfig;
                 }
                 return await fetchWithTimeout(url, {
                     method: 'POST',
@@ -4092,8 +4524,8 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 }, timeoutMs, signal);
             };
 
-            let resp = await sendOpenRouter(aspect !== 'native');
-            if (!resp.ok && aspect !== 'native' && [400, 404, 422].includes(resp.status)) {
+            let resp = await sendOpenRouter(true);
+            if (!resp.ok && [400, 404, 422].includes(resp.status)) {
                 emit(stagePrefix, 'Модель не принимает image_config · повтор в родном формате модели...', attemptNum, providerLabel);
                 resp = await sendOpenRouter(false);
             }
@@ -4135,12 +4567,18 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
                 ? endpoint
                 : `${baseClean}/v1beta/models/${encodeURIComponent(pathModel)}:generateContent`;
 
-            const mLower = pathModel.toLowerCase();
-            const is25Flash = mLower.startsWith('gemini-2.5-flash-image')
-                || (mLower.includes('nano-banana') && !mLower.includes('nano-banana-2') && !mLower.includes('nano-banana-pro'));
-            const maxGeminiRefs = (mLower.startsWith('gemini-3.1-flash-image') || mLower.includes('nano-banana-2'))
-                ? 14
-                : ((mLower.startsWith('gemini-3-pro-image') || mLower.includes('nano-banana-pro')) ? 11 : (is25Flash ? 3 : 5));
+            const gemCaps = getSillyImagesGeminiCaps(pathModel);
+            const maxGeminiRefs = gemCaps.maxReferences;
+            const profGemAspect = String(imgCfg.aspectRatio || '1:1').trim();
+            let effectiveGemAspect = aspect !== 'native' ? aspect : profGemAspect;
+            if (!gemCaps.aspectRatios.includes(effectiveGemAspect)) {
+                effectiveGemAspect = gemCaps.aspectRatios.includes(profGemAspect) ? profGemAspect : '1:1';
+            }
+            let effectiveGemSize = '';
+            if (Array.isArray(gemCaps.imageSizes) && imgCfg.imageSize) {
+                const candSz = String(imgCfg.imageSize).trim().toUpperCase();
+                effectiveGemSize = gemCaps.imageSizes.includes(candSz) ? candSz : '';
+            }
 
             const headers = {
                 Authorization: `Bearer ${imgCfg.apiKey}`,
@@ -4166,14 +4604,11 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             const sendGemini = async (withImageCfg) => {
                 const genCfg = { responseModalities: ['TEXT', 'IMAGE'] };
                 if (withImageCfg) {
-                    const imgCfgBlock = {};
-                    if (aspect !== 'native') imgCfgBlock.aspectRatio = aspect;
-                    if (!is25Flash && imgCfg.imageSize && /^(512|1K|2K|4K)$/i.test(String(imgCfg.imageSize))) {
-                        imgCfgBlock.imageSize = String(imgCfg.imageSize).toUpperCase();
+                    const imgCfgBlock = { aspectRatio: effectiveGemAspect };
+                    if (effectiveGemSize) {
+                        imgCfgBlock.imageSize = effectiveGemSize;
                     }
-                    if (Object.keys(imgCfgBlock).length > 0) {
-                        genCfg.imageConfig = imgCfgBlock;
-                    }
+                    genCfg.imageConfig = imgCfgBlock;
                 }
                 return await fetchWithTimeout(url, {
                     method: 'POST',
@@ -4225,28 +4660,14 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             .replace(/\/v1$/i, '');
 
         const mLow = String(model || '').toLowerCase();
-        const isGptImg = mLow.includes('gpt-image');
-        const isFluxKontext = mLow.includes('flux') && mLow.includes('kontext');
-        const isDalle3 = mLow.includes('dall-e-3');
-        const isDalle2 = mLow.includes('dall-e-2');
+        const oaKind = classifySillyImagesOpenAIModel(model);
+        const isGptImg = isSillyImagesGptImageFamily(oaKind);
+        const isFluxKontext = oaKind === 'flux-kontext';
+        const isDalle3 = oaKind === 'dall-e-3';
+        const isDalle2 = oaKind === 'dall-e-2';
 
-        let resolvedSize = '';
-        if (aspect !== 'native') {
-            if (isGptImg) {
-                resolvedSize = aspect === '1:1' ? '1024x1024'
-                    : (aspect === '2:3' || aspect === '3:4' || aspect === '4:5' || aspect === '9:16') ? '1024x1536'
-                    : '1536x1024';
-            } else if (isDalle3) {
-                resolvedSize = aspect === '1:1' ? '1024x1024'
-                    : (aspect === '2:3' || aspect === '3:4' || aspect === '4:5' || aspect === '9:16') ? '1024x1792'
-                    : '1792x1024';
-            } else if (isDalle2) {
-                resolvedSize = '1024x1024';
-            }
-        }
-        if (!resolvedSize && imgCfg.size) {
-            resolvedSize = String(imgCfg.size).trim();
-        }
+        const mappedOaSize = mapAspectAndSizeForOpenAIModel(aspect, imgCfg.size, oaKind);
+        const resolvedSize = mappedOaSize.size || '';
 
         let resolvedQuality = String(imgCfg.quality || '').toLowerCase().trim();
         if (isGptImg) {
@@ -4264,12 +4685,15 @@ export async function generateCharacterPortrait(visualPrompt, options = {}) {
             const canXaiRefs = mLow.includes('grok-imagine-image') && imageRefs.length > 0;
             const xaiPath = canXaiRefs ? '/v1/images/edits' : '/v1/images/generations';
             const xaiUrl = rawEndpointFlag ? (endpoint || defaultBase) : `${oaBase}${xaiPath}`;
+            const validXaiSet = new Set(['auto', ...XAI_SUPPORTED_ASPECT_IDS]);
+            const rawXaiAr = aspect !== 'native' ? aspect : String(imgCfg.xaiAspectRatio || '1:1').trim();
+            const resolvedXaiAr = validXaiSet.has(rawXaiAr) ? rawXaiAr : '1:1';
             const xaiBody = {
                 model,
                 prompt: buildConditionedPrompt(canXaiRefs),
                 n: 1,
                 response_format: 'b64_json',
-                aspect_ratio: aspect !== 'native' ? aspect : (imgCfg.xaiAspectRatio || '1:1'),
+                aspect_ratio: resolvedXaiAr,
                 resolution: String(imgCfg.xaiResolution || '1k').toLowerCase() === '2k' ? '2k' : '1k',
             };
             if (mLow.includes('grok-imagine-image-2.0')) {
@@ -4551,9 +4975,11 @@ export function buildPresetAlignedMessages(
         return {
             role: p.role || defaultRole,
             content: finalContent,
+            name: p.name && p.role && p.name.startsWith('example_') ? p.name : undefined,
+            identifier: id,
             _label: p.name || id,
             _injPos: Number(p.injection_position) === 1 ? 1 : 0,
-            _injDepth: Number.isFinite(Number(p.injection_depth)) ? Number(p.injection_depth) : 4,
+            _injDepth: Number(p.injection_position) === 1 && Number.isFinite(Number(p.injection_depth)) ? Number(p.injection_depth) : 4,
             _injOrder: Number.isFinite(Number(p.injection_order)) ? Number(p.injection_order) : 100,
         };
     };
@@ -4564,7 +4990,7 @@ export function buildPresetAlignedMessages(
         : userTaskContent;
 
     if (systemPrompt) {
-        messages.push({ role: 'system', content: systemPrompt });
+        messages.push({ role: 'system', content: systemPrompt, _id: 'nmfSystem' });
         pushTrace('NMF_SYS', 'system', 'NexusMatch System Prompt', systemPrompt);
     }
 
@@ -4584,7 +5010,9 @@ export function buildPresetAlignedMessages(
     depthZeroAfterTask.sort((a, b) => a._injOrder - b._injOrder);
 
     const pushResolved = (zone, built) => {
-        messages.push({ role: built.role, content: built.content });
+        const msgObj = { role: built.role, content: built.content, _id: built.identifier };
+        if (built.name) msgObj.name = built.name;
+        messages.push(msgObj);
         pushTrace(zone, built.role, built._label, built.content);
     };
 
@@ -4597,7 +5025,7 @@ export function buildPresetAlignedMessages(
             if (built) pushResolved('BEFORE_CHAT', built);
         }
         for (const b of depthBeforeTask) pushResolved('DEPTH_BEFORE', b);
-        messages.push({ role: 'user', content: finalUserTask });
+        messages.push({ role: 'user', content: finalUserTask, _nmfTask: true });
         pushTrace('CHAT_TASK', 'user', 'Задание NexusMatch Forge (вместо Chat History)', finalUserTask);
         for (const b of depthZeroAfterTask) pushResolved('DEPTH_0_AFTER', b);
     } else {
@@ -4610,7 +5038,7 @@ export function buildPresetAlignedMessages(
         }
         for (const b of depthBeforeTask) pushResolved('DEPTH_BEFORE', b);
 
-        messages.push({ role: 'user', content: finalUserTask });
+        messages.push({ role: 'user', content: finalUserTask, _nmfTask: true });
         pushTrace('CHAT_TASK', 'user', 'Задание NexusMatch Forge (на месте Chat History)', finalUserTask);
 
         for (const b of depthZeroAfterTask) pushResolved('DEPTH_0_AFTER', b);
@@ -4619,7 +5047,7 @@ export function buildPresetAlignedMessages(
             const id = orderList[i].identifier;
             const p = byId.get(id);
             if (p && Number(p.injection_position) === 1) continue;
-            const built = resolveBlockMessage(id, 'user');
+            const built = resolveBlockMessage(id, 'system');
             if (built) pushResolved('AFTER_CHAT', built);
         }
     }
@@ -4638,13 +5066,37 @@ export function buildPresetAlignedMessages(
         }
     }
 
-    return messages;
+    // Honor SillyTavern's native `squash_system_messages` ("Squash system messages") setting 1:1 for ANY preset:
+    // combines consecutive nameless `system` messages (excluding `newMainChat`, `newChat`, `groupNudge`) with `\n`.
+    if (oai.squash_system_messages) {
+        const excludeSquashIds = new Set(['newMainChat', 'newChat', 'groupNudge']);
+        const squashed = [];
+        let lastMsg = null;
+        const canSquash = (m) => m && m.role === 'system' && !m.name && !excludeSquashIds.has(m._id);
+        for (const m of messages) {
+            if (m.role === 'system' && !m.content) continue;
+            if (canSquash(m) && lastMsg && canSquash(lastMsg)) {
+                lastMsg.content += '\n' + m.content;
+            } else {
+                const copy = { ...m };
+                squashed.push(copy);
+                lastMsg = copy;
+            }
+        }
+        pushTrace('SQUASH_SYS', 'system', `Squashed system messages (${messages.length} -> ${squashed.length})`, '');
+        return squashed.map(({ _id, ...rest }) => rest);
+    }
+
+    return messages.map(({ _id, ...rest }) => rest);
 }
 
 // Reasoning & text extraction using public getContext() APIs without importing internal /scripts/reasoning.js (fixes NMF-015)
 function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
     let text = rawFallbackText;
     let reasoning = '';
+    const isChatComp = (ctx?.mainApi || 'openai') === 'openai';
+    const allowModelThoughts = !isChatComp || Boolean(ctx?.chatCompletionSettings?.show_thoughts);
+    const allowAutoParseReasoning = ctx?.powerUserSettings?.reasoning?.auto_parse !== false;
 
     try {
         if (typeof data === 'string') {
@@ -4654,10 +5106,12 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
                 text = data.content;
             } else {
                 const extractedViaCtx = typeof ctx?.extractMessageFromData === 'function'
-                    ? String(ctx.extractMessageFromData(data) || '')
+                    ? String(ctx.extractMessageFromData(data, isChatComp ? 'openai' : null) || '')
                     : '';
                 if (extractedViaCtx) {
                     text = extractedViaCtx;
+                } else if (Array.isArray(data?.content)) {
+                    text = data.content.filter((p) => p && p.type === 'text' && p.text).map((p) => p.text).join('\n\n');
                 } else if (typeof data?.choices?.[0]?.message?.content === 'string') {
                     text = data.choices[0].message.content;
                 } else if (Array.isArray(data?.responseContent?.parts)) {
@@ -4674,25 +5128,31 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
                 }
             }
 
-            const gParts = data?.responseContent?.parts || data?.candidates?.[0]?.content?.parts || [];
-            const thoughtParts = gParts.filter((pt) => pt && pt.thought && pt.text).map((pt) => pt.text);
-            if (thoughtParts.length) reasoning = thoughtParts.join('\n\n');
+            if (allowModelThoughts) {
+                const gParts = data?.responseContent?.parts || data?.candidates?.[0]?.content?.parts || [];
+                const thoughtParts = gParts.filter((pt) => pt && pt.thought && pt.text).map((pt) => pt.text);
+                const claudeThoughts = Array.isArray(data?.content)
+                    ? data.content.filter((p) => p && p.type === 'thinking' && p.thinking).map((p) => p.thinking)
+                    : [];
+                if (thoughtParts.length) reasoning = thoughtParts.join('\n\n');
+                else if (claudeThoughts.length) reasoning = claudeThoughts.join('\n\n');
 
-            if (!reasoning) {
-                reasoning = String(
-                    data?.reasoning
-                    || data?.choices?.[0]?.message?.reasoning_content
-                    || data?.choices?.[0]?.message?.reasoning
-                    || data?.thinking
-                    || ''
-                );
+                if (!reasoning) {
+                    reasoning = String(
+                        data?.reasoning
+                        || data?.choices?.[0]?.message?.reasoning_content
+                        || data?.choices?.[0]?.message?.reasoning
+                        || data?.thinking
+                        || ''
+                    );
+                }
             }
         }
 
-        if (typeof ctx?.parseReasoningFromString === 'function' && text) {
+        if (allowAutoParseReasoning && typeof ctx?.parseReasoningFromString === 'function' && text) {
             const parsed = ctx.parseReasoningFromString(text, { strict: false });
             if (parsed?.reasoning) {
-                if (!reasoning.includes(parsed.reasoning)) {
+                if (allowModelThoughts && !reasoning.includes(parsed.reasoning)) {
                     reasoning = [reasoning, parsed.reasoning].filter(Boolean).join('\n\n');
                 }
                 if (typeof parsed.content === 'string') {
@@ -4708,7 +5168,7 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
     const inlineMatches = [...String(text || '').matchAll(inlineThinkRe)];
     if (inlineMatches.length > 0) {
         const inlineTxt = inlineMatches.map((m) => m[1].trim()).filter(Boolean).join('\n\n');
-        if (inlineTxt && !reasoning.includes(inlineTxt)) {
+        if (allowModelThoughts && inlineTxt && !reasoning.includes(inlineTxt)) {
             reasoning = [reasoning, inlineTxt].filter(Boolean).join('\n\n');
         }
         text = String(text || '').replace(inlineThinkRe, '').trim();
@@ -4718,6 +5178,10 @@ function extractUniversalReasoningAndText(ctx, data, rawFallbackText = '') {
 
     // Strip unclosed/dangling opening think tags if prefill opened one
     text = String(text || '').replace(/^[\s\S]*?<\/(?:think|thought|thinking|thoughts|reasoning|cot|thought_process|inner_monologue|inner_thoughts|analysis|rp_plan)>\s*/i, '').trim();
+
+    if (!allowModelThoughts) {
+        reasoning = '';
+    }
 
     return { text: String(text || ''), reasoning: String(reasoning || '').trim() };
 }
@@ -4729,8 +5193,14 @@ export let lastGenerationReasoning = '';
 // - Never attaches global chat settings event mutators (fixes NMF-012)
 // - Separates OpenAI Chat Completion vs Text Completion APIs (fixes NMF-011)
 // - Passes native jsonSchema into generateRawData when in json_schema mode (fixes NMF-010)
-function resolveActiveChatCompletionModelFromOai(oai = {}) {
-    const src = String(oai.chat_completion_source || 'openai');
+function resolveActiveChatCompletionModelFromOai(oai = {}, ctx = null) {
+    if (typeof ctx?.getChatCompletionModel === 'function') {
+        try {
+            const viaCtx = String(ctx.getChatCompletionModel(oai) || '').trim();
+            if (viaCtx) return viaCtx;
+        } catch {}
+    }
+    const src = String(oai.chat_completion_source || 'openai').trim().toLowerCase();
     const sourceModelKeyMap = {
         openai: 'openai_model',
         claude: 'claude_model',
@@ -4743,14 +5213,23 @@ function resolveActiveChatCompletionModelFromOai(oai = {}) {
         cohere: 'cohere_model',
         perplexity: 'perplexity_model',
         groq: 'groq_model',
+        electronhub: 'electronhub_model',
+        chutes: 'chutes_model',
+        nanogpt: 'nanogpt_model',
         deepseek: 'deepseek_model',
+        aimlapi: 'aimlapi_model',
         xai: 'xai_model',
         pollinations: 'pollinations_model',
         moonshot: 'moonshot_model',
         fireworks: 'fireworks_model',
+        cometapi: 'cometapi_model',
         azure_openai: 'azure_openai_model',
+        zai: 'zai_model',
+        siliconflow: 'siliconflow_model',
+        workers_ai: 'workers_ai_model',
+        minimax: 'minimax_model',
     };
-    const key = sourceModelKeyMap[src];
+    const key = sourceModelKeyMap[src] || `${src}_model`;
     return (key && oai[key]) ? String(oai[key]) : String(oai.openai_model || oai.google_model || '');
 }
 
@@ -4761,7 +5240,9 @@ export async function runLlmGeneration({
     transportMode = 'prefill_user_msg',
     presetCorrectionPrompt = '',
     stripActiveCharFromPreset = true,
+    stream = undefined,
     visionImageUrls = [],
+    visionOptional = false,
     signal = null,
 }) {
     const ctx = getTavernContext();
@@ -4770,7 +5251,9 @@ export async function runLlmGeneration({
     const rawDataFn = ctx.generateRawData;
     const rawFn = ctx.generateRaw;
     const cleanVisionUrls = Array.isArray(visionImageUrls)
-        ? visionImageUrls.map((u) => String(u || '').trim()).filter((u) => u.startsWith('data:image/') || /^https?:\/\//i.test(u))
+        ? visionImageUrls
+            .map((u) => String(u || '').trim())
+            .filter((u) => /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(u) || /^https?:\/\//i.test(u))
         : [];
     const hasVisionImages = cleanVisionUrls.length > 0;
 
@@ -4824,7 +5307,8 @@ export async function runLlmGeneration({
             let injectedOntoTask = false;
             visionMessagesPayload = promptPayload.map((m) => {
                 const textClean = subParams(typeof m.content === 'string' ? m.content : '');
-                if (!injectedOntoTask && m.role === 'user' && textClean.includes(user.slice(0, Math.min(36, user.length)))) {
+                const isTaskMsg = Boolean(m._nmfTask) || (!injectedOntoTask && m.role === 'user' && textClean.includes(user.slice(0, Math.min(36, user.length))));
+                if (!injectedOntoTask && isTaskMsg) {
                     injectedOntoTask = true;
                     return {
                         role: 'user',
@@ -4834,7 +5318,9 @@ export async function runLlmGeneration({
                         ],
                     };
                 }
-                return { role: m.role, content: textClean };
+                const outMsg = { role: m.role, content: textClean };
+                if (m.name) outMsg.name = m.name;
+                return outMsg;
             });
             if (!injectedOntoTask) {
                 visionMessagesPayload.push({
@@ -4858,6 +5344,9 @@ export async function runLlmGeneration({
                 ],
             });
         }
+    }
+    if (Array.isArray(promptPayload)) {
+        promptPayload = promptPayload.map(({ _nmfTask, ...rest }) => rest);
     }
 
     const visionDiagSummary = hasVisionImages
@@ -4895,73 +5384,149 @@ export async function runLlmGeneration({
         responsePreview: 'Ожидание ответа модели...',
     };
     lastRequestDiagnostics.llm = llmDiag;
+    lastGenerationReasoning = '';
 
     let cancelledLocally = false;
     const runPromise = (async () => {
         try {
-            if (hasVisionImages) {
+            if (isChatCompletion && (hasVisionImages || (transportMode === 'prefill_user_msg' && ctx?.ChatCompletionService && typeof ctx.ChatCompletionService.sendRequest === 'function'))) {
                 const ccs = ctx?.ChatCompletionService;
                 if (ccs && typeof ccs.processRequest === 'function') {
                     const oai = ctx?.chatCompletionSettings || {};
+                    const subParams = typeof ctx?.substituteParams === 'function'
+                        ? (str) => String(ctx.substituteParams(String(str ?? '')) ?? '')
+                        : (str) => String(str ?? '');
+                    const finalMessages = hasVisionImages
+                        ? visionMessagesPayload
+                        : (Array.isArray(promptPayload)
+                            ? promptPayload.map((m) => {
+                                const out = { role: m.role, content: subParams(typeof m.content === 'string' ? m.content : '') };
+                                if (m.name) out.name = m.name;
+                                return out;
+                            })
+                            : [{ role: 'user', content: subParams(String(promptPayload || user)) }]);
+                    const extStreamSetting = stream !== undefined
+                        ? Boolean(stream)
+                        : Boolean(ctx?.extensionSettings?.st_nexus_match_forge?.enableStreaming);
+                    const useStream = Boolean(extStreamSetting && !hasVisionImages && !schemaPayload);
+                    const allowThoughts = Boolean(oai.show_thoughts);
                     const presetMgr = ctx?.getPresetManager?.('openai');
                     const activePresetName = presetMgr?.getSelectedPresetName?.() || '';
                     let reqData = {
-                        messages: visionMessagesPayload,
-                        stream: false,
+                        messages: finalMessages,
+                        stream: useStream,
                         chat_completion_source: oai.chat_completion_source || 'openai',
-                        model: resolveActiveChatCompletionModelFromOai(oai) || undefined,
+                        model: resolveActiveChatCompletionModelFromOai(oai, ctx) || undefined,
                         max_tokens: Number(oai.openai_max_tokens) || 4096,
                         temperature: Number.isFinite(Number(oai.temp_openai)) ? Number(oai.temp_openai) : 1,
                         custom_url: oai.custom_url || undefined,
                         reverse_proxy: oai.reverse_proxy || undefined,
                         proxy_password: oai.proxy_password || undefined,
                         custom_prompt_post_processing: oai.custom_prompt_post_processing || undefined,
+                        use_sysprompt: oai.use_sysprompt !== undefined ? Boolean(oai.use_sysprompt) : true,
                         reasoning_effort: oai.reasoning_effort || undefined,
-                        include_reasoning: oai.include_reasoning !== undefined ? Boolean(oai.include_reasoning) : undefined,
+                        include_reasoning: allowThoughts,
                     };
                     if (activePresetName && typeof presetMgr?.getCompletionPresetByName === 'function' && typeof ccs.presetToGeneratePayload === 'function') {
                         const presetObj = presetMgr.getCompletionPresetByName(activePresetName);
                         if (presetObj) {
-                            reqData = await ccs.presetToGeneratePayload(presetObj, {}, reqData);
+                            reqData = await ccs.presetToGeneratePayload({ ...presetObj }, {}, reqData);
                         }
                     }
-                    // Force non-streaming & preserve multimodal messages AFTER preset merge (fixes stream_openai:true returning AsyncGenerator!)
-                    reqData.messages = visionMessagesPayload;
-                    reqData.stream = false;
+                    // Force request-local stream setting (false by default) WITHOUT mutating the user's SillyTavern preset
+                    reqData.messages = finalMessages;
+                    reqData.stream = useStream;
+                    reqData.use_sysprompt = oai.use_sysprompt !== undefined ? Boolean(oai.use_sysprompt) : true;
+                    reqData.include_reasoning = allowThoughts;
                     if (schemaPayload) {
                         reqData.json_schema = schemaPayload;
                     }
-                    const vData = typeof ccs.sendRequest === 'function'
-                        ? await ccs.sendRequest(
-                            typeof ccs.createRequestData === 'function' ? ccs.createRequestData(reqData) : reqData,
-                            false,
-                            signal || null,
-                        )
-                        : await ccs.processRequest(reqData, {}, false, signal || null);
+                    let vData;
+                    try {
+                        vData = typeof ccs.sendRequest === 'function'
+                            ? await ccs.sendRequest(
+                                typeof ccs.createRequestData === 'function' ? ccs.createRequestData(reqData) : reqData,
+                                false,
+                                signal || null,
+                            )
+                            : await ccs.processRequest(reqData, {}, false, signal || null);
+                    } catch (visionErr) {
+                        const vMsg = String(visionErr?.message || visionErr || '');
+                        const isRateOrServerErr = /\b(401|402|403|408|429|500|502|503|504)\b|quota|rate\s*limit|timeout|aborted/i.test(vMsg);
+                        const isCapabilityReject = !isRateOrServerErr && (
+                            /\b(400|404|415|422)\b/.test(vMsg)
+                            || /image_url|multimodal|vision|modality|media|unsupported|content.*array/i.test(vMsg)
+                        );
+                        if (hasVisionImages && visionOptional && isCapabilityReject && !cancelledLocally && !signal?.aborted && (typeof rawDataFn === 'function' || typeof rawFn === 'function')) {
+                            return await runLlmGeneration({
+                                system,
+                                user,
+                                jsonSchema,
+                                transportMode,
+                                presetCorrectionPrompt,
+                                stripActiveCharFromPreset,
+                                stream,
+                                visionImageUrls: [],
+                                visionOptional: false,
+                                signal,
+                            });
+                        }
+                        throw visionErr;
+                    }
                     if (cancelledLocally || signal?.aborted) return '';
 
-                    let text = '';
-                    let reasoning = '';
+                    let rawStreamedText = '';
+                    let rawStreamedReasoning = '';
                     if (typeof vData === 'function') {
-                        // Safety net if an API ever returns a streaming generator function
                         for await (const chunk of vData()) {
                             if (cancelledLocally || signal?.aborted) return '';
-                            if (typeof chunk?.text === 'string') text = chunk.text;
-                            if (chunk?.state?.reasoning) reasoning = String(chunk.state.reasoning);
+                            if (typeof chunk?.text === 'string') rawStreamedText = chunk.text;
+                            if (allowThoughts && chunk?.state?.reasoning) {
+                                rawStreamedReasoning = String(chunk.state.reasoning);
+                            }
                         }
-                    } else {
-                        const extracted = extractUniversalReasoningAndText(ctx, vData);
-                        text = extracted.text;
-                        reasoning = extracted.reasoning;
+                        const cleaned = extractUniversalReasoningAndText(ctx, null, rawStreamedText);
+                        const finalText = cleaned.text;
+                        const finalReasoning = allowThoughts
+                            ? ([rawStreamedReasoning, cleaned.reasoning].filter(Boolean).join('\n\n').trim())
+                            : '';
+                        lastGenerationReasoning = finalReasoning;
+                        llmDiag.finishedAt = Date.now();
+                        llmDiag.ok = true;
+                        llmDiag.status = hasVisionImages
+                            ? `Успешно · Vision (${finalText.length} симв.)`
+                            : `Успешно (${finalText.length} симв.)`;
+                        llmDiag.responsePreview = sanitizePayloadStringForLog(finalText || '[Пустой ответ]', 250000);
+                        return finalText;
                     }
-                    lastGenerationReasoning = reasoning;
+
+                    const extracted = extractUniversalReasoningAndText(ctx, vData);
+                    lastGenerationReasoning = allowThoughts ? extracted.reasoning : '';
                     llmDiag.finishedAt = Date.now();
                     llmDiag.ok = true;
-                    llmDiag.status = `Успешно · Vision (${text.length} симв.)`;
-                    llmDiag.responsePreview = sanitizePayloadStringForLog(text || '[Пустой ответ]', 250000);
-                    return text;
+                    llmDiag.status = hasVisionImages
+                        ? `Успешно · Vision (${extracted.text.length} симв.)`
+                        : `Успешно (${extracted.text.length} симв.)`;
+                    llmDiag.responsePreview = sanitizePayloadStringForLog(extracted.text || '[Пустой ответ]', 250000);
+                    return extracted.text;
                 }
-                throw new Error('Сервис ChatCompletionService недоступен в этой версии SillyTavern для отправки фото.');
+                if (hasVisionImages) {
+                    if (visionOptional && (typeof rawDataFn === 'function' || typeof rawFn === 'function')) {
+                        return await runLlmGeneration({
+                            system,
+                            user,
+                            jsonSchema,
+                            transportMode,
+                            presetCorrectionPrompt,
+                            stripActiveCharFromPreset,
+                            stream,
+                            visionImageUrls: [],
+                            visionOptional: false,
+                            signal,
+                        });
+                    }
+                    throw new Error('Сервис ChatCompletionService недоступен в этой версии SillyTavern для отправки фото.');
+                }
             }
 
             if (typeof rawDataFn === 'function') {

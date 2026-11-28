@@ -3,8 +3,8 @@
 // Strictly zero emojis in code/UI/prompts, zero pill radius, explicit SVG dimensions.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.5';
-import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.5';
+import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.34';
+import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.34';
 import {
     CARD_FORMAT_HUMAN_GUIDES,
     CONCEPT_SERIES_COUNT_OPTIONS,
@@ -16,13 +16,13 @@ import {
     hasActiveConceptCaptions,
     formatQuestionUserDecision,
     isWorldOrRpgMode,
-} from './nmf_templates_and_prompts.js?v=2.1.5';
-import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.5';
+} from './nmf_templates_and_prompts.js?v=2.1.34';
+import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.34';
 import {
     detectImageExtensions,
     listImageExtensionBuckets,
     getSupportedAspectRatiosForImageConfig,
-} from './nmf_card_io_and_art.js?v=2.1.5';
+} from './nmf_card_io_and_art.js?v=2.1.34';
 
 export function renderTemplateManagerWidgetHtml({
     sess,
@@ -84,12 +84,18 @@ export function renderTemplateManagerWidgetHtml({
         <div class="nmf-tpl-inspector">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
                 <span style="font-size:11.5px;font-weight:700;color:var(--nmf-text)">
-                    ${esc(isCustom ? tx('Редактирование вашего шаблона анкеты', 'Edit Your Custom Template') : tx('Внутренний промпт выбранной анкеты', 'Built-in Template Prompt'))}
+                    ${esc(isCustom
+                        ? tx('Редактирование вашего шаблона анкеты', 'Edit Your Custom Template')
+                        : tx('Промпт шаблона анкеты (можно свободно редактировать)', 'Template Prompt (freely editable)'))}
                 </span>
                 <div style="display:inline-flex;gap:5px;flex-wrap:wrap">
+                    ${!isCustom && curFmt.hasOverride ? `
+                    <button type="button" class="nmf-chip" data-act="reset-builtin-tpl" data-fmt="${esc(curFmt.id)}" ${sess.frozen ? 'disabled' : ''}>
+                        ${NMF_ICONS.undo} <span>${esc(tx('Сбросить к стандарту', 'Reset Default'))}</span>
+                    </button>` : ''}
                     ${!isCustom ? `
                     <button type="button" class="nmf-chip" data-act="clone-builtin-tpl" data-fmt="${esc(curFmt.id)}" ${sess.frozen ? 'disabled' : ''}>
-                        ${NMF_ICONS.copy} <span>${esc(tx('Дублировать под себя', 'Duplicate to Edit'))}</span>
+                        ${NMF_ICONS.copy} <span>${esc(tx('Дублировать отдельно', 'Duplicate as New'))}</span>
                     </button>` : `
                     <button type="button" class="nmf-chip" style="border-color:#e05a6d;color:#e05a6d" data-act="delete-custom-tpl" data-fmt="${esc(curFmt.id)}" ${sess.frozen ? 'disabled' : ''}>
                         ${NMF_ICONS.trash} <span>${esc(tx('Удалить шаблон', 'Delete'))}</span>
@@ -113,11 +119,11 @@ export function renderTemplateManagerWidgetHtml({
             </div>
             <div class="nmf-field">
                 <label class="nmf-label">${esc(tx('Промпт структуры для ИИ (чистые ## Заголовки без скобок)', 'AI Formatting Instructions (clean ## Headings)'))}</label>
-                <textarea class="nmf-textarea" style="min-height:130px;font-family:var(--nmf-font-mono);font-size:11px" data-custom-tpl-field="instructions" data-fmt="${esc(curFmt.id)}">${esc(curFmt.instructions || '')}</textarea>
+                <textarea class="nmf-textarea" style="min-height:130px;font-family:var(--nmf-font-mono);font-size:11px" data-custom-tpl-field="instructions" data-fmt="${esc(curFmt.id)}" ${sess.frozen ? 'disabled' : ''}>${esc(curFmt.instructions || '')}</textarea>
             </div>` : `
-            <textarea class="nmf-textarea" style="min-height:120px;font-family:var(--nmf-font-mono);font-size:11px" readonly>${esc(curFmt.instructions || '')}</textarea>
-            <div style="font-size:11px;color:var(--nmf-text-muted)">
-                ${esc(tx('Совет: нажмите «Дублировать под себя», чтобы создать редактируемую копию этой анкеты.', 'Tip: tap "Duplicate to Edit" to create an editable personal copy of this template.'))}
+            <div class="nmf-field">
+                <label class="nmf-label">${esc(tx('Промпт структуры анкеты для ИИ (изменения сохраняются автоматически)', 'AI Template Structure Prompt (saved automatically)'))}</label>
+                <textarea class="nmf-textarea" style="min-height:130px;font-family:var(--nmf-font-mono);font-size:11px" data-builtin-tpl-instr="${esc(curFmt.id)}" ${sess.frozen ? 'disabled' : ''}>${esc(curFmt.instructions || '')}</textarea>
             </div>`}
         </div>` : ''}
 
@@ -757,18 +763,17 @@ export function renderConceptCollectionViewHtml({
                         </div>
                         <div class="nmf-match-thumb-ov">
                             <div style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;line-height:1.2">${esc(linkedHero?.name || cv.name)}</div>
-                            ${archLine ? `<div style="font-family:var(--nmf-font-mono);font-size:9px;color:var(--nmf-accent-2);margin-top:2px">${esc(archLine.slice(0, 34))}</div>` : ''}
+                            ${archLine ? `<div class="nmf-tile-arch">${esc(archLine)}</div>` : ''}
                         </div>
                     </div>
-                    <div style="padding:8px 9px;font-size:11.5px;line-height:1.4;color:var(--nmf-text-muted)">
-                        ${esc(captionPreview.slice(0, 105))}${captionPreview.length > 105 ? '...' : ''}
+                    <div class="nmf-tile-pitch">
+                        ${esc(captionPreview)}
                     </div>
                 </div>
-                <div style="padding:0 8px 8px;display:flex;align-items:center;gap:4px">
-                    <button type="button" class="nmf-btn-primary" style="flex:1;min-height:28px;height:28px;font-size:10px;padding:0 6px;white-space:nowrap" data-act="expand-concept-vault" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>${esc(tx('Собрать V2', 'Build V2'))}</button>
-                    <button type="button" class="nmf-btn-secondary" style="min-height:28px;height:28px;font-size:10px;padding:0 7px;white-space:nowrap" data-act="send-cand-to-blitz" data-source="concept" data-ref="concept:${esc(cv.id)}">${esc(tx('В Блиц', 'To Blitz'))}</button>
-                    <button type="button" class="nmf-icon-btn nmf-sq" style="min-height:28px;height:28px;width:28px;flex-shrink:0" data-act="open-concept-vault-item" data-idx="${idx}" title="${esc(tx('Редактировать концепт', 'Edit Concept'))}">${NMF_ICONS.editSmall}</button>
-                    <button type="button" class="nmf-icon-btn nmf-sq" style="min-height:28px;height:28px;width:28px;flex-shrink:0" data-act="del-concept-vault-item" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
+                <div class="nmf-tile-actions">
+                    <button type="button" class="nmf-btn-primary" style="flex:1;font-size:10.5px;padding:0 6px" data-act="expand-concept-vault" data-idx="${idx}" ${state.busy || sess.frozen ? 'disabled' : ''}>${esc(tx('Собрать', 'Build'))}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="open-concept-vault-item" data-idx="${idx}" title="${esc(tx('Редактировать концепт', 'Edit Concept'))}">${NMF_ICONS.editSmall}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="del-concept-vault-item" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
                 </div>
             </div>`;
         }).join('')}
@@ -812,18 +817,17 @@ export function renderPhotoCollectionViewHtml({
                         ${fSpec.src ? `<img src="${esc(fSpec.src)}" alt="Photo Hero"/>` : ''}
                         <div class="nmf-match-thumb-ov">
                             <div style="font-family:var(--nmf-font-title);font-size:13.5px;font-weight:700;line-height:1.2">${esc(pd.name)}</div>
-                            ${pd.archetype ? `<div style="font-family:var(--nmf-font-mono);font-size:9px;color:var(--nmf-accent-2);margin-top:2px">${esc(pd.archetype.slice(0, 34))}</div>` : ''}
+                            ${pd.archetype ? `<div class="nmf-tile-arch">${esc(pd.archetype)}</div>` : ''}
                         </div>
                     </div>
-                    <div style="padding:8px 9px;font-size:11.5px;line-height:1.4;color:var(--nmf-text-muted)">
-                        ${esc((pd.pitch || pd.cardDraft?.description || '').slice(0, 100))}...
+                    <div class="nmf-tile-pitch">
+                        ${esc(pd.pitch || pd.cardDraft?.description || '')}
                     </div>
                 </div>
-                <div style="padding:0 8px 8px;display:flex;align-items:center;gap:4px">
-                    <button type="button" class="nmf-btn-primary" style="flex:1;min-height:28px;height:28px;font-size:10px;padding:0 6px;white-space:nowrap" data-act="open-photo-draft-v2" data-id="${esc(pd.id)}" ${state.busy || sess.frozen ? 'disabled' : ''}>${esc(tx('В Редактор', 'To Editor'))}</button>
-                    <button type="button" class="nmf-btn-secondary" style="min-height:28px;height:28px;font-size:10px;padding:0 6px;white-space:nowrap" data-act="send-cand-to-concept" data-ref="photo:${esc(pd.id)}">${esc(tx('Концепт', 'Concept'))}</button>
-                    <button type="button" class="nmf-btn-secondary" style="min-height:28px;height:28px;font-size:10px;padding:0 6px;white-space:nowrap" data-act="send-cand-to-blitz" data-source="photo" data-ref="photo:${esc(pd.id)}">${esc(tx('В Блиц', 'To Blitz'))}</button>
-                    <button type="button" class="nmf-icon-btn nmf-sq" style="min-height:28px;height:28px;width:28px;flex-shrink:0" data-act="del-photo-draft-item" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
+                <div class="nmf-tile-actions">
+                    <button type="button" class="nmf-btn-primary" style="flex:1;font-size:10.5px;padding:0 6px" data-act="open-photo-draft-v2" data-id="${esc(pd.id)}" ${state.busy || sess.frozen ? 'disabled' : ''}>${esc(tx('Редактор', 'Editor'))}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="send-cand-to-blitz" data-source="photo" data-ref="photo:${esc(pd.id)}" title="${esc(tx('В Блиц', 'To Blitz'))}">${NMF_ICONS.blitz}</button>
+                    <button type="button" class="nmf-icon-btn nmf-sq" data-act="del-photo-draft-item" data-idx="${idx}" title="${esc(tx('Удалить', 'Delete'))}">${NMF_ICONS.trash}</button>
                 </div>
             </div>`;
         }).join('')}

@@ -2,6 +2,18 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
+## [2.1.26-beta] - 2026-11-28
+
+### Unified SillyImages v3.0 Aspect Ratio Inheritance & Full Non-Gemini Provider Parity (Variant 1A)
+- **Model-Aware Studio & Gacha Aspect Ratio Selector (Variant 1A)**: Connected the main Studio **2. Aspect Ratio & Framing -> Generated Portrait Aspect Ratio** selector (as well as Gacha session & per-card overrides) directly to `getSupportedAspectRatiosForImageConfig`, placing **`Inherit from SillyImages (profile: ...)`** first (preserving native uncropped card display) followed by the exact supported formats and pixel hints for the connected model, plus automatic orientation-preserving coercion when switching SillyImages profiles.
+- **1:1 Non-Gemini Provider & Profile Inheritance Parity (`sillyimages v3.0.0-beta.1`)**: Implemented full profile aspect/size inheritance when `native` / `sillyimages_default` is active across **OpenRouter** (all 10 ratios for `flux` / `sourceful` / `seedream` / generic models with `modalities: ['image']`, 14 ratios + `image_size` for `google/gemini-3.1-flash-image`), **OpenAI / Electron Hub** (`gpt-image-1` / `1.5` / `1-mini` native `1024x1024`, `1024x1536`, `1536x1024` with automatic normalization of legacy DALL-E `1024x1792` / `1792x1024` profile sizes; `dall-e-3`; `dall-e-2`; `flux-1-kontext`), **xAI Grok Imagine** (all 13 ratios + `auto`), **NovelAI**, **Naistera**, **A1111 / Forge**, **Pollinations**, and **Gemini Direct**.
+
+## [2.1.25-beta] - 2026-11-27
+
+### Story Dynamic Modes (`+ Combination` & `+ Custom`), Neutral Plot-First Default, Saved Format Profiles, Anti-Slop Inheritance & Single-Page Story Questionnaire
+- **Story Dynamic Modes (`STORY_DYNAMIC_OPTIONS`, `customStoryModes`, `buildStoryDynamicDirective`)**: Replaced hidden romance/chemistry prompt bias across Swipes, Gacha, Soul Alchemy Altar, Blitz, and V2 Card Synthesis with 6 built-in Story Dynamic modes (`Plot & Natural Flow` as neutral default, `Pure Plot`, `Conflict / Rivalry`, `Slow Burn`, `Enemies to Lovers`, `Romance / Flirt`), multi-mode **`+ Combination`** selector, and **`+ Custom`** user modes (custom title + prompt with pencil editing), independently configurable inside the **Main Story Questionnaire** and **Gacha Questionnaire** while keeping all `CARD_FORMATS` templates intact. Standalone questionnaire-free modes automatically apply the neutral `Plot & Natural Flow` standard.
+- **Unified Format Profiles, Anti-Slop & Studio Refinements (`v2.1.1` – `v2.1.20`)**: Added top-level savable **Profile, Format & Languages** presets, toggleable & editable **Anti-Slop** rules inherited across all 12 prompt builders, single-page 4-field **Story Questionnaire**, 4 mutually exclusive **Blitz** source cores (`Story`, `Gacha`, `Hero`, `From Scratch`), smooth 60fps Swipe animations with manual empty-deck fetch, same-name variation toggles (`allowSameNames`), anchor-free visual & bio prompts, and 1-tap **Pocket Codex** export.
+
 ## [2.1.0-beta] - 2026-11-25
 
 ### Token-Clean `## Heading` Templates, Custom Template Manager + AI Character Template Extractor, Photo-to-Character Vision Lab, Concept Art Lab (Single Sheet & Series) & Unified Collection Tabs
