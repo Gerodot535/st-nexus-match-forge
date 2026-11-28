@@ -79,10 +79,8 @@ Image generation is completely optional: without an image generator, `NexusMatch
 
 ---
 
-## About the Author & License
+## License & Feedback
 
-Hi, I'm **Gerodot (`Gerodot535`)** — a SillyTavern roleplayer and enthusiast crafting and playing directly from an Android smartphone (Termux), believing that great stories thrive on complete freedom of genres, characters, and worlds without forced templates. Alongside my personal RP preset, **NexusMatch Forge** is my first public SillyTavern extension — built so complex under-the-hood mechanics feel quiet, calm, and effortless on the surface. Feedback on the open beta is always welcome!
-
-- **Author Telegram Channel:** [**t.me/AIdegenerate1**](https://t.me/AIdegenerate1)
-- **GitHub & Showcase Site:** [**github.com/Gerodot535**](https://github.com/Gerodot535) · [**gerodot535.github.io**](https://gerodot535.github.io/)
+- **Author:** [**Gerodot535**](https://github.com/Gerodot535) · [**Showcase Site**](https://gerodot535.github.io/)
+- **Author Telegram Channel (Public Beta v1 feedback & bug reports):** [**t.me/AIdegenerate1**](https://t.me/AIdegenerate1)
 - **License:** Released under the [**MIT License**](LICENSE).
