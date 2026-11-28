@@ -3,8 +3,8 @@
 // Strictly zero emojis in code/UI/prompts, zero pill radius, explicit SVG dimensions.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { NMF_ICONS } from './nmf_themes_and_icons.js?v=2.1.34';
-import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=2.1.34';
+import { NMF_ICONS } from './nmf_themes_and_icons.js?v=1.0.0-public-beta.1';
+import { tx, isEn, localizeOptionLabel } from './nmf_i18n.js?v=1.0.0-public-beta.1';
 import {
     CARD_FORMAT_HUMAN_GUIDES,
     CONCEPT_SERIES_COUNT_OPTIONS,
@@ -16,13 +16,13 @@ import {
     hasActiveConceptCaptions,
     formatQuestionUserDecision,
     isWorldOrRpgMode,
-} from './nmf_templates_and_prompts.js?v=2.1.34';
-import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=2.1.34';
+} from './nmf_templates_and_prompts.js?v=1.0.0-public-beta.1';
+import { resolveEntityDisplayUrl } from './nmf_media_vault.js?v=1.0.0-public-beta.1';
 import {
     detectImageExtensions,
     listImageExtensionBuckets,
     getSupportedAspectRatiosForImageConfig,
-} from './nmf_card_io_and_art.js?v=2.1.34';
+} from './nmf_card_io_and_art.js?v=1.0.0-public-beta.1';
 
 export function renderTemplateManagerWidgetHtml({
     sess,
@@ -198,14 +198,22 @@ export function renderPhotoLabTabHtml({
     const pl = sess.photoLab || {};
     const photoUrl = safeImgSrc(resolveEntityDisplayUrl(pl.photo));
     const drafts = Array.isArray(pl.drafts) ? pl.drafts : [];
-    const latestDraft = (pl.lastCreatedId && drafts.find((d) => d.id === pl.lastCreatedId)) || drafts[0] || null;
+    const latestDraft = pl.lastCreatedId ? (drafts.find((d) => d.id === pl.lastCreatedId) || null) : null;
     const conceptSheetUrl = safeImgSrc(resolveEntityDisplayUrl(sess.conceptLab?.anchorPhoto)) || safeImgSrc(resolveEntityDisplayUrl(sess.conceptLab?.singleSheet));
+    const hasPhotoDeskDirty = Boolean(
+        photoUrl
+        || String(pl.roleVibeHint || '').trim()
+        || String(pl.charName || '').trim()
+        || String(pl.extraNotes || '').trim()
+        || latestDraft,
+    );
 
     return `
     ${renderStudioRoomBar(
         'Герой по фото',
         'Character from Photo',
-        `<div style="display:inline-flex;gap:5px">
+        `<div style="display:inline-flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+            ${hasPhotoDeskDirty ? `<button type="button" class="nmf-chip" data-act="clear-photo-lab-desk" title="${esc(tx('Очистить стол под нового персонажа (Коллекция сохранится)', 'Clear desk for a new character (Collection stays safe)'))}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.trash} <span>${esc(tx('Очистить стол', 'Clear Desk'))}</span></button>` : ''}
             ${drafts.length > 0 ? `<button type="button" class="nmf-chip" data-act="open-photo-collection">${NMF_ICONS.matches} <span>${esc(tx(`Коллекция (${drafts.length})`, `Collection (${drafts.length})`))}</span></button>` : ''}
             <button type="button" class="nmf-chip" data-act="open-intake-sheet">${NMF_ICONS.sliders} <span>${esc(tx('Анкета', 'Questionnaire'))}</span></button>
         </div>`,
@@ -270,6 +278,7 @@ export function renderPhotoLabTabHtml({
                 <span class="nmf-concept-plate-num">${esc(tx('ГОТОВО', 'READY'))}</span>
                 <strong>${esc(latestDraft.name)}</strong>
             </div>
+            <button type="button" class="nmf-icon-btn nmf-sq" data-act="dismiss-photo-desk-draft" title="${esc(tx('Убрать со стола (останется в Коллекции)', 'Dismiss from desk (stays in Collection)'))}" ${sess.frozen ? 'disabled' : ''}>${NMF_ICONS.close}</button>
         </div>
         <div class="nmf-caption-table">
             <div class="nmf-caption-row" style="grid-template-columns:1fr">
@@ -336,12 +345,23 @@ export function renderConceptLabTabHtml({
         ? state.conceptAppendMode
         : (!hasSingleOutput ? 'single' : 'series');
     const appendCnt = Math.min(6, Math.max(1, Number(state.conceptAppendCount) || 1));
+    const hasConceptDeskDirty = Boolean(
+        curSelRef !== '__none__'
+        || anchorUrl
+        || String(cl.anchorPrompt || '').trim()
+        || String(cl.themeBrief || '').trim()
+        || (Array.isArray(cl.questions) && cl.questions.length > 0)
+        || hasAnyConceptOutput
+        || appendOpen
+        || String(state.conceptAppendBrief || '').trim(),
+    );
 
     return `
     ${renderStudioRoomBar(
         'Концепт-арт Бюро',
         'Concept Art Lab',
-        `<div style="display:inline-flex;gap:5px">
+        `<div style="display:inline-flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+            ${hasConceptDeskDirty ? `<button type="button" class="nmf-chip" data-act="clear-concept-desk" title="${esc(tx('Очистить стол под нового персонажа (Коллекция сохранится)', 'Clear desk for a new character (Collection stays safe)'))}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.trash} <span>${esc(tx('Очистить стол', 'Clear Desk'))}</span></button>` : ''}
             ${conceptVaultCount > 0 ? `<button type="button" class="nmf-chip" data-act="open-concept-collection">${NMF_ICONS.matches} <span>${esc(tx(`Коллекция (${conceptVaultCount})`, `Collection (${conceptVaultCount})`))}</span></button>` : ''}
             <button type="button" class="nmf-chip" data-act="open-intake-sheet">${NMF_ICONS.sliders} <span>${esc(tx('Анкета', 'Questionnaire'))}</span></button>
         </div>`,

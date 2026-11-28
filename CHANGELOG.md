@@ -2,11 +2,27 @@
 
 All notable changes to **NexusMatch Forge** are documented in this file.
 
-## [2.1.26-beta] - 2026-11-28
+## [1.0.0-beta.1] - Public Beta v1 (2026-11-28)
+- Initial Open Public Beta v1 release (`NexusMatch Forge [Public Beta v1]`), unified public documentation (`README.md` / `README.ru.md`), community credits, and cache-busted ES module bundle.
 
-### Unified SillyImages v3.0 Aspect Ratio Inheritance & Full Non-Gemini Provider Parity (Variant 1A)
-- **Model-Aware Studio & Gacha Aspect Ratio Selector (Variant 1A)**: Connected the main Studio **2. Aspect Ratio & Framing -> Generated Portrait Aspect Ratio** selector (as well as Gacha session & per-card overrides) directly to `getSupportedAspectRatiosForImageConfig`, placing **`Inherit from SillyImages (profile: ...)`** first (preserving native uncropped card display) followed by the exact supported formats and pixel hints for the connected model, plus automatic orientation-preserving coercion when switching SillyImages profiles.
-- **1:1 Non-Gemini Provider & Profile Inheritance Parity (`sillyimages v3.0.0-beta.1`)**: Implemented full profile aspect/size inheritance when `native` / `sillyimages_default` is active across **OpenRouter** (all 10 ratios for `flux` / `sourceful` / `seedream` / generic models with `modalities: ['image']`, 14 ratios + `image_size` for `google/gemini-3.1-flash-image`), **OpenAI / Electron Hub** (`gpt-image-1` / `1.5` / `1-mini` native `1024x1024`, `1024x1536`, `1536x1024` with automatic normalization of legacy DALL-E `1024x1792` / `1792x1024` profile sizes; `dall-e-3`; `dall-e-2`; `flux-1-kontext`), **xAI Grok Imagine** (all 13 ratios + `auto`), **NovelAI**, **Naistera**, **A1111 / Forge**, **Pollinations**, and **Gemini Direct**.
+## [2.1.35-beta] - 2026-11-28
+
+### Desk Reset Controls, Sticky Draft Fix & Full Pre-Release Stability Audit
+- Added one-tap **Clear Desk** controls in Concept Art Lab, Character from Photo Lab, and Create (Idea / AU Shift) while preserving saved Collections.
+- Fixed sticky first Collection draft (e.g. Deadpool) remaining pinned on the Character from Photo desk after clearing or switching characters, and added a quick dismiss button on the READY card.
+- Fixed Concept Art Lab desk retaining previous character frames, sheets, briefs, or anchor photos when switching candidates or selecting From Scratch.
+- Improved spoiler state & scroll persistence per sub-view, Android pointer-capture swipe safety, background cooldown idle cleanup, and target-slot locking during Editor art rendering.
+
+## [2.1.34-beta] - 2026-11-28
+
+### End-to-End Prompt Harmony Audit, 27 Text LLM Sources, Full SillyImages v3.0 Provider Parity & Mobile UI Polish (`v2.1.26` – `v2.1.34`)
+- **End-to-End Prompt Isolation, Attachment & Pairwise Harmony (`56/56` Audit Suite)**:
+  - Sealed **Blitz Full Regenerate** in `None` (`Blank Slate`) mode so session questionnaires never leak on card rewrites.
+  - Aligned **Concept Art Lab** `Character / World` subject toggle with fallback briefs (preventing `World Sandbox` vs `Character Sheet` contradictions), attached raster anchor artwork to Vision LLM planning with quota-safe fallback (never retrying on `429` rate-limit or `5xx` errors, filtering out procedural SVG covers, and skipping redundant Vision uploads on question steps when textual bio is already sent), and automatically wove saved **Concept Vault** captions into **Blitz** and **V2 Card** synthesis without duplication.
+  - Added session-wide **Swipe Deck** seen-names anti-clone protection when `allowSameNames` is off, while exempting names requested via `favFandomHero` or `promptHint`.
+- **Full 27-Source Text LLM Compatibility (`SillyTavern 1.19+`)**: Added native `getChatCompletionModel` resolution and all 27 `chat_completion_source` model mappings (`OpenAI / GPT`, `xAI Grok`, `Claude`, `DeepSeek`, `OpenRouter`, `Chutes`, `NanoGPT`, `Electron Hub`, `SiliconFlow`, `Z.ai`, `MiniMax`, `Mistral`, `Groq`, `Custom`, etc.), verified strict `json_schema` compliance (`additionalProperties: false` & complete `required` keys) for GPT/xAI, and preserved universal `<think>` / reasoning extraction.
+- **Model-Aware Aspect Ratio Inheritance & Full `SillyImages v3.0` Parity (Variant 1A)**: Bound Studio, Gacha, Bento Mosaic tiles, and the Lossless Art Cropper to live provider capabilities with profile inheritance first (`OpenAI GPT Image` native `1024x1024 / 1024x1536 / 1536x1024` + legacy DALL-E size normalization, `OpenRouter` 10/14 ratios + clean image modality, `xAI Grok Imagine` 13 ratios + `auto`, `Gemini 3.1 Flash` 14 ratios, `Electron Hub` 10 ratios, `Naistera` 5 ratios + `/api/generate/jobs/` polling parity, `NovelAI`, `A1111`, `Pollinations`, and all 10 manual ratios when generator is off).
+- **Mobile Layout & Cropped Artwork Fixes**: Applied 3-column grid alignment (`nmf-seg-3`) to the Blitz questionnaire switcher, made cropped portraits collapse-proof inside `Native` aspect mode, and locked Collection tile pitches to clean 3-line clamping without button overlap.
 
 ## [2.1.25-beta] - 2026-11-27
 

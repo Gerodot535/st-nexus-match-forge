@@ -3,7 +3,7 @@ import {
     getCardBackupById,
     base64ToBytes,
     isValidNonEmptyPngBytes,
-} from './nmf_media_vault.js?v=2.1.34';
+} from './nmf_media_vault.js?v=1.0.0-public-beta.1';
 
 // CRC32 table for valid PNG tEXt ('chara') chunk embedding & verification
 const CRC_TABLE = (() => {

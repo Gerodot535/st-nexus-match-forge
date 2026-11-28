@@ -1,7 +1,7 @@
 // 8 Character, World & RPG Card Formats synthesized from ST / Chub / JanitorAI / GM-Authoring guides
 // Note (NMF-017): World Sandbox and RPG GM Engine are structured content templates packaged inside standard Character Card V2 (chara_card_v2).
-import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js?v=2.1.34';
-import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js?v=2.1.34';
+import { isEn, tx, detectDefaultUiLang, normalizeUiLang } from './nmf_i18n.js?v=1.0.0-public-beta.1';
+import { normalizeUserTagLibrary } from './nmf_tags_and_presets.js?v=1.0.0-public-beta.1';
 
 export const SETTINGS_SCHEMA_VERSION = 8;
 export const MAX_STYLE_PROFILES = 30;

@@ -1,11 +1,11 @@
 {
-    "display_name": "NexusMatch Forge [BETA]",
+    "display_name": "NexusMatch Forge [Public Beta v1]",
     "loading_order": 42,
     "requires": [],
     "optional": [],
     "js": "nmf_entry.js",
     "css": "nmf_styles.css",
     "author": "Gerodot535",
-    "version": "2.1.34-beta",
+    "version": "1.0.0-beta.1",
     "homePage": "https://github.com/Gerodot535/st-nexus-match-forge"
 }

@@ -4054,3 +4054,88 @@ test('v2.1.34-beta: Pairwise prompt harmony & all 27 SillyTavern 1.19 text LLM s
 
 
 
+test('v2.1.35-beta: Desk clear buttons, zero sticky Deadpool fallback in Photo Lab & full data-act coverage', async () => {
+    const labsMod = await import('../modules/nmf_labs_and_templates.js?v=1.0.0-public-beta.1');
+    const esc = (s) => String(s ?? '');
+    const safeImgSrc = (s) => String(s ?? '');
+    const renderStudioRoomBar = (ru, en, right) => `<div class="bar">${ru}${right || ''}</div>`;
+
+    // 1. Photo Lab: saved Deadpool in Collection must NOT stick to desk when lastCreatedId is cleared
+    const sessPhoto = {
+        frozen: false,
+        photoLab: {
+            photo: { avatarId: '', avatarDataUrl: '', originalAvatarId: '' },
+            roleVibeHint: '',
+            charName: '',
+            extraNotes: '',
+            lastCreatedId: '',
+            drafts: [{ id: 'photo_deadpool', name: 'Deadpool', pitch: 'Merc with a mouth' }],
+        },
+        conceptLab: {},
+        intake: {},
+    };
+    const cleanPhotoHtml = labsMod.renderPhotoLabTabHtml({
+        sess: sessPhoto,
+        cfg: {},
+        state: { busy: false },
+        esc,
+        safeImgSrc,
+        renderStudioRoomBar,
+        rosterChars: [],
+    });
+    assert.ok(!cleanPhotoHtml.includes('Deadpool'), 'Saved Collection draft must NOT stick to clean Photo Lab desk');
+    assert.ok(!cleanPhotoHtml.includes('clear-photo-lab-desk'), 'Clean Photo Lab desk hides Clear Desk button');
+    assert.ok(cleanPhotoHtml.includes('open-photo-collection'), 'Collection button stays visible');
+
+    // When active draft IS on desk, show dismiss + clear desk buttons
+    sessPhoto.photoLab.lastCreatedId = 'photo_deadpool';
+    const activePhotoHtml = labsMod.renderPhotoLabTabHtml({
+        sess: sessPhoto,
+        cfg: {},
+        state: { busy: false },
+        esc,
+        safeImgSrc,
+        renderStudioRoomBar,
+        rosterChars: [],
+    });
+    assert.ok(activePhotoHtml.includes('Deadpool'));
+    assert.ok(activePhotoHtml.includes('dismiss-photo-desk-draft'));
+    assert.ok(activePhotoHtml.includes('clear-photo-lab-desk'));
+
+    // 2. Concept Lab: Clear Desk appears when dirty, hides when clean
+    const sessConcept = {
+        frozen: false,
+        conceptLab: {
+            linkedCandidateRef: '__none__',
+            anchorPhoto: { avatarId: '', avatarDataUrl: '' },
+            singleSheet: { title: '', avatarId: '', avatarDataUrl: '', visualPrompt: '', masterCaption: '' },
+            seriesFrames: [],
+            questions: [],
+            vault: [{ id: 'cv_1', name: 'Saved Hero' }],
+        },
+        intake: {},
+    };
+    const cleanConceptHtml = labsMod.renderConceptLabTabHtml({
+        sess: sessConcept,
+        cfg: { imageSource: 'auto', imageProfileId: '' },
+        state: { busy: false, editingConceptKey: '', conceptAppendOpen: false, conceptAppendBrief: '' },
+        esc,
+        safeImgSrc,
+        renderStudioRoomBar,
+        renderCheckableQuestionCard: () => '',
+    });
+    assert.ok(!cleanConceptHtml.includes('clear-concept-desk'), 'Clean Concept desk hides Clear Desk button');
+    assert.ok(cleanConceptHtml.includes('open-concept-collection'), 'Concept Collection button stays visible');
+
+    sessConcept.conceptLab.themeBrief = 'Cyber-noir character turnaround';
+    const dirtyConceptHtml = labsMod.renderConceptLabTabHtml({
+        sess: sessConcept,
+        cfg: { imageSource: 'auto', imageProfileId: '' },
+        state: { busy: false, editingConceptKey: '', conceptAppendOpen: false, conceptAppendBrief: '' },
+        esc,
+        safeImgSrc,
+        renderStudioRoomBar,
+        renderCheckableQuestionCard: () => '',
+    });
+    assert.ok(dirtyConceptHtml.includes('clear-concept-desk'), 'Dirty Concept desk shows Clear Desk button');
+});

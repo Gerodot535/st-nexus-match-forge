@@ -1,4 +1,4 @@
-import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=2.1.34';
+import { NMF_THEMES, NMF_ICONS, NMF_FULL_CSS } from './modules/nmf_themes_and_icons.js?v=1.0.0-public-beta.1';
 import {
     harvestTagsIntoLibrary,
     hasPhraseInCommaField,
@@ -9,7 +9,7 @@ import {
     PRESET_SESSION_TEMPLATES,
     populateSessionFromPresetTemplate,
     syncPresetSessionsToUiLanguage,
-} from './modules/nmf_tags_and_presets.js?v=2.1.34';
+} from './modules/nmf_tags_and_presets.js?v=1.0.0-public-beta.1';
 import {
     getUiLang,
     setUiLang,
@@ -24,7 +24,7 @@ import {
     localizeOptionLabel,
     HELP_TOPICS_EN,
     applyEnglishDomTranslation,
-} from './modules/nmf_i18n.js?v=2.1.34';
+} from './modules/nmf_i18n.js?v=1.0.0-public-beta.1';
 import {
     MAX_LIKED_CANDIDATES,
     MAX_PASSED_CANDIDATES,
@@ -145,7 +145,7 @@ import {
     createDefaultPhotoLabState,
     createDefaultConceptLabState,
     getDefaultAntiSlopPreset,
-} from './modules/nmf_templates_and_prompts.js?v=2.1.34';
+} from './modules/nmf_templates_and_prompts.js?v=1.0.0-public-beta.1';
 import {
     ALL_EDITABLE_CARD_FIELDS,
     markCardFieldDirty,
@@ -185,7 +185,7 @@ import {
     runLlmGeneration,
     lastGenerationReasoning,
     lastRequestDiagnostics,
-} from './modules/nmf_card_io_and_art.js?v=2.1.34';
+} from './modules/nmf_card_io_and_art.js?v=1.0.0-public-beta.1';
 import {
     base64ToBytes,
     isMediaDurablyPersisted,
@@ -202,14 +202,14 @@ import {
     pruneOrphanedMedia,
     listCardBackups,
     getCardBackupById,
-} from './modules/nmf_media_vault.js?v=2.1.34';
+} from './modules/nmf_media_vault.js?v=1.0.0-public-beta.1';
 import {
     renderTemplateManagerWidgetHtml,
     renderPhotoLabTabHtml,
     renderConceptLabTabHtml,
     renderConceptCollectionViewHtml,
     renderPhotoCollectionViewHtml,
-} from './modules/nmf_labs_and_templates.js?v=2.1.34';
+} from './modules/nmf_labs_and_templates.js?v=1.0.0-public-beta.1';
 
 const EXT_KEY = 'st_nexus_match_forge';
 let nextBusyRunId = 1;
@@ -553,6 +553,14 @@ function resetTransientSessionModals() {
     state.matchRevealState = null;
     state.viewingCandRef = null;
     state.editingCandRef = null;
+    state.lightboxInfo = null;
+    state.intakeSheetOpen = false;
+    state.gachaIntakeSheetOpen = false;
+    state.editingConceptKey = '';
+    state.conceptAppendOpen = false;
+    state.conceptAppendBrief = '';
+    state.swipeAnimating = false;
+    state.resetScrollAndSpoilersOnce = true;
     state.overwriteConfirmInfo = null;
     state.lastOverwriteAlert = null;
     if (!state.cropSaving) state.cropModalInfo = null;
@@ -4874,10 +4882,21 @@ function renderCreateTab(sess) {
     const mode = sess.architect.subMode || 'idea';
     const rw = sess.rework;
     const worldMode = isWorldOrRpgMode(sess.intake);
+    const hasCreateDeskDirty = (mode === 'idea' && Boolean(String(sess.architect?.freeConcept || '').trim()))
+        || (mode === 'rework' && Boolean(
+            rw.sourceAvatar
+            || String(rw.targetSettingEra || '').trim()
+            || String(rw.moodTone || '').trim()
+            || String(rw.encounterIdea || '').trim()
+            || (Array.isArray(rw.questions) && rw.questions.length > 0),
+        ));
     const roomHeaderHtml = renderStudioRoomBar(
         'Задумка и перенос AU',
         'Idea & AU Shift',
-        `<button type="button" class="nmf-chip" data-act="open-intake-sheet">${NMF_ICONS.sliders} <span>${esc(tx('Анкета', 'Questionnaire'))}</span></button>`,
+        `<div style="display:inline-flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+            ${hasCreateDeskDirty ? `<button type="button" class="nmf-chip" data-act="clear-create-desk" title="${esc(tx('Очистить текущий черновик под нового персонажа', 'Clear current draft for a new character'))}" ${state.busy || sess.frozen ? 'disabled' : ''}>${NMF_ICONS.trash} <span>${esc(tx('Очистить стол', 'Clear Desk'))}</span></button>` : ''}
+            <button type="button" class="nmf-chip" data-act="open-intake-sheet">${NMF_ICONS.sliders} <span>${esc(tx('Анкета', 'Questionnaire'))}</span></button>
+        </div>`,
     );
 
     let modeBodyHtml = '';
@@ -6185,12 +6204,19 @@ function ensureLiveGachaCooldownTicker() {
     if (gachaCooldownTickId) return;
     gachaCooldownTickId = setInterval(() => {
         if (typeof document === 'undefined') return;
+        if (!isForgeDialogVisible()) return;
         const el = document.getElementById('nmf-gacha-cd-live');
-        if (!el) return;
+        if (!el) {
+            clearInterval(gachaCooldownTickId);
+            gachaCooldownTickId = null;
+            return;
+        }
         const cfg = getSettings();
         const sess = getActiveSession();
         const { coolingDown, leftMs } = syncGachaWallClockCooldown(sess, cfg);
         if (!coolingDown) {
+            clearInterval(gachaCooldownTickId);
+            gachaCooldownTickId = null;
             renderWindow();
         } else {
             el.textContent = formatRemainingMs(leftMs);
@@ -6306,6 +6332,33 @@ async function upsertConceptVaultEntry(sess) {
     return entry;
 }
 
+function resetConceptLabDesk(sess) {
+    if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
+    const cl = sess.conceptLab;
+    cl.activeConceptId = '';
+    cl.linkedCandidateRef = '__none__';
+    cl.anchorMode = 'upload';
+    cl.anchorPrompt = '';
+    cl.themeBrief = '';
+    cl.questions = [];
+    cl.anchorPhoto = { avatarId: '', avatarDataUrl: '', originalAvatarId: '' };
+    cl.singleSheet = { title: '', avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' };
+    cl.seriesFrames = [];
+    state.editingConceptKey = '';
+    state.conceptAppendOpen = false;
+    state.conceptAppendBrief = '';
+}
+
+function clearDanglingCandidateRefs(sess, deadRef) {
+    if (!sess || !deadRef) return;
+    if (sess.blitz?.selectedCandidateRef === deadRef) {
+        sess.blitz.selectedCandidateRef = '__none__';
+    }
+    if (sess.conceptLab?.linkedCandidateRef === deadRef) {
+        sess.conceptLab.linkedCandidateRef = '__none__';
+    }
+}
+
 function loadConceptVaultItemIntoWorkspace(sess, entry) {
     if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
     const cl = sess.conceptLab;
@@ -6316,9 +6369,14 @@ function loadConceptVaultItemIntoWorkspace(sess, entry) {
     cl.aspectRatio = entry.aspectRatio || '3:2';
     cl.onArtLanguage = entry.onArtLanguage ?? 'English';
     cl.themeBrief = entry.themeBrief || '';
+    cl.anchorPrompt = '';
+    cl.questions = [];
     cl.anchorPhoto = { ...(entry.anchorPhoto || { avatarId: '', avatarDataUrl: '', originalAvatarId: '' }) };
-    cl.singleSheet = { ...(entry.singleSheet || { avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' }) };
+    cl.singleSheet = { ...(entry.singleSheet || { title: '', avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' }) };
     cl.seriesFrames = Array.isArray(entry.seriesFrames) ? entry.seriesFrames.map((f) => ({ ...f })) : [];
+    state.editingConceptKey = '';
+    state.conceptAppendOpen = false;
+    state.conceptAppendBrief = '';
 }
 
 export function renderWindow() {
@@ -6329,7 +6387,7 @@ export function renderWindow() {
 
     const prevBody = win.querySelector('.nmf-body');
     const prevScrollTop = prevBody ? prevBody.scrollTop : 0;
-    const prevTab = win.dataset.renderedTab || '';
+    const prevViewKey = win.dataset.renderedViewKey || '';
     const prevSheetBody = typeof win.querySelector === 'function' ? win.querySelector('.nmf-sheet-body') : null;
     const prevSheetScrollTop = prevSheetBody ? prevSheetBody.scrollTop : 0;
     const getSpoilerSignature = (detEl, fallbackIdx) => {
@@ -6411,6 +6469,8 @@ export function renderWindow() {
         state.activeTab = 'matches';
         state.matchesSubTab = 'vault';
     }
+    const nextViewKey = `${sess.id}|${state.activeTab}|${state.discoverSubMode}|${state.matchesSubTab}|${sess.architect?.subMode || ''}|${state.editorSubTab}`;
+    win.dataset.renderedViewKey = nextViewKey;
     const screenHtml = {
         home: renderHomeTab,
         swipe: renderSwipeTab,
@@ -6513,19 +6573,31 @@ export function renderWindow() {
 
     const restoreSpoilersList = (nextList, prevList) => {
         if (!nextList.length || !prevList.length) return;
-        const openSigs = new Set(prevList.filter((x) => x.open && x.sig).map((x) => x.sig));
-        if (nextList.length === prevList.length) {
-            nextList.forEach((d, idx) => {
-                if (prevList[idx]?.open || openSigs.has(getSpoilerSignature(d, idx))) d.open = true;
-            });
-        } else {
-            nextList.forEach((d, idx) => {
-                if (openSigs.has(getSpoilerSignature(d, idx))) d.open = true;
-            });
+        const prevMap = new Map();
+        const prevCounts = new Map();
+        for (const item of prevList) {
+            if (!item?.sig || item.sig.startsWith('__idx_')) continue;
+            const n = (prevCounts.get(item.sig) || 0) + 1;
+            prevCounts.set(item.sig, n);
+            prevMap.set(`${item.sig}#${n}`, Boolean(item.open));
         }
+        const nextCounts = new Map();
+        nextList.forEach((d, idx) => {
+            const sig = getSpoilerSignature(d, idx);
+            if (!sig || sig.startsWith('__idx_')) return;
+            const n = (nextCounts.get(sig) || 0) + 1;
+            nextCounts.set(sig, n);
+            const key = `${sig}#${n}`;
+            if (prevMap.has(key)) {
+                d.open = prevMap.get(key);
+            }
+        });
     };
 
-    if (prevTab === state.activeTab) {
+    const skipBodyRestore = Boolean(state.resetScrollAndSpoilersOnce);
+    state.resetScrollAndSpoilersOnce = false;
+
+    if (prevViewKey === nextViewKey && !skipBodyRestore) {
         if (typeof win.querySelectorAll === 'function' && prevOpenBodySpoilers.length > 0) {
             restoreSpoilersList([...win.querySelectorAll('.nmf-body details.nmf-spoiler')], prevOpenBodySpoilers);
         }
@@ -6533,6 +6605,9 @@ export function renderWindow() {
             const nextBody = win.querySelector('.nmf-body');
             if (nextBody) nextBody.scrollTop = prevScrollTop;
         }
+    } else {
+        const nextBody = typeof win.querySelector === 'function' ? win.querySelector('.nmf-body') : null;
+        if (nextBody) nextBody.scrollTop = 0;
     }
     if (typeof win.querySelectorAll === 'function' && prevOpenSheetSpoilers.length > 0) {
         restoreSpoilersList([...win.querySelectorAll('.nmf-sheet-body details.nmf-spoiler')], prevOpenSheetSpoilers);
@@ -6557,7 +6632,7 @@ export function renderWindow() {
     if (state.cropModalInfo) {
         attachCropperDragGestures(win);
     }
-    if (state.discoverSubMode !== 'gacha') {
+    if (state.activeTab === 'swipe' && state.discoverSubMode !== 'gacha') {
         attachSwipeCardGestures(win);
         maybeAutoTriggerCurrentCardArt();
     }
@@ -6778,6 +6853,7 @@ function attachSwipeCardGestures(win) {
     let lockedHorizontal = null;
 
     cardEl.addEventListener('pointerdown', (e) => {
+        if (state.swipeAnimating) return;
         if (e.target.closest('button, input, textarea, select, summary, label')) return;
         startX = e.clientX;
         startY = e.clientY;
@@ -6830,6 +6906,7 @@ function attachSwipeCardGestures(win) {
 
     cardEl.addEventListener('pointerup', finishGesture);
     cardEl.addEventListener('pointercancel', finishGesture);
+    cardEl.addEventListener('lostpointercapture', finishGesture);
 }
 
 function triggerAnimatedSwipeDecision(kind) {
@@ -6860,8 +6937,12 @@ function triggerAnimatedSwipeDecision(kind) {
     setTimeout(() => {
         state.swipeAnimating = false;
         state.justSwipedCardEnter = true;
-        handleSwipeDecision(kind);
-        state.justSwipedCardEnter = false;
+        try {
+            handleSwipeDecision(kind);
+        } finally {
+            state.swipeAnimating = false;
+            state.justSwipedCardEnter = false;
+        }
     }, 215);
 }
 
@@ -7039,6 +7120,8 @@ export function requestCancelBusyTask() {
     state.busyMinimized = false;
     state.busyCancelRequested = true;
     state.busyCancellable = true;
+    state.altarFusionBusy = false;
+    state.altarDonorSnapshot = [];
     state.activeRunId = 0;
     try { ctl?.abort(new Error('Cancelled locally by NMF user')); } catch {}
     renderWindow();
@@ -7832,13 +7915,13 @@ function bindWindowDelegation(win) {
         if (el.dataset.conceptCand && sess) {
             if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
             const nextRef = el.value || '__none__';
-            sess.conceptLab.linkedCandidateRef = nextRef;
             if (nextRef !== '__none__') {
                 const existingVault = (sess.conceptLab.vault || []).find((v) => v.sourceRef === nextRef);
                 if (existingVault) {
                     loadConceptVaultItemIntoWorkspace(sess, existingVault);
                 } else {
-                    sess.conceptLab.activeConceptId = '';
+                    resetConceptLabDesk(sess);
+                    sess.conceptLab.linkedCandidateRef = nextRef;
                     const hit = resolveConceptSeedCandidate(sess);
                     if (hit?.entity) {
                         const seedUrl = resolveEntityAvatarUrl(hit.entity);
@@ -7846,13 +7929,15 @@ function bindWindowDelegation(win) {
                             await assignEntityMediaWithFallback(sess.conceptLab.anchorPhoto, seedUrl, '');
                             sess.conceptLab.anchorMode = 'upload';
                         } else if (hit.entity.imagePrompt || hit.entity.appearance) {
+                            sess.conceptLab.anchorMode = 'generate';
                             sess.conceptLab.anchorPrompt = hit.entity.imagePrompt || hit.entity.appearance || '';
                         }
                     }
                 }
             } else {
-                sess.conceptLab.activeConceptId = '';
+                resetConceptLabDesk(sess);
             }
+            await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
             saveSettings();
             renderWindow();
             return;
@@ -10009,8 +10094,8 @@ function bindWindowDelegation(win) {
                     const consumedIds = new Set(donors.map((d) => d.id));
                     sess.gacha.collection = (sess.gacha.collection || []).filter((x) => !consumedIds.has(x.id));
                     sess.gacha.lastRevealBatch = (sess.gacha.lastRevealBatch || []).filter((x) => !consumedIds.has(x.id));
-                    if (sess.blitz?.selectedCandidateRef && [...consumedIds].some((id) => sess.blitz.selectedCandidateRef === `gacha:${id}`)) {
-                        sess.blitz.selectedCandidateRef = '__none__';
+                    for (const cid of consumedIds) {
+                        clearDanglingCandidateRefs(sess, `gacha:${cid}`);
                     }
                     sess.gacha.collection.unshift(born);
                     if (sess.gacha.collection.length > MAX_GACHA_COLLECTION) {
@@ -10139,8 +10224,14 @@ function bindWindowDelegation(win) {
         if (act === 'del-gacha') {
             const idx = Number(btn.dataset.idx);
             const removed = sess.gacha?.collection?.splice(idx, 1)?.[0];
-            if (removed && Array.isArray(sess.gacha?.fusionSlotIds)) {
-                sess.gacha.fusionSlotIds = sess.gacha.fusionSlotIds.filter((id) => id !== removed.id);
+            if (removed) {
+                if (Array.isArray(sess.gacha?.fusionSlotIds)) {
+                    sess.gacha.fusionSlotIds = sess.gacha.fusionSlotIds.filter((id) => id !== removed.id);
+                }
+                if (Array.isArray(sess.gacha?.lastRevealBatch)) {
+                    sess.gacha.lastRevealBatch = sess.gacha.lastRevealBatch.filter((x) => x.id !== removed.id);
+                }
+                clearDanglingCandidateRefs(sess, `gacha:${removed.id}`);
             }
             await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
             saveSettings();
@@ -10647,10 +10738,33 @@ function bindWindowDelegation(win) {
         if (act === 'clear-photo-lab-image') {
             if (sess.photoLab?.photo) {
                 sess.photoLab.photo = { avatarId: '', avatarDataUrl: '', originalAvatarId: '' };
+                await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                 saveSettings();
                 renderWindow();
             }
             return;
+        }
+        if (act === 'dismiss-photo-desk-draft') {
+            if (sess.photoLab) {
+                sess.photoLab.lastCreatedId = '';
+                saveSettings();
+                renderWindow();
+            }
+            return;
+        }
+        if (act === 'clear-photo-lab-desk') {
+            if (sess.frozen) return;
+            if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
+            sess.photoLab.photo = { avatarId: '', avatarDataUrl: '', originalAvatarId: '' };
+            sess.photoLab.roleVibeHint = '';
+            sess.photoLab.charName = '';
+            sess.photoLab.extraNotes = '';
+            sess.photoLab.lastCreatedId = '';
+            state.resetScrollAndSpoilersOnce = true;
+            await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+            saveSettings();
+            notifySuccessToast(tx('Стол «Герой по фото» очищен под нового персонажа (Коллекция сохранена).', 'Photo Lab desk cleared for a new character (Collection preserved).'));
+            return renderWindow();
         }
         if (act === 'toggle-photo-use-intake') {
             if (!sess.photoLab) sess.photoLab = createDefaultPhotoLabState();
@@ -10747,7 +10861,13 @@ function bindWindowDelegation(win) {
         if (act === 'del-photo-draft-item') {
             const idx = Number(btn.dataset.idx);
             if (Array.isArray(sess.photoLab?.drafts) && sess.photoLab.drafts[idx]) {
-                sess.photoLab.drafts.splice(idx, 1);
+                const removed = sess.photoLab.drafts.splice(idx, 1)[0];
+                if (removed?.id) {
+                    if (sess.photoLab.lastCreatedId === removed.id) {
+                        sess.photoLab.lastCreatedId = '';
+                    }
+                    clearDanglingCandidateRefs(sess, `photo:${removed.id}`);
+                }
                 await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                 saveSettings();
                 renderWindow();
@@ -10756,6 +10876,15 @@ function bindWindowDelegation(win) {
         }
 
         // CONCEPT ART LAB & COLLECTION ACTIONS
+        if (act === 'clear-concept-desk') {
+            if (sess.frozen) return;
+            resetConceptLabDesk(sess);
+            state.resetScrollAndSpoilersOnce = true;
+            await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
+            saveSettings();
+            notifySuccessToast(tx('Стол Концепт-артов очищен под нового персонажа (Коллекция сохранена).', 'Concept Lab desk cleared for a new character (Collection preserved).'));
+            return renderWindow();
+        }
         if (act === 'open-concept-collection') {
             state.activeTab = 'matches';
             state.matchesSubTab = 'concept_collection';
@@ -10987,16 +11116,13 @@ function bindWindowDelegation(win) {
             if (state.wishRevealState) state.wishRevealState = null;
             if (!sess.conceptLab) sess.conceptLab = createDefaultConceptLabState();
             const ref = btn.dataset.ref || '__none__';
-            sess.conceptLab.linkedCandidateRef = ref;
 
             const existing = (sess.conceptLab.vault || []).find((v) => v.sourceRef === ref);
             if (existing) {
                 loadConceptVaultItemIntoWorkspace(sess, existing);
             } else {
-                sess.conceptLab.activeConceptId = '';
-                sess.conceptLab.singleSheet = { title: '', avatarId: '', avatarDataUrl: '', originalAvatarId: '', visualPrompt: '', masterCaption: '' };
-                sess.conceptLab.seriesFrames = [];
-                sess.conceptLab.questions = [];
+                resetConceptLabDesk(sess);
+                sess.conceptLab.linkedCandidateRef = ref;
                 const hit = resolveConceptSeedCandidate(sess);
                 if (hit?.entity) {
                     const seedUrl = resolveEntityAvatarUrl(hit.entity);
@@ -11010,6 +11136,7 @@ function bindWindowDelegation(win) {
                     sess.conceptLab.anchorPrompt = hit.entity.imagePrompt || hit.entity.appearance || '';
                 }
             }
+            state.resetScrollAndSpoilersOnce = true;
             state.activeTab = 'concept';
             saveSettings();
             return renderWindow();
@@ -11420,8 +11547,11 @@ function bindWindowDelegation(win) {
             const idx = Number(btn.dataset.idx);
             if (Array.isArray(sess.conceptLab?.vault) && sess.conceptLab.vault[idx]) {
                 const removed = sess.conceptLab.vault.splice(idx, 1)[0];
-                if (sess.conceptLab.activeConceptId === removed?.id) {
-                    sess.conceptLab.activeConceptId = '';
+                if (removed?.id) {
+                    if (sess.conceptLab.activeConceptId === removed.id) {
+                        resetConceptLabDesk(sess);
+                    }
+                    clearDanglingCandidateRefs(sess, `concept:${removed.id}`);
                 }
                 await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
                 saveSettings();
@@ -11627,7 +11757,10 @@ function bindWindowDelegation(win) {
             return;
         }
         if (act === 'del-liked') {
-            sess.tinder.liked.splice(Number(btn.dataset.idx), 1);
+            const removed = sess.tinder.liked.splice(Number(btn.dataset.idx), 1)[0];
+            if (removed?.id) {
+                clearDanglingCandidateRefs(sess, `liked:${removed.id}`);
+            }
             await pruneOrphanedMedia(cfg.sessions, [], cfg.savedVault || []);
             saveSettings();
             return renderWindow();
@@ -12066,6 +12199,23 @@ function bindWindowDelegation(win) {
             saveSettings();
             return renderWindow();
         }
+        if (act === 'clear-create-desk') {
+            if (sess.frozen) return;
+            const subMode = sess.architect?.subMode || 'idea';
+            if (subMode === 'rework') {
+                sess.rework.sourceAvatar = '';
+                sess.rework.targetSettingEra = '';
+                sess.rework.moodTone = '';
+                sess.rework.encounterIdea = '';
+                sess.rework.questions = [];
+            } else {
+                sess.architect.freeConcept = '';
+            }
+            state.resetScrollAndSpoilersOnce = true;
+            saveSettings();
+            notifySuccessToast(tx('Стол очищен под нового персонажа.', 'Desk cleared for a new character.'));
+            return renderWindow();
+        }
         if (act === 'clear-au-questions') {
             sess.rework.questions = [];
             saveSettings();
@@ -12075,6 +12225,7 @@ function bindWindowDelegation(win) {
             if (sess.frozen) return;
             sess.blitz.questions = [];
             sess.blitz.topic = '';
+            state.resetScrollAndSpoilersOnce = true;
             saveSettings();
             notifyToast(tx('Блиц-опрос очищен.', 'Blitz quiz cleared.'));
             return renderWindow();
@@ -12299,7 +12450,10 @@ function bindWindowDelegation(win) {
         if (act === 'gen-editor-art') {
             if (state.editorArtLoading || Date.now() - lastArtTapTimestamp < 600) return;
             lastArtTapTimestamp = Date.now();
-            state.unseenArtIds.delete(sess.id + ':' + sess.activeCardSlot);
+            const targetSess = sess;
+            const targetCard = sess.card;
+            const targetSlot = sess.activeCardSlot;
+            state.unseenArtIds.delete(targetSess.id + ':' + targetSlot);
             const ctl = new AbortController();
             const edStatus = {
                 stage: 'Подготовка генерации',
@@ -12327,13 +12481,13 @@ function bindWindowDelegation(win) {
             state.editorArtAbort = ctl;
             renderWindow();
             try {
-                const p = sanitizeSafeFandomVisualPrompt(sess.card.imagePrompt, sess.card, Boolean(cfg.safeFandomArtPrompt));
+                const p = sanitizeSafeFandomVisualPrompt(targetCard.imagePrompt, targetCard, Boolean(cfg.safeFandomArtPrompt));
                 const refOpts = await buildPortraitRefOptions(
-                    sess,
+                    targetSess,
                     cfg,
-                    `${sess.card.name || ''} ${sess.card.tags || ''} ${sess.intake?.fandomName || ''}`,
+                    `${targetCard.name || ''} ${targetCard.tags || ''} ${targetSess.intake?.fandomName || ''}`,
                     null,
-                    sess.card,
+                    targetCard,
                 );
                 const dataUrl = await generateCharacterPortrait(p, {
                     imageSource: cfg.imageSource,
@@ -12359,14 +12513,14 @@ function bindWindowDelegation(win) {
                     },
                 });
                 if (ctl.signal.aborted) return;
-                sess.card.originalAvatarId = '';
-                sess.card.croppedAspect = '';
+                targetCard.originalAvatarId = '';
+                targetCard.croppedAspect = '';
                 const edDims = await probeImageDimensionsFromDataUrl(dataUrl);
-                if (edDims.w && edDims.h) sess.card.artNaturalRatio = edDims.w / edDims.h;
-                state.unseenArtIds.add(sess.id + ':' + sess.activeCardSlot);
-                const mediaRes = await assignEntityMediaWithFallback(sess.card, dataUrl, sess.card.avatarId || '');
-                sess.card.avatarDirty = true;
-                markCardFieldDirty(sess.card, 'imagePrompt');
+                if (edDims.w && edDims.h) targetCard.artNaturalRatio = edDims.w / edDims.h;
+                state.unseenArtIds.add(targetSess.id + ':' + targetSlot);
+                const mediaRes = await assignEntityMediaWithFallback(targetCard, dataUrl, targetCard.avatarId || '');
+                targetCard.avatarDirty = true;
+                markCardFieldDirty(targetCard, 'imagePrompt');
                 state.editorArtError = '';
                 saveSettings();
                 if (!mediaRes.durable) {
@@ -12603,7 +12757,7 @@ function mountExtensionManagerPanel() {
     wrap.className = 'inline-drawer';
     wrap.innerHTML = `
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>NexusMatch Forge [BETA]</b>
+            <b>NexusMatch Forge [Public Beta v1]</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content" style="display:none;padding:8px 4px;">
